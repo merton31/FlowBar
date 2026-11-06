@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.5.1.0")]
+[assembly: AssemblyFileVersion("1.5.1.0")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 

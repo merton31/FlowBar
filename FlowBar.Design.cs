@@ -872,10 +872,13 @@ namespace FlowBar
                 "Календарь", ShowCalendar, "event", "meet|" + next.Title + "|" + next.Start.ToString("s"));
         }
 
+        static DateTime mediaBusySince;
         async void UpdateMedia()
         {
-            if (mediaBusy) return;
-            mediaBusy = true;
+            // запрос к Windows не вернулся больше 10 с — не ждём его вечно: менеджер плееров пересоздаётся, иначе модуль навсегда замирал на «Ничего не играет»
+            if (mediaBusy && (DateTime.Now - mediaBusySince).TotalSeconds < 10) return;
+            if (mediaBusy) { mediaMgr = null; lastMedia = null; }
+            mediaBusy = true; mediaBusySince = DateTime.Now;
             try
             {
                 if (mediaMgr == null) mediaMgr = await MC.GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
@@ -912,7 +915,15 @@ namespace FlowBar
         {
             if (mediaMgr == null) return null;
             if (mediaPick != null) { foreach (var x in mediaMgr.GetSessions()) if (x.SourceAppUserModelId == mediaPick) return x; mediaPick = null; }
-            return mediaMgr.GetCurrentSession();
+            // «текущий» по мнению Windows — не всегда тот, что играет (вкладка браузера, видео без названия) или его нет вовсе: тогда — играющий плеер
+            var cur = mediaMgr.GetCurrentSession();
+            if (cur != null && IsPlaying(cur)) return cur;
+            var all = mediaMgr.GetSessions();
+            return all.FirstOrDefault(IsPlaying) ?? cur ?? all.FirstOrDefault();
+        }
+        static bool IsPlaying(MC.GlobalSystemMediaTransportControlsSession x)
+        {
+            try { return x.GetPlaybackInfo().PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; } catch { return false; }
         }
         static async void MediaCmd(string cmd, double frac = 0)
         {
@@ -1752,11 +1763,14 @@ namespace FlowBar
         // шаги сжатия ('s' — виды проще, 'w' — модуль в «…», 'a' — значок в «…») и сколько места освободил каждый
         int overflowN, appCut; readonly List<KeyValuePair<char, double>> cuts = new List<KeyValuePair<char, double>>(); char cutKind; double cutNeed;
         const double FitSlack = 24; // запас ширины перед возвратом скрытого: новое окно не раскачивает композицию туда-сюда
+        // защита от раскачки: если сразу после возврата места снова не хватило, возвраты замирают на 2 минуты,
+        // а у этого шага запоминается запас ещё на одну плитку — иначе ряд «прыгал» по экрану несколько раз в секунду
+        DateTime lastRestoreAt = DateTime.MinValue, fitHoldUntil = DateTime.MinValue; bool fitFlapped;
         const int MinApps = 4;
         List<string> overflowIds = new List<string>(), overflowApps = new List<string>(); Press overflowTile;
         void ResetFit(bool views)
         {
-            overflowN = 0; appCut = 0; cutKind = '\0';
+            overflowN = 0; appCut = 0; cutKind = '\0'; fitHoldUntil = DateTime.MinValue; lastRestoreAt = DateTime.MinValue; fitFlapped = false; // явное изменение раскладки — подгонка сразу с нуля
             if (views) { squeeze = 0; cuts.Clear(); } else cuts.RemoveAll(x => x.Key != 's');
         }
         double FreeWidth { get { return root == null || rowPanel == null || root.ActualWidth <= 0 ? 0 : scr.Bounds.Width / MonScale - 2 * Gap - (rowPanel.ActualWidth + root.Padding.Left * 2 + 2); } }
@@ -1854,10 +1868,11 @@ namespace FlowBar
             double max = Math.Max(TileH * 3, avail - rest);
             if (Math.Abs(stripScroll.MaxWidth - max) > 0.5) stripScroll.MaxWidth = max;
             if (editMode || dragging) return; // правка и перетаскивание: ничего не прячем — ряд прокручивается, «Готово» и края видны
-            if (cutKind != '\0') { cuts.Add(new KeyValuePair<char, double>(cutKind, Math.Max(TileH / 2, cutNeed - need))); cutKind = '\0'; }
+            if (cutKind != '\0') { cuts.Add(new KeyValuePair<char, double>(cutKind, Math.Max(TileH / 2, cutNeed - need) + (fitFlapped ? TileH : 0))); cutKind = '\0'; fitFlapped = false; }
             var shownW = shownTokens.Where(t => t.StartsWith("w:")).Select(t => t.Substring(2)).ToList();
             if (need > avail + 1)
             {
+                if ((DateTime.Now - lastRestoreAt).TotalSeconds < 5) { fitFlapped = true; fitHoldUntil = DateTime.Now.AddMinutes(2); }
                 if (squeeze < 2 && shownW.Any(Squeezable)) { cutKind = 's'; cutNeed = need; squeeze++; Defer(Rebuild); return; }
                 if (shownW.Any(x => !Keep(x))) { cutKind = 'w'; cutNeed = need; overflowN++; Compose(); DeferFit(); return; }
                 if (shownW.Any(Keep) && shownTokens.Count(IsApp) > MinApps) { cutKind = 'a'; cutNeed = need; appCut++; Compose(); DeferFit(); return; }
@@ -1865,8 +1880,8 @@ namespace FlowBar
             else if (cuts.Count > 0)
             {
                 var last = cuts[cuts.Count - 1];
-                if (need + last.Value + FitSlack > avail) return;
-                cuts.RemoveAt(cuts.Count - 1);
+                if (need + last.Value + FitSlack > avail || DateTime.Now < fitHoldUntil) return;
+                cuts.RemoveAt(cuts.Count - 1); lastRestoreAt = DateTime.Now;
                 if (last.Key == 's') { squeeze = Math.Max(0, squeeze - 1); Defer(Rebuild); }
                 else { if (last.Key == 'w') overflowN = Math.Max(0, overflowN - 1); else appCut = Math.Max(0, appCut - 1); Compose(); DeferFit(); }
             }
