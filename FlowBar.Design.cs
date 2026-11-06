@@ -570,7 +570,7 @@ namespace FlowBar
             public string Disk = "C:", DiskLabel = ""; public double DiskFree = double.NaN, DiskTotal = double.NaN;
             public List<Tuple<string, string, double, double>> Disks = new List<Tuple<string, string, double, double>>();
             public bool HasBat, Charging; public double Bat = double.NaN; public int BatSec = -1;
-            public bool HasMedia, Playing; public string Title, Artist, App; public ImageSource Cover; public double Pos = double.NaN, Dur = double.NaN;
+            public bool HasMedia, Playing, Remote; public string Title, Artist, App; public ImageSource Cover; public double Pos = double.NaN, Dur = double.NaN;
             public string NextTodo; public int TodoDone, TodoTotal;
             public string Note;
             public int PomoMode, PomoRound; public TimeSpan PomoLeft = TimeSpan.FromMinutes(25);
@@ -872,7 +872,9 @@ namespace FlowBar
                 "Календарь", ShowCalendar, "event", "meet|" + next.Title + "|" + next.Start.ToString("s"));
         }
 
-        static DateTime mediaBusySince;
+        static DateTime mediaBusySince, silentSince = DateTime.MinValue; static MC.GlobalSystemMediaTransportControlsSession hooked;
+        static bool mediaAgain;
+        static void KickMedia() { var p = Primary; if (p != null) p.Dispatcher.BeginInvoke(new Action(() => { if (mediaBusy) mediaAgain = true; else p.UpdateMedia(); })); } // событие во время обновления — ещё одно сразу после него
         async void UpdateMedia()
         {
             // запрос к Windows не вернулся больше 10 с — не ждём его вечно: менеджер плееров пересоздаётся, иначе модуль навсегда замирал на «Ничего не играет»
@@ -881,8 +883,9 @@ namespace FlowBar
             mediaBusy = true; mediaBusySince = DateTime.Now;
             try
             {
-                if (mediaMgr == null) mediaMgr = await MC.GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-                var ss = PickSession(); var s = live;
+                if (mediaMgr == null) { mediaMgr = await MC.GlobalSystemMediaTransportControlsSessionManager.RequestAsync(); mediaMgr.SessionsChanged += (a, b) => KickMedia(); mediaMgr.CurrentSessionChanged += (a, b) => KickMedia(); hooked = null; }
+                var ss = PickSession(); var s = live; bool wasPlaying = s.Playing, wasRemote = s.Remote;
+                if (ss != null && !ReferenceEquals(ss, hooked)) { hooked = ss; ss.PlaybackInfoChanged += (a, b) => KickMedia(); ss.MediaPropertiesChanged += (a, b) => { lastMedia = null; KickMedia(); }; } // пауза, перемотка и смена трека — сразу, а не при следующем опросе
                 s.Sessions = mediaMgr.GetSessions().Where(x => !SpotifyOnly || IsSpotify(x.SourceAppUserModelId)).Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
                 spotifyUp = System.Diagnostics.Process.GetProcessesByName("Spotify").Length > 0;
                 if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
@@ -890,6 +893,9 @@ namespace FlowBar
                 s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
                 s.CanPrev = info.Controls.IsPreviousEnabled; s.CanNext = info.Controls.IsNextEnabled; s.CanToggle = info.Controls.IsPlayPauseToggleEnabled || info.Controls.IsPlayEnabled || info.Controls.IsPauseEnabled;
                 s.CanSeek = info.Controls.IsPlaybackPositionEnabled; s.MediaError = null;
+                bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => (uint)pr.Id))) : null;
+                if (here == false) { if (silentSince == DateTime.MinValue) silentSince = DateTime.Now; } else silentSince = DateTime.MinValue;
+                s.Remote = here == false && (DateTime.Now - silentSince).TotalSeconds > 3;
                 s.App = ss.SourceAppUserModelId;
                 try
                 {
@@ -901,14 +907,14 @@ namespace FlowBar
                 catch { s.Pos = s.Dur = double.NaN; }
                 var p = await ss.TryGetMediaPropertiesAsync();
                 var key = s.App + "\u0001" + p.Artist + "\u0001" + p.Title;
-                if (key == lastMedia) return;
+                if (key == lastMedia) { if (wasPlaying != s.Playing || wasRemote != s.Remote) All(b => b.Render()); return; }
                 lastMedia = key;
                 s.Title = p.Title; s.Artist = p.Artist; s.HasMedia = !string.IsNullOrEmpty(p.Title);
                 s.Cover = p.Thumbnail == null ? null : await LoadImage(p.Thumbnail);
                 All(b => b.Render());
             }
             catch (Exception ex) { Log(ex); var s = live; s.MediaError = ex.Message; s.HasMedia = s.Playing = false; s.Cover = null; lastMedia = null; } // источник сломался — не держим старую обложку
-            finally { mediaBusy = false; }
+            finally { mediaBusy = false; if (mediaAgain) { mediaAgain = false; Dispatcher.BeginInvoke(new Action(UpdateMedia)); } }
         }
         // плеер, который показан и которым управляют кнопки; null — текущий по мнению Windows
         static string mediaPick;
@@ -985,6 +991,7 @@ namespace FlowBar
                 catch (Exception ex) { if (renderErrors.Add(ex.GetType().Name + ex.Message)) Log(ex); }
         }
         Action panelTick; // живое обновление открытой карточки
+        static bool watchRetry;
         void Tick()
         {
             try
@@ -1003,7 +1010,12 @@ namespace FlowBar
                     if (ticks % 60 == 2) UpdateAi();
                     if (ticks % 900 == 3) UpdateCalendars(); // ссылки iCal — раз в 15 минут
                     if (ticks % 5 == 1) RunAutomations();
-                    if (ticks % 5 == 3 && WatchOk && (Program.Watch == null || Program.Watch.HasExited))
+                    // сторож не подтвердил запуск (например, первый запуск задержала проверка Защитника) — пробуем снова в фоне; получилось — прячем панель Windows
+                    if (!WatchOk && !watchRetry && ticks % 15 == 7 && C("hideTaskbar", "1") == "1")
+                    {
+                        watchRetry = true;
+                        Task.Run(() => Program.StartWatch()).ContinueWith(t => Dispatcher.BeginInvoke(new Action(() => { watchRetry = false; if (t.Result) { WatchOk = true; SetTaskbar(false); All(b => { b.reserveKey = null; b.Place(); }); } })));
+                    }                    if (ticks % 5 == 3 && WatchOk && (Program.Watch == null || Program.Watch.HasExited))
                     {
                         WatchOk = Program.StartWatch(); // сторож пропал — перезапускаем; не вышло — возвращаем панель Windows
                         if (!WatchOk) { Taskbar.Restore(false, false); All(b => { b.reserveKey = null; b.Place(); }); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); }
@@ -1325,7 +1337,7 @@ namespace FlowBar
                             playG.Text = s.Playing ? "\uE769" : "\uE768";
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
                             title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
-                            artist.Text = s.HasMedia ? (string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
+                            artist.Text = s.HasMedia ? (s.Remote ? "На другом устройстве" : string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
                             prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN);
                             if (ring != null) ring.Set(s.HasMedia && !double.IsNaN(s.Dur) && s.Dur > 0 ? s.Pos / s.Dur : 0, "");
                             if (first || s.Cover != shown)

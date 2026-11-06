@@ -141,7 +141,7 @@ namespace FlowBar
                 var track = s.HasMedia ? s.Title + "\n" + s.Artist : "";
                 if (shownTrack != null && track != shownTrack) { Soft(title); Soft(artist); } shownTrack = track;
                 title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
-                artist.Text = s.HasMedia ? s.Artist ?? "" : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify — он появится здесь." : "Нажмите ▶, чтобы открыть Spotify. Другие плееры включаются в меню модуля: «Только Spotify».") : "Включите музыку в любом плеере — FlowBar подхватит её через Windows.";
+                artist.Text = s.HasMedia ? s.Artist ?? "" : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Включите музыку в любом плеере — FlowBar подхватит её через Windows.";
                 app.Text = s.HasMedia ? "Источник: " + AppTitle(s.App) : "";
                 ((TextBlock)play.Child).Text = s.Playing ? "\uE769" : "\uE768";
                 Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
@@ -167,7 +167,7 @@ namespace FlowBar
                     cover.Background = s.Cover != null ? (Brush)new ImageBrush(s.Cover) { Stretch = Stretch.UniformToFill } : new LinearGradientBrush(Color.FromArgb(0x90, ac.R, ac.G, ac.B), Color.FromArgb(0x20, ac.R, ac.G, ac.B), 45);
                     cover.Child = s.Cover != null ? null : G("", 36);
                 }
-                status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count + " — кнопки управляют выбранным" : "Управление выбранным плеером через Windows";
+                status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count : "";
             };
             tick();
             ShowPanel("Музыка", body, 380, null, tick);
@@ -281,7 +281,6 @@ namespace FlowBar
             sub.Text = ThemeName(C("style", "Black")); PaintIcon(ic, Cur.LightText);
             body.Children.Add(err);
             body.Children.Add(CardActions(Btn("Быстрые настройки Windows", () => { if (panel != null) panel.Close(); ShellToggle(0x5B, 0x41); }), Btn("Параметры", () => Launch("ms-settings:"))));
-            body.Children.Add(CardStatus("«В самолёте», точка доступа, ночной свет, камера и микрофон — в быстрых настройках Windows: надёжного доступа к ним у программ нет."));
             // открытая карточка следит за изменениями извне раз в секунду: обновляются подписи, значки и переключатели, ползунок — если его не тянут
             Action tick = () => { foreach (var u in upd) u(); SyncSwitches(body); };
             tick();
@@ -299,7 +298,6 @@ namespace FlowBar
             head.Children.Add(state); body.Children.Add(head); body.Children.Add(sub);
             body.Children.Add(CardHead("Доступные сети")); body.Children.Add(list);
             body.Children.Add(CardActions(Btn("Подключиться через Windows", () => { if (panel != null) panel.Close(); Launch("ms-availablenetworks:"); }, true), Btn("Параметры Wi-Fi", () => Launch("ms-settings:network-wifi"))));
-            body.Children.Add(CardStatus("Подключение, пароль и выбор сети выполняет Windows — FlowBar показывает состояние и список."));
             load = async () =>
             {
                 bool on = wr != null && wr.State == RD.RadioState.On;
@@ -355,7 +353,6 @@ namespace FlowBar
             head.Children.Add(state); body.Children.Add(head);
             body.Children.Add(CardHead("Сопряжённые устройства")); body.Children.Add(list);
             body.Children.Add(CardActions(Btn("Добавить устройство", () => { if (panel != null) panel.Close(); Launch("ms-settings:connecteddevices"); }, true), Btn("Параметры Bluetooth", () => Launch("ms-settings:bluetooth"))));
-            body.Children.Add(CardStatus("Сопряжение и подключение выполняет Windows. Заряд устройств FlowBar не показывает: Windows не сообщает его программам надёжно."));
             load = async () =>
             {
                 bool on = br != null && br.State == RD.RadioState.On;
@@ -427,7 +424,6 @@ namespace FlowBar
                 host.Children.Add(CardActions(Btn("Открыть", () => Launch(letter + "\\"), true), Btn("Очистка диска", () => Launch("cleanmgr.exe", "/d " + letter.TrimEnd(':'))), Btn("Анализ места", () => Launch("ms-settings:storagesense"))));
             };
             render();
-            body.Children.Add(CardStatus("Категории (приложения, документы, временные файлы) FlowBar не рассчитывает: «Анализ места» откроет их в параметрах Windows, «Очистка диска» запускает стандартную очистку."));
             ShowPanel("Накопитель", body, 380, null);
         }
 
@@ -448,7 +444,6 @@ namespace FlowBar
             right.Children.Add(CardHead("Нагрузка")); TextBlock cpuV, ramV; FillBar cpuB = new FillBar(240, 4), ramB = new FillBar(240, 4);
             right.Children.Add(KV("Процессор", "", out cpuV)); cpuB.Margin = new Thickness(0, 4, 0, 8); right.Children.Add(cpuB);
             right.Children.Add(KV("Память", "", out ramV)); ramB.Margin = new Thickness(0, 4, 0, 8); right.Children.Add(ramB);
-            body.Children.Add(CardStatus("Температура — от датчиков ACPI, которые Windows отдаёт программам: это датчики платы, а не ядер процессора. Датчиков видеокарты и дисков Windows без драйверов производителя не сообщает."));
             string zkey = null;
             Action tick = () =>
             {
@@ -516,9 +511,7 @@ namespace FlowBar
                     wp.Children.Add(holder);
                 }
                 body.Children.Add(wp);
-                body.Children.Add(CardStatus("Перетащите модуль на панель: в промежуток — встанет туда, на середину другого модуля — вместо него, на панель другого монитора — переедет туда."));
             }
-            body.Children.Add(CardStatus("Не поместились на панели. Модули с «Оставлять видимым» остаются на месте; бюджет значков и наборы — в настройках «Панель»."));
             body.Children.Add(CardActions(Btn("Каталог виджетов", () => ShowCatalog(this), true), Btn("Настройки панели", () => ShowSettings("bar"))));
             ShowPanel("Ещё", body, 400, null);
         }
@@ -528,7 +521,7 @@ namespace FlowBar
         {
             // компактная сетка с ровными ячейками; подсказка — во всплывающих подписях значков
             var body = new StackPanel(); var wp = new System.Windows.Controls.Primitives.UniformGrid { Columns = 6, HorizontalAlignment = HorizontalAlignment.Left };
-            var empty = CardStatus("Значков пока нет: программы добавляют их сами — обычно в течение нескольких секунд после запуска FlowBar.");
+            var empty = CardStatus("Значков пока нет");
             var missHost = new StackPanel();
             body.Children.Add(wp); body.Children.Add(missHost); body.Children.Add(empty);
             int shown = -1;
@@ -555,7 +548,6 @@ namespace FlowBar
                 var miss = Tray.MissedApps(list.Select(x => ExePath(Tray.Pid(x))));
                 if (miss.Count > 0)
                 {
-                    var mh = CardStatus("Эти программы прислали значок до запуска FlowBar — клик открывает программу, меню трея появится после её перезапуска."); mh.Margin = new Thickness(2, 10, 0, 4); missHost.Children.Add(mh);
                     var mg = new System.Windows.Controls.Primitives.UniformGrid { Columns = 6, HorizontalAlignment = HorizontalAlignment.Left };
                     foreach (var m0 in miss)
                     {
@@ -687,7 +679,6 @@ namespace FlowBar
             };
             body.Children.Add(nameBox);
             body.Children.Add(CardActions(Btn("Разгруппировать", () => { if (panel != null) panel.Close(); Ungroup(name); })));
-            body.Children.Add(CardStatus("Добавить программу: правый клик по закреплённому значку → «Добавить в группу»."));
             ShowPanel(name, body, 340, null);
         }
         static Rectangle Indicator(bool active, bool many)

@@ -154,6 +154,38 @@ namespace FlowBar
             }
             catch { ep = null; return false; }
         }
+        [ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IAudioSessionManager2 { [PreserveSig] int GetAudioSessionControl(IntPtr g, int f, out IntPtr c); [PreserveSig] int GetSimpleAudioVolume(IntPtr g, int f, out IntPtr v); [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator e); }
+        [ComImport, Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IAudioSessionEnumerator { [PreserveSig] int GetCount(out int n); [PreserveSig] int GetSession(int i, out IAudioSessionControl2 s); }
+        [ComImport, Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IAudioSessionControl2
+        {
+            [PreserveSig] int GetState(out int st); [PreserveSig] int GetDisplayName(out IntPtr s); [PreserveSig] int SetDisplayName(string s, IntPtr g); [PreserveSig] int GetIconPath(out IntPtr s); [PreserveSig] int SetIconPath(string s, IntPtr g);
+            [PreserveSig] int GetGroupingParam(out Guid g); [PreserveSig] int SetGroupingParam(ref Guid g, IntPtr c); [PreserveSig] int RegisterAudioSessionNotification(IntPtr n); [PreserveSig] int UnregisterAudioSessionNotification(IntPtr n);
+            [PreserveSig] int GetSessionIdentifier(out IntPtr s); [PreserveSig] int GetSessionInstanceIdentifier(out IntPtr s); [PreserveSig] int GetProcessId(out uint pid);
+        }
+        // звук процесса сейчас идёт на этом компьютере: true — сеанс активен, false — сеансы есть, но молчат, null — сеансов нет или не удалось узнать
+        public static bool? Playing(HashSet<uint> pids)
+        {
+            try
+            {
+                var en = (IMMDeviceEnumerator)new Enumerator(); IMMDevice dev;
+                if (en.GetDefaultAudioEndpoint(0, 1, out dev) != 0 || dev == null) return null;
+                var iid = typeof(IAudioSessionManager2).GUID; object o;
+                if (dev.Activate(ref iid, 23, IntPtr.Zero, out o) != 0) return null;
+                var mgr = (IAudioSessionManager2)o; IAudioSessionEnumerator e; if (mgr.GetSessionEnumerator(out e) != 0) return null;
+                int n; e.GetCount(out n); bool any = false;
+                for (int i = 0; i < n; i++)
+                {
+                    IAudioSessionControl2 s; if (e.GetSession(i, out s) != 0 || s == null) continue;
+                    uint pid; if (s.GetProcessId(out pid) != 0 || !pids.Contains(pid)) continue;
+                    int st; s.GetState(out st); any = true; if (st == 1) return true;
+                }
+                return any ? (bool?)false : null;
+            }
+            catch { return null; }
+        }
         public static void SetVolume(float v) { try { var e = Ep(); if (e == null) return; var g = Guid.Empty; e.SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(1, v)), ref g); if (v > 0) e.SetMute(false, ref g); } catch { ep = null; } }
         public static void SetMute(bool on) { try { var e = Ep(); if (e == null) return; var g = Guid.Empty; e.SetMute(on, ref g); } catch { ep = null; } }
     }
@@ -3001,7 +3033,7 @@ namespace FlowBar
                     foreach (var e in later) row(e, agenda, true);
                 }
                 foot.Text = calBusy ? "Обновление календарей…" : calError != null ? "Ошибки: " + calError :
-                    calFeeds.Count == 0 ? "Подключение — «Настройки → Подключения → Календари»." :
+                    calFeeds.Count == 0 ? "" :
                     calUpdated == default(DateTime) ? "" : "Обновлено в " + calUpdated.ToString("HH:mm") + " · только просмотр, обновление раз в 15 минут";
             };
             renderMonth(); renderFilters(); render();
@@ -3144,7 +3176,7 @@ namespace FlowBar
             render();
             // способ подсчёта — короткой подписью с подсказкой, а не абзацем
             var rule = Txt("ⓘ Как считается", 10.5, false); rule.Opacity = 0.55; rule.Margin = new Thickness(0, 12, 0, 0); rule.HorizontalAlignment = HorizontalAlignment.Left;
-            rule.ToolTip = "Считается время активного окна, пока с компьютером работают: если клавиатурой и мышью не пользовались больше 2 минут, время не идёт — так и для видео без касаний."; body.Children.Add(rule);
+            rule.ToolTip = "Считается время активного окна, пока с компьютером работают: если клавиатурой и мышью не пользовались больше 2 минут, время не идёт — так и для видео без касаний."; rule.Visibility = Visibility.Collapsed; body.Children.Add(rule); // пояснение о подсчёте — только во всплывающей подсказке модуля
             ShowPanel("Экранное время", body, 360, null);
         }
     }
@@ -3269,7 +3301,7 @@ namespace FlowBar
                     try
                     {
                         Watch = Process.Start(psi);
-                        if (ready.WaitOne(3000)) return true;
+                        if (ready.WaitOne(10000)) return true; // на чужом компьютере первый запуск неподписанного exe задерживает проверка Защитника — 3 с не хватало
                         Bar.Log(new Exception("Сторож не подтвердил готовность: " + psi.FileName));
                         try { Watch.Kill(); } catch { }
                     }
