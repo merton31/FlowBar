@@ -1,0 +1,13 @@
+[package]
+name = "flowbar-watch"
+version = "1.0.0"
+edition = "2021"
+
+# без зависимостей: только прямые вызовы Windows, сборка не скачивает пакеты
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
