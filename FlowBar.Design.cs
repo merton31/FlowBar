@@ -873,7 +873,15 @@ namespace FlowBar
         }
 
         static DateTime mediaBusySince, silentSince = DateTime.MinValue; static MC.GlobalSystemMediaTransportControlsSession hooked;
-        static bool mediaAgain;
+        static bool mediaAgain, wantPlaying; static bool? titleWas; static DateTime titleAt, wantUntil;
+        // null — окна Spotify нет (свёрнут в трей): остаётся состояние от Windows
+        static bool? SpotifyTitlePlaying()
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("Spotify"))
+                try { var t = p.MainWindowTitle; if (!string.IsNullOrEmpty(t)) return !t.StartsWith("Spotify", StringComparison.OrdinalIgnoreCase) || t.Contains(" - "); }
+                catch { } finally { p.Dispose(); }
+            return null;
+        }
         static void KickMedia() { var p = Primary; if (p != null) p.Dispatcher.BeginInvoke(new Action(() => { if (mediaBusy) mediaAgain = true; else p.UpdateMedia(); })); } // событие во время обновления — ещё одно сразу после него
         async void UpdateMedia()
         {
@@ -890,7 +898,13 @@ namespace FlowBar
                 spotifyUp = System.Diagnostics.Process.GetProcessesByName("Spotify").Length > 0;
                 if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
                 var info = ss.GetPlaybackInfo();
-                s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; bool smtcPlaying = s.Playing;
+                // Spotify сообщает Windows о паузе и воспроизведении через 5–10 с, а заголовок окна меняет сразу: «Spotify Premium» — пауза, «Исполнитель - трек» — играет
+                bool? byTitle = IsSpotify(ss.SourceAppUserModelId) ? SpotifyTitlePlaying() : null;
+                if (byTitle != titleWas) { titleWas = byTitle; titleAt = DateTime.Now; }
+                if (byTitle == true) s.Playing = true;
+                else if (byTitle == false && s.Playing && (DateTime.Now - titleAt).TotalSeconds < 15) s.Playing = false; // дольше — играет на другом устройстве (ниже)
+                if (DateTime.Now < wantUntil) { if (byTitle == wantPlaying) wantUntil = DateTime.MinValue; else s.Playing = wantPlaying; } // нажали ▶/⏸ в FlowBar — сразу, пока плеер не подтвердил
                 s.CanPrev = info.Controls.IsPreviousEnabled; s.CanNext = info.Controls.IsNextEnabled; s.CanToggle = info.Controls.IsPlayPauseToggleEnabled || info.Controls.IsPlayEnabled || info.Controls.IsPauseEnabled;
                 s.CanSeek = info.Controls.IsPlaybackPositionEnabled; s.MediaError = null;
                 bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => (uint)pr.Id))) : null;
@@ -901,7 +915,7 @@ namespace FlowBar
                 {
                     var tl = ss.GetTimelineProperties();
                     double dur = (tl.EndTime - tl.StartTime).TotalSeconds, pos = tl.Position.TotalSeconds;
-                    if (s.Playing) pos += (DateTimeOffset.Now - tl.LastUpdatedTime).TotalSeconds;
+                    if (smtcPlaying) pos += (DateTimeOffset.Now - tl.LastUpdatedTime).TotalSeconds;
                     s.Dur = dur > 1 ? dur : double.NaN; s.Pos = dur > 1 ? Math.Max(0, Math.Min(dur, pos)) : double.NaN;
                 }
                 catch { s.Pos = s.Dur = double.NaN; }
@@ -948,7 +962,9 @@ namespace FlowBar
             {
                 switch (cmd)
                 {
-                    case "toggle": await s.TryTogglePlayPauseAsync(); break;
+                    case "toggle":
+                        { var l = live; l.Playing = wantPlaying = !l.Playing; l.Remote = false; wantUntil = DateTime.Now.AddSeconds(3); All(b => { b.Render(); if (b.panelTick != null) b.panelTick(); }); }
+                        await s.TryTogglePlayPauseAsync(); break;
                     case "next": await s.TrySkipNextAsync(); break;
                     case "prev": await s.TrySkipPreviousAsync(); break;
                     case "seek": var tl = s.GetTimelineProperties(); await s.TryChangePlaybackPositionAsync((tl.StartTime + TimeSpan.FromTicks((long)((tl.EndTime - tl.StartTime).Ticks * Math.Max(0, Math.Min(1, frac))))).Ticks); break;
