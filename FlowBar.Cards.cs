@@ -132,7 +132,6 @@ namespace FlowBar
             Press prevB = RoundBtn("\uE892", 40, false, () => MediaCmd("prev"), "Предыдущий трек"), nextB = RoundBtn("\uE893", 40, false, () => MediaCmd("next"), "Следующий трек");
             var ctr = HS(prevB, Mg(play, 10, 0, 10, 0), nextB);
             ctr.HorizontalAlignment = HorizontalAlignment.Center; ctr.Margin = new Thickness(0, 8, 0, 4); body.Children.Add(ctr);
-            body.Children.Add(CardActions(Btn("Тише", () => { Keys(0xAE); Keys(0xAE); }), Btn("Громче", () => { Keys(0xAF); Keys(0xAF); }), Btn("Без звука", () => Keys(0xAD)), Btn("Микшер", () => Launch("sndvol.exe"))));
             var status = CardStatus(""); body.Children.Add(status);
             ImageSource shown = null; bool first = true; string shownTrack = null;
             Func<double, string> mmss = x => double.IsNaN(x) ? "—" : ((int)(x / 60)) + ":" + ((int)x % 60).ToString("00");
@@ -1296,7 +1295,8 @@ namespace FlowBar
             c.Children.Add(CardActions(imp, pick));
             c.Children.Add(SSub("Данные"));
             c.Children.Add(SHint("Настройки, задачи, заметки, календари и экранное время хранятся в " + Dir));
-            c.Children.Add(CardActions(Btn("Открыть папку данных", () => Launch(Dir))));
+            c.Children.Add(CardActions(Btn("Открыть папку данных", () => Launch(Dir)), Btn("Отчёт для разработчика", SaveReport)));
+            c.Children.Add(SHint("Если что-то работает не так, нажмите «Отчёт для разработчика» и пришлите файл с рабочего стола. В нём версия, Windows, мониторы, настройки и журнал ошибок; город и ссылки скрыты."));
             c.Children.Add(SSub("Клавиатура"));
             c.Children.Add(SHint("Ctrl+Alt+B — перейти на панель; стрелки и Tab — по элементам; Enter или Пробел — нажать; Shift+F10 — меню; Esc — вернуться в прежнее окно.\nAlt+T — задачи. Win+S — поиск Windows."));
             c.Children.Add(SSub("Панель Windows"));
@@ -1443,7 +1443,7 @@ namespace FlowBar
 
         // ---------- команды извне: --open и снимки для приёмки ----------
         static readonly uint ShotMsg = N.RegisterWindowMessage("FlowBarShot"), OpenMsg = N.RegisterWindowMessage("FlowBarOpen");
-        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump" };
+        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump", "report" };
         void OpenByCode(int code, int barIndex)
         {
             var b = barIndex > 0 && barIndex <= bars.Count ? bars.OrderByDescending(x => x.primary).ElementAt(barIndex - 1) : this;
@@ -1453,6 +1453,7 @@ namespace FlowBar
                 case "settings": b.ShowSettings(null); break;
                 case "quit": Application.Current.Shutdown(); break;
                 case "currency": b.ShowFx(); break;
+                case "report": SaveReport(); break;
                 case "traydump": try { File.WriteAllLines(F("tray-list.txt"), Tray.Dump()); } catch (Exception ex) { Log(ex); } break; // обновление: новая версия бережно закрывает старую
                 case "look": case "bar": case "monitors": case "widgets": case "connect": b.ShowSettings(OpenNames[code]); break;
                 case "catalog": b.ShowCatalog(b); break;

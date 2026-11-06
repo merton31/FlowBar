@@ -1012,7 +1012,60 @@ namespace FlowBar
         void SaveTodos() { SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine)); UpdateTodoTile(); }
         public static Todo ParseTodo(string l) { int i = l.IndexOf('|'); return i < 0 ? new Todo { Text = l } : new Todo { Done = l.Substring(0, i) == "1", Text = l.Substring(i + 1) }; }
         public static string TodoLine(Todo t) { return (t.Done ? "1|" : "0|") + t.Text; }
-        public static void Log(Exception ex) { try { File.AppendAllText(F("error.log"), DateTime.Now + " " + ex + "\r\n"); } catch { } }
+        // журнал error.log: ошибки и важные события (запуск, смена мониторов); больше 1 МБ — прежний уходит в error.old.log
+        public static void Log(Exception ex) { WriteLog(ex.ToString()); }
+        public static void Info(string s) { WriteLog("· " + s); }
+        static readonly object logLock = new object();
+        static void WriteLog(string s)
+        {
+            try
+            {
+                lock (logLock)
+                {
+                    var f = F("error.log"); var fi = new FileInfo(f);
+                    if (fi.Exists && fi.Length > 1048576) { File.Copy(f, F("error.old.log"), true); File.Delete(f); }
+                    File.AppendAllText(f, DateTime.Now + " " + s + "\r\n");
+                }
+            }
+            catch { }
+        }
+
+        // версия, Windows, права, мониторы и панели — в журнал при запуске и в отчёт
+        internal static string SysInfo()
+        {
+            var sb = new StringBuilder();
+            string win = "";
+            try { using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion")) { int bn; int.TryParse(k.GetValue("CurrentBuild") as string, out bn); win = ((k.GetValue("ProductName") as string) ?? "").Replace("Windows 10", bn >= 22000 ? "Windows 11" : "Windows 10") + " " + k.GetValue("DisplayVersion") + ", сборка " + bn + "." + k.GetValue("UBR"); } } catch { }
+            sb.Append("FlowBar " + Setup.VersionText + (Setup.IsInstalledCopy ? "" : " (запущен не из папки установки)") + "; " + win + "; права администратора: " + (Setup.Elevated ? "да" : "нет")
+                + "; панель Windows скрывается: " + (HideTb ? "да" : C("hideTaskbar", "1") == "1" ? "нет — сторож не запустился" : "нет — выключено") + "; свой трей: " + (Bar.C("ownTray", "1") == "1" ? Tray.Icons.Count + " значков" : "выключен") + "\r\n");
+            foreach (var b in bars.ToList())
+                try { sb.Append("монитор " + b.scr.DeviceName + (b.scr.Primary ? " (основной)" : "") + ": " + b.scr.Bounds.Width + "×" + b.scr.Bounds.Height + " в " + b.scr.Bounds.X + "," + b.scr.Bounds.Y + ", масштаб " + Math.Round(b.MonScale * 100) + "%; панель " + Math.Round(b.Left) + "," + Math.Round(b.Top) + " " + Math.Round(b.ActualWidth) + "×" + Math.Round(b.ActualHeight) + (b.IsVisible ? "" : " скрыта") + "\r\n"); }
+                catch { }
+            return sb.ToString();
+        }
+
+        // Отчёт для разработчика: файл на рабочем столе — сведения о системе, настройки (место и ссылки скрыты), трей и конец журнала; путь к профилю заменён на %USERPROFILE%
+        static void SaveReport()
+        {
+            try
+            {
+                var sb = new StringBuilder("Отчёт FlowBar от " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\r\n\r\n" + SysInfo());
+                sb.Append("\r\n— настройки —\r\n");
+                foreach (var kv in cfg) sb.Append(kv.Key + "=" + (Regex.IsMatch(kv.Key, "wx|url|token|key|secret|feed|ical|mail|pass", RegexOptions.IgnoreCase) ? "(скрыто)" : kv.Value) + "\r\n");
+                sb.Append("\r\n— значки трея (без подсказок) —\r\n");
+                try { foreach (var l in Tray.Dump()) { var p = l.Split('\t'); sb.Append(string.Join("\t", p.Take(Math.Max(1, p.Length - 1))) + "\r\n"); } } catch { }
+                sb.Append("\r\n— журнал, последние 400 строк —\r\n");
+                var lines = new List<string>();
+                lock (logLock) foreach (var f in new[] { F("error.old.log"), F("error.log") }) try { if (File.Exists(f)) lines.AddRange(File.ReadAllLines(f)); } catch { }
+                foreach (var l in lines.Skip(Math.Max(0, lines.Count - 400))) sb.Append(l + "\r\n");
+                var text = sb.ToString().Replace(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "%USERPROFILE%");
+                if (Environment.UserName.Length >= 3) text = text.Replace(Environment.UserName, "%USERNAME%");
+                var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "FlowBar-отчёт-" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm") + ".txt");
+                File.WriteAllText(path, text, Encoding.UTF8);
+                Start("explorer.exe", "/select,\"" + path + "\"");
+            }
+            catch (Exception ex) { Log(ex); MessageBox.Show("Не удалось сохранить отчёт:\n" + ex.Message, "FlowBar"); }
+        }
 
         // ---------- системное ----------
         public static void SetTaskbar(bool show) { Taskbar.Set(show); }
@@ -1493,6 +1546,7 @@ namespace FlowBar
                 screensKey = k;
                 foreach (var b in bars.ToList()) b.Close();
                 foreach (var scr in System.Windows.Forms.Screen.AllScreens) new Bar(scr).Show();
+                Info("мониторы изменились:\r\n" + SysInfo());
             };
             var disp = Dispatcher.CurrentDispatcher;
             SystemEvents.DisplaySettingsChanged += (o, e) => disp.BeginInvoke(new Action(() => { screensT.Stop(); screensT.Start(); }));
@@ -3363,6 +3417,7 @@ namespace FlowBar
             if (Bar.C("ownTray", "1") == "1") Tray.Start(); // свой трей (до панелей: рассылка TaskbarCreated их не касается)
             foreach (var scr in System.Windows.Forms.Screen.AllScreens) new Bar(scr).Show();
             Bar.WatchScreens();
+            var started = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) }; started.Tick += (s, e) => { started.Stop(); Bar.Info("запуск:\r\n" + Bar.SysInfo()); Bar.PlaceStartNow(); }; started.Start(); // панели уже на местах
             var note = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) }; note.Tick += (s, e) => { note.Stop(); Bar.ShowUpdateNote(); }; note.Start();
             app.Run();
             GC.KeepAlive(mtx);

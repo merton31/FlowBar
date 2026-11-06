@@ -1009,6 +1009,40 @@ namespace FlowBar
         Action panelTick; // живое обновление открытой карточки
         Action panelBuild; double cx0Back = double.NaN; // карточка, к которой ведёт стрелка «назад», и где её показать
         static bool watchRetry;
+        // Пуск и поиск Windows — окно SearchHost (StartMenuExperienceHost в прежних сборках) — по центру над нажатой кнопкой, а не у края экрана.
+        // Windows помнит место окна, поэтому ставим его до открытия и поправляем ещё несколько раз, пока оно появляется.
+        void ShellOver(FrameworkElement tile, params byte[] keys)
+        {
+            bool opening = !(shellAtDown && lastShellKeys == string.Join(",", keys)); // повторное нажатие закрывает — не двигаем
+            if (opening && tile != null) PlaceShell(tile);
+            ShellToggle(keys);
+            if (!opening || tile == null) return;
+            int n = 0; var t = new DispatcherTimer(DispatcherPriority.Send) { Interval = TimeSpan.FromMilliseconds(16) }; // Windows ставит окно на своё место в момент открытия — поправляем сразу, пока не видно скачка
+            t.Tick += (o, e) => { PlaceShell(tile); if (++n >= 50) t.Stop(); };
+            t.Start();
+        }
+        public static void PlaceStartNow() { var p = Primary; if (p != null && p.startEl != null) p.PlaceShell(p.startEl); } // и клавиша Win открывает Пуск над кнопкой
+        void PlaceShell(FrameworkElement tile)
+        {
+            try
+            {
+                if (!tile.IsVisible) return;
+                var a = tile.PointToScreen(new Point(0, 0)); var b2 = tile.PointToScreen(new Point(tile.ActualWidth, tile.ActualHeight)); // физические пиксели
+                double cx = (a.X + b2.X) / 2, gap = 8 * MonScale; var m = scr.Bounds;
+                for (var h = N.FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null); h != IntPtr.Zero; h = N.FindWindowEx(IntPtr.Zero, h, "Windows.UI.Core.CoreWindow", null))
+                {
+                    uint pid; N.GetWindowThreadProcessId(h, out pid); var exe = ExePath(pid);
+                    var name = exe == null ? "" : System.IO.Path.GetFileName(exe).ToLowerInvariant();
+                    if (name != "searchhost.exe" && name != "startmenuexperiencehost.exe") continue;
+                    N.RECT r; if (!N.GetWindowRect(h, out r)) continue;
+                    int w = r.R - r.L, hh = r.B - r.T; if (w < 200 || hh < 200) continue;
+                    int x = (int)Math.Round(Math.Max(m.Left + gap, Math.Min(m.Right - gap - w, cx - w / 2.0)));
+                    int y = (int)Math.Round(IsTop ? b2.Y + gap : a.Y - gap - hh); y = Math.Max(m.Top, Math.Min(m.Bottom - hh, y));
+                    if (x != r.L || y != r.T) N.SetWindowPos(h, IntPtr.Zero, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010); // без смены размера, порядка и фокуса
+                }
+            }
+            catch (Exception ex) { Log(ex); }
+        }
         void Tick()
         {
             try
@@ -2278,8 +2312,8 @@ namespace FlowBar
             KeyboardNavigation.SetTabNavigation(root, KeyboardNavigationMode.Cycle);
 
             startLogo = new StartLogo();
-            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellToggle(0x5B), null); // в ряду: его можно поставить между модулями
-            searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellToggle(0x5B, 0x53), null) : null;
+            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), null); // в ряду: его можно поставить между модулями
+            searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellOver(searchEl, 0x5B, 0x53), null) : null;
             strip = new StackPanel { Orientation = Orientation.Horizontal };
             stripScroll = new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
             strip.SizeChanged += (s, e) => { if (e.WidthChanged) Fit(); }; // панель уже во всю ширину и не растёт — ряд внутри меняется, следующий шаг сжатия нужен всё равно
