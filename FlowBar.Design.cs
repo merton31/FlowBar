@@ -991,6 +991,7 @@ namespace FlowBar
                 catch (Exception ex) { if (renderErrors.Add(ex.GetType().Name + ex.Message)) Log(ex); }
         }
         Action panelTick; // живое обновление открытой карточки
+        Action panelBuild; double cx0Back = double.NaN; // карточка, к которой ведёт стрелка «назад», и где её показать
         static bool watchRetry;
         void Tick()
         {

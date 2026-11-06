@@ -2012,11 +2012,14 @@ namespace FlowBar
         void ShowPanel(string title, UIElement body, double width, IInputElement focus, Action tick = null)
         {
             ClosePreview();
+            double keepCx = cx0Back; cx0Back = double.NaN;
             var from = (DateTime.Now - anchorAt).TotalSeconds < 2 && anchor != null && anchor.IsVisible ? anchor : null; anchor = null;
             // Нажатие на панель сначала уводит фокус с карточки и закрывает её, а клик приходит уже после.
             // Если эта же карточка закрылась только что — это повторное нажатие: оставляем закрытой.
             if (panel == null && title == lastClosedTitle && (DateTime.Now - lastClosedAt).TotalMilliseconds < 400) { lastClosedTitle = null; return; }
             bool same = panel != null && panelTitle == title;
+            var back = panel != null && !same ? panelBuild : null; panelBuild = null; // карточка открыта из другой («Ещё») — стрелка назад к ней
+            if (back != null) { from = null; keepCx = panel.Left + panel.ActualWidth / 2; } // на месте прежней карточки, как переход внутри одного меню
             if (panel != null) panel.Close();
             if (same) return; // повторный клик по виджету закрывает карточку
             width = Math.Max(320, width); // обычная ширина карточки 320–420
@@ -2032,7 +2035,17 @@ namespace FlowBar
             // заголовок всегда виден, длинное содержимое прокручивается целиком (поле ввода и кнопки внизу тоже достижимы)
             var sp = new DockPanel();
             var head = new TextBlock { Text = title.Length > 0 ? char.ToUpper(title[0]) + title.Substring(1) : title, FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), Margin = new Thickness(0, 0, 0, 12) };
-            DockPanel.SetDock(head, Dock.Top); sp.Children.Add(head);
+            FrameworkElement top = head;
+            if (back != null)
+            {
+                head.Margin = new Thickness(0); head.VerticalAlignment = VerticalAlignment.Center;
+                var arrow = Act(new TextBlock { Text = "", FontFamily = Icons, FontSize = 13, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }, "Назад", () => { cx0Back = w.Left + w.ActualWidth / 2; back(); });
+                arrow.Width = 28; arrow.Height = 28; arrow.CornerRadius = new CornerRadius(8); arrow.Margin = new Thickness(-6, 0, 4, 0); arrow.ToolTip = "Назад";
+                arrow.MouseEnter += (o, e) => Fade(arrow, Color.FromArgb(0x1C, fg.R, fg.G, fg.B), 100); arrow.MouseLeave += (o, e) => Fade(arrow, Colors.Transparent, 140);
+                var hp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, -4, 0, 8) }; hp.Children.Add(arrow); hp.Children.Add(head); top = hp;
+                w.PreviewKeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Back && !(Keyboard.FocusedElement is TextBox)) { e.Handled = true; back(); } };
+            }
+            DockPanel.SetDock(top, Dock.Top); sp.Children.Add(top);
             sp.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Padding = new Thickness(0, 0, 6, 0), Margin = new Thickness(0, 0, -6, 0) });
             StyleInputs(sp, fg);
             var face = new Border { Background = CardFill, CornerRadius = new CornerRadius(12), Padding = new Thickness(16), BorderThickness = new Thickness(1), BorderBrush = CardEdge, Child = sp };
@@ -2047,7 +2060,7 @@ namespace FlowBar
             {
                 // по центру над нажатой плиткой (без неё — у правого края панели), но в пределах экрана
                 double sc = Scale, sl = scr.Bounds.Left / sc, sr = scr.Bounds.Right / sc, st = scr.Bounds.Top / sc, sb = scr.Bounds.Bottom / sc;
-                if (double.IsNaN(cx0)) cx0 = from != null && from.IsVisible ? from.PointToScreen(new Point(from.ActualWidth / 2, 0)).X / sc : Left + ActualWidth - w.ActualWidth / 2 + Shadow;
+                if (double.IsNaN(cx0)) cx0 = !double.IsNaN(keepCx) ? keepCx : from != null && from.IsVisible ? from.PointToScreen(new Point(from.ActualWidth / 2, 0)).X / sc : Left + ActualWidth - w.ActualWidth / 2 + Shadow;
                 double nl = Math.Max(sl + 4 - Shadow, Math.Min(sr - 4 + Shadow - w.ActualWidth, cx0 - w.ActualWidth / 2));
                 double room = IsTop ? sb - (CapBottom + 8) : CapTop - 8 - st; // высота от панели до края экрана
                 double hh = Math.Min(w.ActualHeight, room + Shadow * 2); // MaxHeight уже ограничил карточку — лишнее прокручивается
@@ -2068,7 +2081,7 @@ namespace FlowBar
             w.Deactivated += (o, e) => w.Dispatcher.BeginInvoke(new Action(() => { if (!closed && !dragging) w.Close(); })); // из «…» модуль тянут на панель — карточка остаётся
             // Esc закрывает карточку и возвращает фокус на плитку, если на панель пришли с клавиатуры
             w.PreviewKeyDown += (o, e) => { if (e.Key != System.Windows.Input.Key.Escape) return; e.Handled = true; w.Close(); if (backTo != IntPtr.Zero && from != null) { N.SetForegroundWindow(hwnd); Keyboard.Focus(from); } };
-            w.Closed += (o, e) => { closed = true; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; } };
+            w.Closed += (o, e) => { closed = true; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
             panel = w; panelTitle = title; panelTick = tick;
             w.Show(); w.Activate();
         }

@@ -514,6 +514,7 @@ namespace FlowBar
             }
             body.Children.Add(CardActions(Btn("Каталог виджетов", () => ShowCatalog(this), true), Btn("Настройки панели", () => ShowSettings("bar"))));
             ShowPanel("Ещё", body, 400, null);
+            if (panel != null && panelTitle == "Ещё") panelBuild = ShowOverflow;
         }
 
         // ---------- свой трей: значки области уведомлений программ (FlowBar.Tray.cs) ----------
