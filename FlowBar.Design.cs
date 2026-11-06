@@ -883,7 +883,8 @@ namespace FlowBar
             {
                 if (mediaMgr == null) mediaMgr = await MC.GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
                 var ss = PickSession(); var s = live;
-                s.Sessions = mediaMgr.GetSessions().Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
+                s.Sessions = mediaMgr.GetSessions().Where(x => !SpotifyOnly || IsSpotify(x.SourceAppUserModelId)).Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
+                spotifyUp = System.Diagnostics.Process.GetProcessesByName("Spotify").Length > 0;
                 if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
                 var info = ss.GetPlaybackInfo();
                 s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
@@ -911,9 +912,16 @@ namespace FlowBar
         }
         // плеер, который показан и которым управляют кнопки; null — текущий по мнению Windows
         static string mediaPick;
+        // модуль музыки — для Spotify: браузер, Telegram и другие плееры не подхватываются (выключается в меню модуля)
+        static bool SpotifyOnly { get { return C("media.spotifyOnly", "1") == "1"; } }
+        static bool IsSpotify(string aumid) { return aumid != null && aumid.IndexOf("spotify", StringComparison.OrdinalIgnoreCase) >= 0; }
+        static bool spotifyUp; // процесс Spotify запущен (сеанс в Windows появляется только после начала воспроизведения)
+        static string SpotifyExe { get { var p = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Spotify", "Spotify.exe"); return File.Exists(p) ? p : null; } }
+        static void OpenSpotify() { try { if (SpotifyExe != null) System.Diagnostics.Process.Start(SpotifyExe); else System.Diagnostics.Process.Start("spotify:"); } catch (Exception ex) { Log(ex); } }
         static MC.GlobalSystemMediaTransportControlsSession PickSession()
         {
             if (mediaMgr == null) return null;
+            if (SpotifyOnly) return mediaMgr.GetSessions().FirstOrDefault(x => IsSpotify(x.SourceAppUserModelId));
             if (mediaPick != null) { foreach (var x in mediaMgr.GetSessions()) if (x.SourceAppUserModelId == mediaPick) return x; mediaPick = null; }
             // «текущий» по мнению Windows — не всегда тот, что играет (вкладка браузера, видео без названия) или его нет вовсе: тогда — играющий плеер
             var cur = mediaMgr.GetCurrentSession();
@@ -928,6 +936,7 @@ namespace FlowBar
         static async void MediaCmd(string cmd, double frac = 0)
         {
             var s = PickSession();
+            if (s == null && SpotifyOnly && !spotifyUp) { if (cmd == "toggle") OpenSpotify(); return; } // Spotify не запущен — ▶ открывает его
             if (s == null) { if (cmd == "toggle") Keys(0xB3); else if (cmd == "next") Keys(0xB0); else if (cmd == "prev") Keys(0xB1); return; }
             try
             {
@@ -1305,7 +1314,7 @@ namespace FlowBar
                             mg.SizeChanged += (o, e) => prog.Resize(mg.ActualWidth - 4);
                             mediaContent = mg;
                         }
-                        var t = Tile(mediaContent, "Музыка — подробности", act(ShowMusic), menu(m => { m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Без звука", () => Keys(0xAD))); }), true);
+                        var t = Tile(mediaContent, "Музыка — подробности", act(ShowMusic), menu(m => { m.Items.Add(Item("Только Spotify", () => { cfg["media.spotifyOnly"] = SpotifyOnly ? "0" : "1"; SaveCfg(); mediaPick = null; lastMedia = null; UpdateMedia(); }, SpotifyOnly)); m.Items.Add(Item("Открыть Spotify", OpenSpotify)); m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Без звука", () => Keys(0xAD))); }), true);
                         t.Padding = new Thickness(4, 0, 6 * f, 0);
                         if (live) t.MouseWheel += (o, e) => { byte k = (byte)(e.Delta > 0 ? 0xAF : 0xAE); Keys(k); Keys(k); e.Handled = true; };
                         ImageSource shown = null; bool first = true; string shownTrack = null;
@@ -1315,7 +1324,8 @@ namespace FlowBar
                             if (shownTrack != null && track != shownTrack) Soft(texts); shownTrack = track;
                             playG.Text = s.Playing ? "\uE769" : "\uE768";
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
-                            title.Text = s.HasMedia ? s.Title : "Ничего не играет"; artist.Text = s.HasMedia ? (string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : "Запустите музыку";
+                            title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
+                            artist.Text = s.HasMedia ? (string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
                             prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN);
                             if (ring != null) ring.Set(s.HasMedia && !double.IsNaN(s.Dur) && s.Dur > 0 ? s.Pos / s.Dur : 0, "");
                             if (first || s.Cover != shown)

@@ -83,7 +83,7 @@ namespace FlowBar
                 ChangeWindowMessageFilterEx(wnd, WM_COPYDATA, 1, IntPtr.Zero); // значки от программ с меньшими правами тоже доходят
                 KeepOnTop();
                 // Проводник поднимает свою панель при показе — возвращаемся выше, иначе новые сообщения уйдут только ему
-                top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) }; top.Tick += (s, e) => KeepOnTop(); top.Start();
+                top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) }; top.Tick += (s, e) => KeepOnTop(); top.Start();
                 Broadcast = DateTime.Now;
                 SendNotifyMessage(new IntPtr(0xFFFF), RegisterWindowMessage("TaskbarCreated"), IntPtr.Zero, IntPtr.Zero); // программы заново добавят свои значки
                 return true;
@@ -147,7 +147,8 @@ namespace FlowBar
             if (msg == 4) { if (t == null) return false; if (size >= 804) t.Version = (uint)Marshal.ReadInt32(d, 800); Version++; return true; } // NIM_SETVERSION
             if (msg == 3) return t != null; // NIM_SETFOCUS
             if (msg == 0) { if (t == null) { t = new TrayIcon { HWnd = hw, Id = id, Guid = g, HasGuid = hasGuid }; Icons.Add(t); } } // NIM_ADD; повторное (после перезапуска Проводника) — обновляет известный значок
-            else if (msg != 1 || t == null) return false; // NIM_MODIFY неизвестного значка
+            else if (msg != 1) return false;
+            else if (t == null) { t = new TrayIcon { HWnd = hw, Id = id, Guid = g, HasGuid = hasGuid }; Icons.Add(t); } // NIM_MODIFY незнакомого значка: его NIM_ADD ушёл мимо нас (Проводник был выше) — подбираем сейчас
             t.HWnd = hw; t.Id = id;
             if ((flags & 1) != 0) t.CbMsg = (uint)Marshal.ReadInt32(d, 16);
             if (size >= 804) { uint v = (uint)Marshal.ReadInt32(d, 800); if (v == 3 || v == 4) t.Version = v; } // многие программы (Telegram, Qt) указывают версию прямо при добавлении, без NIM_SETVERSION
@@ -164,9 +165,41 @@ namespace FlowBar
         public static List<TrayIcon> Visible()
         {
             foreach (var t in Icons.Where(x => !IsWindow(x.Wnd)).ToList()) Remove(t);
-            return Icons.Where(x => !x.Hidden && x.Icon != IntPtr.Zero).ToList();
+            return Icons.Where(x => !x.Hidden).ToList();
         }
 
+        // список всех известных значков (и скрытых) — для сверки с треем Windows: --open traydump
+        public static string[] Dump()
+        {
+            return Icons.Select(t => { uint pid = Pid(t); string exe = null; try { exe = System.Diagnostics.Process.GetProcessById((int)pid).MainModule.FileName; } catch { }
+                return (t.Hidden ? "скрыт" : t.Icon == IntPtr.Zero ? "без значка" : "виден") + "\t" + (IsWindow(t.Wnd) ? "" : "окно закрыто\t") + (exe ?? "pid " + pid) + "\t" + t.Tip.Replace("\n", " / ").Replace("\r", ""); }).ToArray();
+        }
+        // Программы, чьи значки Windows помнит (реестр NotifyIconSettings, с картинкой значка), запущенные сейчас, но не приславшие значок FlowBar:
+        // такие программы добавляют значок только при своём запуске, а FlowBar запустился позже. Клик по ним открывает окно программы.
+        public class Missed { public string Exe, Name; public ImageSource Image; }
+        public static List<Missed> MissedApps(IEnumerable<string> haveExe)
+        {
+            var have = new HashSet<string>(haveExe.Where(x => x != null).Select(x => System.IO.Path.GetFileName(x).ToLowerInvariant()));
+            var running = new Dictionary<string, string>();
+            foreach (var p in System.Diagnostics.Process.GetProcesses()) { try { var path = Bar.ExePathOf((uint)p.Id); if (path != null) running[System.IO.Path.GetFileName(path).ToLowerInvariant()] = path; } catch { } finally { p.Dispose(); } }
+            var res = new List<Missed>(); var seen = new HashSet<string>();
+            using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\NotifyIconSettings"))
+            {
+                if (k == null) return res;
+                foreach (var sub in k.GetSubKeyNames())
+                    using (var s = k.OpenSubKey(sub))
+                    {
+                        var exe = s == null ? null : s.GetValue("ExecutablePath") as string; if (exe == null) continue;
+                        var fn = System.IO.Path.GetFileName(exe).ToLowerInvariant(); string full;
+                        if (have.Contains(fn) || seen.Contains(fn) || !running.TryGetValue(fn, out full) || fn == "explorer.exe" || fn == "flowbar.exe" || fn == "powershell.exe") continue;
+                        seen.Add(fn);
+                        ImageSource img = null; var png = s.GetValue("IconSnapshot") as byte[];
+                        if (png != null) try { var bi = new BitmapImage(); bi.BeginInit(); bi.CacheOption = BitmapCacheOption.OnLoad; bi.StreamSource = new System.IO.MemoryStream(png); bi.EndInit(); bi.Freeze(); img = bi; } catch { img = null; }
+                        res.Add(new Missed { Exe = full, Name = (s.GetValue("InitialTooltip") as string) ?? "", Image = img });
+                    }
+            }
+            return res;
+        }
         public static uint Pid(TrayIcon t) { uint pid; GetWindowThreadProcessId(t.Wnd, out pid); return pid; }
 
         // нажатие — так же, как его передаёт программе панель Windows: у версии 4 событие и номер значка в lParam, точка — в wParam

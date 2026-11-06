@@ -991,6 +991,7 @@ namespace FlowBar
         }
         static string Cls(IntPtr h) { var sb = new StringBuilder(64); N.GetClassName(h, sb, 64); return sb.ToString(); }
         static string TitleOf(IntPtr h) { var sb = new StringBuilder(256); N.GetWindowText(h, sb, 256); return sb.ToString(); }
+        internal static string ExePathOf(uint pid) { return ExePath(pid); }
         static string ExePath(uint pid)
         {
             string p; if (pathCache.TryGetValue(pid, out p)) return p;

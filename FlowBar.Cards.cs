@@ -140,7 +140,8 @@ namespace FlowBar
             {
                 var track = s.HasMedia ? s.Title + "\n" + s.Artist : "";
                 if (shownTrack != null && track != shownTrack) { Soft(title); Soft(artist); } shownTrack = track;
-                title.Text = s.HasMedia ? s.Title : "Ничего не играет"; artist.Text = s.HasMedia ? s.Artist ?? "" : "Включите музыку в любом плеере — FlowBar подхватит её через Windows.";
+                title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
+                artist.Text = s.HasMedia ? s.Artist ?? "" : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify — он появится здесь." : "Нажмите ▶, чтобы открыть Spotify. Другие плееры включаются в меню модуля: «Только Spotify».") : "Включите музыку в любом плеере — FlowBar подхватит её через Windows.";
                 app.Text = s.HasMedia ? "Источник: " + AppTitle(s.App) : "";
                 ((TextBlock)play.Child).Text = s.Playing ? "\uE769" : "\uE768";
                 Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
@@ -528,7 +529,8 @@ namespace FlowBar
             // компактная сетка с ровными ячейками; подсказка — во всплывающих подписях значков
             var body = new StackPanel(); var wp = new System.Windows.Controls.Primitives.UniformGrid { Columns = 6, HorizontalAlignment = HorizontalAlignment.Left };
             var empty = CardStatus("Значков пока нет: программы добавляют их сами — обычно в течение нескольких секунд после запуска FlowBar.");
-            body.Children.Add(wp); body.Children.Add(empty);
+            var missHost = new StackPanel();
+            body.Children.Add(wp); body.Children.Add(missHost); body.Children.Add(empty);
             int shown = -1;
             Action fill = () =>
             {
@@ -537,8 +539,8 @@ namespace FlowBar
                 empty.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 foreach (var t0 in list)
                 {
-                    var t = t0; string tip = t.Tip != "" ? t.Tip : AppName(ExePath(Tray.Pid(t)));
-                    var img = new Image { Source = t.Image, Width = 20, Height = 20, Stretch = Stretch.Uniform };
+                    var t = t0; var exe = ExePath(Tray.Pid(t)); string tip = t.Tip != "" ? t.Tip : AppName(exe);
+                    var img = new Image { Source = t.Image ?? (exe != null ? ShellIcon(exe, IconPxFor(20, MonScale)) : null), Width = 20, Height = 20, Stretch = Stretch.Uniform };
                     RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                     var b = Act(new Border { Width = 44, Height = 44, Child = img }, tip, () => Tray.Click(t, false, false));
                     b.ToolTip = tip + "\nКлик и двойной клик — как в трее Windows, правая кнопка — меню программы"; b.CornerRadius = new CornerRadius(10); b.Margin = new Thickness(2);
@@ -548,9 +550,41 @@ namespace FlowBar
                     b.MouseRightButtonUp += (o, e) => { e.Handled = true; Tray.Click(t, true, false); };
                     wp.Children.Add(b);
                 }
+                // запущенные программы, чей значок FlowBar не получил: открыть окно программы (меню трея у них недоступно)
+                missHost.Children.Clear();
+                var miss = Tray.MissedApps(list.Select(x => ExePath(Tray.Pid(x))));
+                if (miss.Count > 0)
+                {
+                    var mh = CardStatus("Эти программы прислали значок до запуска FlowBar — клик открывает программу, меню трея появится после её перезапуска."); mh.Margin = new Thickness(2, 10, 0, 4); missHost.Children.Add(mh);
+                    var mg = new System.Windows.Controls.Primitives.UniformGrid { Columns = 6, HorizontalAlignment = HorizontalAlignment.Left };
+                    foreach (var m0 in miss)
+                    {
+                        var m = m0; string name = m.Name != "" ? m.Name : AppName(m.Exe);
+                        var img = new Image { Source = m.Image ?? ShellIcon(m.Exe, IconPxFor(20, MonScale)), Width = 20, Height = 20, Stretch = Stretch.Uniform, Opacity = 0.85 };
+                        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+                        var b = Act(new Border { Width = 44, Height = 44, Child = img }, name, () => OpenApp(m.Exe));
+                        b.ToolTip = name + "\nКлик — открыть программу. Меню трея недоступно: значок был добавлен до запуска FlowBar"; b.CornerRadius = new CornerRadius(10); b.Margin = new Thickness(2);
+                        b.MouseEnter += (o, e) => Fade(b, Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B), 100); b.MouseLeave += (o, e) => Fade(b, Colors.Transparent, 140);
+                        mg.Children.Add(b);
+                    }
+                    missHost.Children.Add(mg);
+                }
+                empty.Visibility = list.Count == 0 && miss.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             };
             fill();
             ShowPanel("Значки трея", body, 320, null, fill);
+        }
+
+        // окно запущенной программы — вперёд; спрятана в трей — повторный запуск (программы с одним экземпляром показывают своё окно)
+        static void OpenApp(string exe)
+        {
+            try
+            {
+                var name = System.IO.Path.GetFileNameWithoutExtension(exe);
+                var w = Process.GetProcessesByName(name).Select(p => p.MainWindowHandle).FirstOrDefault(h => h != IntPtr.Zero);
+                if (w != IntPtr.Zero) ActivateWin(w); else Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = System.IO.Path.GetDirectoryName(exe) });
+            }
+            catch (Exception ex) { Log(ex); }
         }
 
         // ---------- группы программ: значок из миниатюр, сетка с названиями ----------
@@ -1414,7 +1448,7 @@ namespace FlowBar
 
         // ---------- команды извне: --open и снимки для приёмки ----------
         static readonly uint ShotMsg = N.RegisterWindowMessage("FlowBarShot"), OpenMsg = N.RegisterWindowMessage("FlowBarOpen");
-        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency" };
+        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump" };
         void OpenByCode(int code, int barIndex)
         {
             var b = barIndex > 0 && barIndex <= bars.Count ? bars.OrderByDescending(x => x.primary).ElementAt(barIndex - 1) : this;
@@ -1423,7 +1457,8 @@ namespace FlowBar
             {
                 case "settings": b.ShowSettings(null); break;
                 case "quit": Application.Current.Shutdown(); break;
-                case "currency": b.ShowFx(); break; // обновление: новая версия бережно закрывает старую
+                case "currency": b.ShowFx(); break;
+                case "traydump": try { File.WriteAllLines(F("tray-list.txt"), Tray.Dump()); } catch (Exception ex) { Log(ex); } break; // обновление: новая версия бережно закрывает старую
                 case "look": case "bar": case "monitors": case "widgets": case "connect": b.ShowSettings(OpenNames[code]); break;
                 case "catalog": b.ShowCatalog(b); break;
                 case "system": b.OpenNear("cpu", b.ShowSystem); break;

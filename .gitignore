@@ -15,3 +15,6 @@ shots-*/
 *эталон*.md
 Планы.md
 README.txt
+
+# разовые скрипты правок
+tools/patch_*.py
