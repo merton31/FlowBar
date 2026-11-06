@@ -923,7 +923,7 @@ namespace FlowBar
         static bool IsSpotify(string aumid) { return aumid != null && aumid.IndexOf("spotify", StringComparison.OrdinalIgnoreCase) >= 0; }
         static bool spotifyUp; // процесс Spotify запущен (сеанс в Windows появляется только после начала воспроизведения)
         static string SpotifyExe { get { var p = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Spotify", "Spotify.exe"); return File.Exists(p) ? p : null; } }
-        static void OpenSpotify() { try { if (SpotifyExe != null) System.Diagnostics.Process.Start(SpotifyExe); else System.Diagnostics.Process.Start("spotify:"); } catch (Exception ex) { Log(ex); } }
+        static void OpenSpotify() { try { Start(SpotifyExe ?? "spotify:"); } catch (Exception ex) { Log(ex); } }
         static MC.GlobalSystemMediaTransportControlsSession PickSession()
         {
             if (mediaMgr == null) return null;

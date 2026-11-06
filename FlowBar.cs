@@ -1204,8 +1204,26 @@ namespace FlowBar
         }
         static void Launch(string path, string args = null)
         {
-            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Arguments = args ?? "" }); }
+            try { Start(path, args); }
             catch (Exception ex) { MessageBox.Show("Не удалось запустить:\n" + path + "\n\n" + ex.Message, "FlowBar"); }
+        }
+        // Панель с правами администратора запускает программы через Проводник (рабочий стол — IShellDispatch2.ShellExecute), то есть без своих прав;
+        // иначе всё открытое из панели работало бы от администратора.
+        internal static void Start(string file, string args = null, string dir = null)
+        {
+            if (Setup.Elevated)
+                try
+                {
+                    var wins = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39")));
+                    var a = new object[] { 0, null, 8, 0, 1 }; var pm = new ParameterModifier(5); pm[0] = true; pm[1] = true; pm[3] = true; // SWC_DESKTOP, SWFO_NEEDDISPATCH
+                    var desk = wins.GetType().InvokeMember("FindWindowSW", BindingFlags.InvokeMethod, null, wins, a, new[] { pm }, null, null);
+                    var doc = desk.GetType().InvokeMember("Document", BindingFlags.GetProperty, null, desk, null);
+                    var app = doc.GetType().InvokeMember("Application", BindingFlags.GetProperty, null, doc, null);
+                    app.GetType().InvokeMember("ShellExecute", BindingFlags.InvokeMethod, null, app, new object[] { file, args ?? "", dir ?? "", "open", 1 });
+                    return;
+                }
+                catch (Exception ex) { Log(new Exception("Запуск через Проводник не удался: " + file, ex)); }
+            Process.Start(new ProcessStartInfo(file) { UseShellExecute = true, Arguments = args ?? "", WorkingDirectory = dir ?? "" });
         }
         public static string Rate(double b)
         {
@@ -2570,7 +2588,7 @@ namespace FlowBar
                 var name = Txt(System.IO.Path.GetFileName(path.TrimEnd('\\')), 12, false); name.Margin = new Thickness(0, 0, 8, 0); g.Children.Add(name);
                 System.Windows.Automation.AutomationProperties.SetName(g, name.Text);
                 g.MouseEnter += (s, e) => name.TextDecorations = TextDecorations.Underline; g.MouseLeave += (s, e) => name.TextDecorations = null;
-                var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Process.Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
+                var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
                 v.Children.Add(Act(g, name.Text, () => { if (panel != null) panel.Close(); Launch(path); }));
             };
 
@@ -2608,7 +2626,7 @@ namespace FlowBar
                         Background = new ImageBrush(bi) { Stretch = Stretch.UniformToFill } };
                     System.Windows.Automation.AutomationProperties.SetName(cell, "Скриншот " + System.IO.Path.GetFileName(path));
                     cell.Invoke = () => { if (panel != null) panel.Close(); Launch(path); }; cell.MouseLeftButtonUp += (s, e) => cell.Invoke();
-                    var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Process.Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
+                    var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
                     grid.Children.Add(cell);
                 }
                 catch { } // повреждённый файл пропускаем
@@ -3273,7 +3291,7 @@ namespace FlowBar
             }
             if (args.Contains("--selftest")) return SelfTest();
             // запуск нового exe откуда угодно обновляет установленную копию и передаёт работу ей; --here — запустить прямо отсюда (разработка)
-            if (!Bar.DemoMode && !args.Contains("--here") && Setup.HandOver()) return 0;
+            if (!Bar.DemoMode && !args.Contains("--here") && (Setup.HandOver() || Setup.Elevate(args))) return 0;
             return RunBar(me);
         }
 
@@ -3310,12 +3328,15 @@ namespace FlowBar
             Watch = null; return false;
         }
 
+        [DllImport("user32.dll")] static extern bool ChangeWindowMessageFilter(uint msg, uint flag);
         [MethodImpl(MethodImplOptions.NoInlining)]
         static int RunBar(Process me)
         {
             bool created;
             var mtx = new System.Threading.Mutex(true, "FlowBar_single_instance", out created);
             if (!created) return 0;
+            // с правами администратора сообщения от обычных процессов (Проводник, команды --open, установщик новой версии) иначе не доходят
+            foreach (var m in new[] { "FlowBarOpen", "FlowBarShot", "FlowBarAppBar", "TaskbarCreated" }) ChangeWindowMessageFilter(N.RegisterWindowMessage(m), 1);
             Taskbar.Remember(); // до любого скрытия
             Bar.WatchOk = StartWatch();
             System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; // TLS 1.2
