@@ -137,16 +137,17 @@ namespace FlowBar
             catch (Exception ex) { Bar.Log(ex); }
         }
 
-        // Права администратора (settings.txt: admin=0 — без них). Первый раз — запрос UAC; копия с правами создаёт задачу планировщика «FlowBar»
+        // Права администратора — только по желанию (settings.txt: admin=1; по умолчанию без них: с правами Windows не пускает перетаскивание
+        // из Проводника и автоматизацию в окно панели). Первый раз — запрос UAC; копия с правами создаёт задачу планировщика «FlowBar»
         // с наивысшими правами, дальше автозапуск и ярлык запускают панель через неё, без запроса.
         // true — запущена копия с правами, этот процесс завершается.
         public static bool Elevate(string[] args)
         {
             try
             {
-                if (File.ReadAllLines(Path.Combine(Bar.Dir, "settings.txt")).Contains("admin=0")) return false;
+                if (!File.ReadAllLines(Path.Combine(Bar.Dir, "settings.txt")).Contains("admin=1")) return false;
             }
-            catch { }
+            catch { return false; }
             if (Elevated) { if (IsInstalledCopy) System.Threading.Tasks.Task.Run(() => MakeTask()); return false; }
             if (ElevationType() != 3 || args.Contains("--fromtask")) return false; // не администратор (или задача не дала прав) — без прав, не зацикливаемся
             try
