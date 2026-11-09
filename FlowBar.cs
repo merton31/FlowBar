@@ -974,7 +974,7 @@ namespace FlowBar
             LoadGroups(); ApplyAppTheme();
             screen = ScreenTime.Load(Today);
         }
-        public static void Shutdown() { Tray.Stop(); Taskbar.Restore(false, true); foreach (var b in bars.ToList()) b.Unreserve(); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
+        public static void Shutdown() { foreach (var b in bars.ToList()) b.Unreserve(); Tray.Stop(); Taskbar.Restore(false, true); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
 
         public Bar(System.Windows.Forms.Screen s)
         {
@@ -1541,8 +1541,26 @@ namespace FlowBar
             N.SHAppBarMessage(3 /* SETPOS */, ref d);
             reserved = d.rc;
         }
+        // Проводник на новых сборках Windows 11 принимает положение полосы (AppBar), но при скрытой панели Windows не всегда уменьшает рабочую
+        // область — развёрнутые окна уходили под FlowBar. Пока панель Windows скрыта, задаём рабочую область монитора сами и держим её (раз в секунду).
+        [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint p, ref N.RECT r, uint flags);
+        bool workSet;
+        void EnsureWorkArea()
+        {
+            if (hwnd == IntPtr.Zero) return;
+            var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
+            var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
+            if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 2); } return; }
+            int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
+            if (IsTop) w.T = m.T + h; else w.B = m.B - h;
+            if (cur.L == w.L && cur.T == w.T && cur.R == w.R && cur.B == w.B) { workSet = true; return; }
+            if (!workSet) Info("рабочая область " + scr.DeviceName + " была " + cur.L + "," + cur.T + "–" + cur.R + "," + cur.B + " — ставим " + w.L + "," + w.T + "–" + w.R + "," + w.B);
+            // без SPIF_SENDCHANGE: на рассылку WM_SETTINGCHANGE Проводник пересчитывает область по-своему и сразу затирает её — получалась перетяжка каждую секунду
+            workSet = true; SystemParametersInfo(0x2F, 0, ref w, 0);
+        }
         public void Unreserve()
         {
+            if (workSet) { workSet = false; var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (GetMonitorInfo(mon, ref mi)) SystemParametersInfo(0x2F, 0, ref mi.rcMonitor, 2); } // вернуть экран целиком; панель Windows затем займёт своё место сама
             if (!appBar || hwnd == IntPtr.Zero) return;
             var d = new N.APPBARDATA { cbSize = Marshal.SizeOf(typeof(N.APPBARDATA)), hWnd = hwnd };
             N.SHAppBarMessage(1 /* REMOVE */, ref d); appBar = false; reserveKey = null;

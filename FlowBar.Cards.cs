@@ -1079,7 +1079,7 @@ namespace FlowBar
                 Seg(new[] { "Никогда", "Когда не используется" }, AutoHide ? 1 : 0, i => { cfg["autohide"] = i == 1 ? "1" : "0"; SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); again(); })));
             c.Children.Add(CheckRow("Резервировать место под панель", "Развёрнутые окна заканчиваются перед FlowBar у выбранного края — на каждом мониторе, с учётом размера, отступа и масштаба.", C("reserve", "1") == "1", v => { cfg["reserve"] = v ? "1" : "0"; SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); }));
             c.Children.Add(CheckRow("Скрывать панель задач Windows", WatchOk ? "FlowBar заменяет её; при закрытии или сбое FlowBar сторож вернёт панель Windows в исходное состояние." : "Недоступно: сторож не запустился, поэтому панель Windows остаётся видимой.", C("hideTaskbar", "1") == "1",
-                v => { cfg["hideTaskbar"] = v ? "1" : "0"; SaveCfg(); if (HideTb) SetTaskbar(false); else Taskbar.Restore(false, false); All(b => { b.reserveKey = null; b.Place(); }); }));
+                v => { cfg["hideTaskbar"] = v ? "1" : "0"; SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); if (HideTb) SetTaskbar(false); else Taskbar.Restore(false, false); })); // сначала рабочая область, потом панель Windows: иначе её полоса затрётся
             c.Children.Add(CheckRow("Заблокировать расположение значков", "Запрещает перетаскивать значки и модули.", Locked, v => { cfg["lock"] = v ? "1" : "0"; SaveCfg(); }));
         }
         void SettingsMonitors(StackPanel c, Action again)

@@ -1069,11 +1069,11 @@ namespace FlowBar
                     }                    if (ticks % 5 == 3 && WatchOk && (Program.Watch == null || Program.Watch.HasExited))
                     {
                         WatchOk = Program.StartWatch(); // сторож пропал — перезапускаем; не вышло — возвращаем панель Windows
-                        if (!WatchOk) { Taskbar.Restore(false, false); All(b => { b.reserveKey = null; b.Place(); }); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); }
+                        if (!WatchOk) { All(b => { b.reserveKey = null; b.Place(); }); Taskbar.Restore(false, false); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); }
                     }
                     if (ticks % 600 == 0) pathCache.Clear(); // id процессов переиспользуются
                 }
-                Fullscreen(); RefreshApps(); Render();
+                Fullscreen(); RefreshApps(); Render(); EnsureWorkArea();
                 if (panelTick != null) panelTick();
             }
             catch (Exception ex) { Log(ex); }
@@ -2584,7 +2584,7 @@ namespace FlowBar
             ApplyWidth(); Fit();
             double sc = MonScale; var b = scr.Bounds; var wa = scr.WorkingArea;
             bool hidden = HideTb && DateTime.Now >= peekUntil;
-            Reserve();
+            Reserve(); EnsureWorkArea();
             double ch = root.ActualHeight > 0 ? root.ActualHeight : BarH;
             // физические пиксели монитора панели: размеры в DIP переводим его масштабом
             double x = b.Left + ((b.Width / sc - root.ActualWidth) / 2 - SM) * sc;
