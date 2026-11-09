@@ -959,6 +959,7 @@ namespace FlowBar
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
+            LogHideSource();
             pinned = Lines("pinned.txt");
             // первый запуск (список пуст или только «Проводник» по умолчанию из прошлых версий): берём закрепления панели Windows в её порядке
             var explorer = Environment.ExpandEnvironmentVariables(@"%WINDIR%\explorer.exe");
@@ -998,7 +999,23 @@ namespace FlowBar
         // ---------- хранение ----------
         static string F(string name) { return System.IO.Path.Combine(Dir, name); }
         static List<string> Lines(string name) { return SafeFile.ReadLines(F(name)).ToList(); }
-        static void SaveCfg() { SafeFile.WriteLines(F("settings.txt"), cfg.Select(kv => kv.Key + "=" + kv.Value)); }
+        static void SaveCfg() { CheckHide("сохранение"); SafeFile.WriteLines(F("settings.txt"), cfg.Select(kv => kv.Key + "=" + kv.Value)); }
+
+        // Диагностика: при входе в Windows панель дважды считала скрытие панели Windows выключенным, хотя в файле включено.
+        // Пишем в журнал, что прочитано из settings.txt и .bak, и каждое изменение значения в памяти — с местом в коде.
+        static string hideSeen;
+        static void LogHideSource()
+        {
+            hideSeen = C("hideTaskbar", "1");
+            if (hideSeen == "1") return;
+            Func<string, string> raw = f => { try { var l = File.Exists(f) ? File.ReadAllLines(f).FirstOrDefault(x => x.StartsWith("hideTaskbar=")) : "нет файла"; return (l ?? "нет строки") + " (" + (File.Exists(f) ? File.GetLastWriteTime(f).ToString("dd.MM HH:mm:ss") : "—") + ")"; } catch (Exception ex) { return ex.GetType().Name; } };
+            Info("при запуске скрытие панели Windows выключено: в памяти hideTaskbar=" + hideSeen + "; settings.txt: " + raw(F("settings.txt")) + "; .bak: " + raw(F("settings.txt.bak")));
+        }
+        internal static void CheckHide(string where)
+        {
+            var v = C("hideTaskbar", "1"); if (hideSeen == null || v == hideSeen) return;
+            Info("hideTaskbar изменилось: " + hideSeen + " → " + v + " (" + where + ")\r\n" + Environment.StackTrace); hideSeen = v;
+        }
         static void SavePinned()
         {
             pinned = pinned.OrderBy(p => { int i = appOrder.IndexOf("p|" + p); return i < 0 ? int.MaxValue : i; }).ToList(); // на диск — в порядке панели

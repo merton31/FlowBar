@@ -1050,7 +1050,7 @@ namespace FlowBar
                 if (Cur.Blur != 0) UpdateRegion(); // стеклянная тема: подложка снова сразу под панелью, смена доступности стекла видна сразу; подложка стекла — снова сразу под панелью, если другое окно встало между ними
                 if (primary)
                 {
-                    ticks++;
+                    ticks++; CheckHide("опрос");
                     if (DateTime.Now < peekUntil && TrayOpen()) peekUntil = DateTime.Now.AddSeconds(3); // пока открыты скрытые значки — панель Windows не прячем
                     bool peek = DateTime.Now < peekUntil;
                     if (HideTb && !peek) SetTaskbar(false);
