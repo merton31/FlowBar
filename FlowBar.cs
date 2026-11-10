@@ -1279,9 +1279,9 @@ namespace FlowBar
         }
         // Панель с правами администратора запускает программы через Проводник (рабочий стол — IShellDispatch2.ShellExecute), то есть без своих прав;
         // иначе всё открытое из панели работало бы от администратора.
-        internal static void Start(string file, string args = null, string dir = null)
+        internal static void Start(string file, string args = null, string dir = null, bool viaShell = false)
         {
-            if (Setup.Elevated)
+            if (Setup.Elevated || viaShell)
                 try
                 {
                     var wins = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39")));
@@ -3393,9 +3393,17 @@ namespace FlowBar
             }
             if (args.Contains("--selftest")) return SelfTest();
             // запуск нового exe откуда угодно обновляет установленную копию и передаёт работу ей; --here — запустить прямо отсюда (разработка)
+            // Запущен из приложения Microsoft Store (Claude, Telegram из Store и т. п.): Windows тихо уводит записи в %APPDATA% в папку того приложения —
+            // настройки и заметки расходились с обычным запуском при входе в Windows (так панель Windows и переставала прятаться). Перезапуск через Проводник — вне изоляции.
+            if (!args.Contains("--fromshell") && InPackage())
+                try { Bar.Start(Assembly.GetExecutingAssembly().Location, string.Join(" ", args.Concat(new[] { "--fromshell" }).Select(a => "\"" + a + "\"")), null, true); return 0; }
+                catch (Exception ex) { Bar.Log(ex); }
             if (!Bar.DemoMode && !args.Contains("--here") && (Setup.HandOver() || Setup.Elevate(args))) return 0;
             return RunBar(me);
         }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetCurrentPackageFullName(ref int len, StringBuilder name);
+        static bool InPackage() { try { int n = 0; return GetCurrentPackageFullName(ref n, null) != 15700 /* APPMODEL_ERROR_NO_PACKAGE */; } catch { return false; } }
 
         // команда — окнам уже работающего FlowBar (широковещательные сообщения до окон-инструментов доходят не всегда)
         internal static void PostToBar(uint msg, IntPtr w, IntPtr l)
