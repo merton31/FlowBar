@@ -1143,6 +1143,18 @@ namespace FlowBar
             for (int i = vks.Length - 1; i >= 0; i--) N.keybd_event(vks[i], 0, 2, UIntPtr.Zero);
         }
         static string Cls(IntPtr h) { var sb = new StringBuilder(64); N.GetClassName(h, sb, 64); return sb.ToString(); }
+        // ---------- отметки на ярлыках: счётчик непрочитанного и «требует внимания» ----------
+        // Значок-наложение программы отдают только панели Windows. Число берём из заголовка окна: «(3) WhatsApp», «(12) Discord», у Telegram — «… (5)» в конце.
+        [DllImport("user32.dll")] static extern bool RegisterShellHookWindow(IntPtr h);
+        static readonly uint ShellHookMsg = N.RegisterWindowMessage("SHELLHOOK");
+        static readonly HashSet<IntPtr> flashing = new HashSet<IntPtr>();
+        public static int BadgeOf(string title, string exe)
+        {
+            if (string.IsNullOrEmpty(title)) return 0;
+            var mt = Regex.Match(title, @"^\((\d[\d\s\u00A0]{0,8})\)");
+            if (!mt.Success && exe != null && System.IO.Path.GetFileNameWithoutExtension(exe).ToLowerInvariant().Contains("telegram")) mt = Regex.Match(title, @"\((\d[\d\s\u00A0]{0,8})\)$");
+            int n; return mt.Success && int.TryParse(Regex.Replace(mt.Groups[1].Value, @"[^\d]", ""), out n) ? n : 0;
+        }
         static string TitleOf(IntPtr h) { var sb = new StringBuilder(256); N.GetWindowText(h, sb, 256); return sb.ToString(); }
         internal static string ExePathOf(uint pid) { return ExePath(pid); }
         static string ExePath(uint pid)
@@ -1542,6 +1554,7 @@ namespace FlowBar
             long ex = N.GetWindowLongPtr(hwnd, -20).ToInt64();
             N.SetWindowLongPtr(hwnd, -20, new IntPtr(ex | 0x08000000 | 0x80)); // не забирать фокус, не показываться в Alt+Tab
             HwndSource.FromHwnd(hwnd).AddHook(WndProc);
+            if (primary) RegisterShellHookWindow(hwnd); // мигание окон «требует внимания»
             if (primary) N.RegisterHotKey(hwnd, 1, 0x1 | 0x4000, 0x54); // Alt+T
             if (primary) N.RegisterHotKey(hwnd, 2, 0x1 | 0x2 | 0x4000, 0x42); // Ctrl+Alt+B — перейти на панель с клавиатуры
             // стрелки и Tab ходят по плиткам по кругу, Esc возвращает в прежнее окно
@@ -1555,6 +1568,12 @@ namespace FlowBar
         {
             if (msg == 0x312 && w.ToInt32() == 1) { ShowTodos(); handled = true; }
             if (msg == 0x312 && w.ToInt32() == 2) { FocusBar(); handled = true; }
+            if (msg == ShellHookMsg && primary)
+            {
+                int code = w.ToInt32();
+                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); }
+                else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
+            }
             if (msg == AppBarMsg && w.ToInt32() == 1) { reserveKey = null; Place(); } // ABN_POSCHANGED: соседние панели сдвинулись
             if (msg == TaskbarCreatedMsg && (DateTime.Now - Tray.Broadcast).TotalSeconds > 5) { appBar = false; reserveKey = null; Place(); if (HideTb) SetTaskbar(false); } // перезапуск Проводника: регистрация полосы потеряна
             if (msg == 0x02E0) Dispatcher.BeginInvoke(new Action(() => { reserveKey = null; Place(); })); // WM_DPICHANGED: монитор с другим масштабом
@@ -1665,7 +1684,7 @@ namespace FlowBar
             var groups = wins.GroupBy(w => Key(w.Path)).ToDictionary(g => g.Key, g => g.OrderBy(w => w.H.ToInt64()).ToList());
             var fg = N.GetForegroundWindow();
 
-            var key = GroupsKey() + "#" + string.Join("|", pinned) + "#" + string.Join("|", runOrder.Select(k => k + ":" + string.Join(",", groups[k].Select(w => w.H)))) + "#" + fg + "#" + string.Join(",", allWins.Where(w => w.Mon != mon).Select(w => w.H));
+            var key = GroupsKey() + "#" + string.Join("|", pinned) + "#" + string.Join("|", runOrder.Select(k => k + ":" + string.Join(",", groups[k].Select(w => w.H)))) + "#" + fg + "#" + string.Join(",", allWins.Where(w => w.Mon != mon).Select(w => w.H)) + "#" + string.Join(",", wins.Select(w => BadgeOf(TitleOf(w.H), w.Path))) + "#" + flashing.Count;
             if (key == lastKey) return;
             lastKey = key;
 
@@ -1715,9 +1734,17 @@ namespace FlowBar
                 var o = new Rectangle { Width = 8, Height = 4, RadiusX = 2, RadiusY = 2, StrokeThickness = 1, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1), Opacity = 0.6 };
                 FgBind(o, Shape.StrokeProperty); grid.Children.Add(o);
             }
+            int badge = ws.Sum(w => BadgeOf(TitleOf(w.H), w.Path)); bool flash = ws.Any(w => flashing.Contains(w.H));
+            if (badge > 0 && C("badges", "1") == "1")
+            {
+                var bt = new TextBlock { Text = badge > 99 ? "99+" : badge.ToString(), FontSize = Math.Round(8.5 * Fs), FontWeight = FontWeights.SemiBold, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3.5, 0, 3.5, 0.5) };
+                double bh = Math.Round(13 * Fs);
+                grid.Children.Add(new Border { Child = bt, Background = Accent, CornerRadius = new CornerRadius(bh / 2), MinWidth = bh, Height = bh, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, -4, 0), IsHitTestVisible = false });
+            }
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
             if (active) { tile.Base = Fa(0x1E); tile.Background = new SolidColorBrush(tile.Base); } // активное приложение — мягкая подложка
+            else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
             if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
@@ -3580,6 +3607,7 @@ namespace FlowBar
                     var dst = Setup.Backup(tmp, System.IO.Path.Combine(tmp, "backups"), "1.0.0");
                     fails += check(File.ReadAllText(System.IO.Path.Combine(dst, "notes.txt")) == "заметка" && File.Exists(System.IO.Path.Combine(dst, "screentime", "d.txt"))
                         && !Directory.Exists(System.IO.Path.Combine(dst, "cache")) && !File.Exists(System.IO.Path.Combine(dst, "error.log")) && !Directory.Exists(System.IO.Path.Combine(dst, "backups")), "Обновление: резервная копия данных");
+                    fails += check(Bar.BadgeOf("(3) WhatsApp", "x.exe") == 3 && Bar.BadgeOf("Chat (5)", @"C:\Telegram.exe") == 5 && Bar.BadgeOf("Новая папка (2)", "explorer.exe") == 0 && Bar.BadgeOf("(7 426) Mail", null) == 7426 && Bar.BadgeOf("Doc", null) == 0, "Ярлык: счётчик из заголовка окна");
                     fails += check(Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Wintun Userspace Tunnel") && Bar.IsVpnAdapter(NetworkInterfaceType.Ppp, "x") && !Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Realtek PCIe 5GbE Family Controller") && Bar.IsVirtualAdapter("Hyper-V Virtual Ethernet Adapter"), "Сеть: адаптер VPN отличается от обычного");
                     fails += check(Setup.V3(new Version(1, 2)) == "1.2.0" && new Version("1.1.0.0") > new Version("1.0.0.0"), "Обновление: сравнение версий");
                 }
