@@ -1166,7 +1166,18 @@ namespace FlowBar
             b.MouseEnter += (s, e) => Fade(b, Lift(b.Base, 0x16), 120);
             b.MouseLeave += (s, e) => Fade(b, b.Base, 140);
             b.PreviewMouseLeftButtonDown += (s, e) => { shellAtDown = ShellFlyoutOpen(); Fade(b, Lift(b.Base, 0x2C), 60); };  // нажатие
-            b.MouseLeftButtonUp += (s, e) => { Fade(b, Lift(b.Base, 0x16), 120); e.Handled = true; anchor = b; anchorAt = DateTime.Now; if (click != null) click(); };
+            b.MouseLeftButtonUp += (s, e) =>
+            {
+                Fade(b, Lift(b.Base, 0x16), 120); e.Handled = true; anchor = b; anchorAt = DateTime.Now; if (click == null) return;
+                // открыт Пуск или поиск: панель не забирает фокус, поэтому он сам не закрывается, а Windows не даёт вывести окно программы — закрываем и действуем следом
+                if (shellAtDown && !b.ShellKey && ShellFlyoutOpen())
+                {
+                    Keys(0x1B); int n = 0; var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+                    t.Tick += (o2, e2) => { if (++n < 12 && ShellFlyoutOpen()) return; t.Stop(); anchor = b; anchorAt = DateTime.Now; click(); };
+                    t.Start();
+                }
+                else click();
+            };
             if (menu != null) b.MouseRightButtonUp += (s, e) =>
             {
                 e.Handled = true;
@@ -1585,7 +1596,7 @@ namespace FlowBar
                     }
                 case "tray": return Tile(G(""), "Показать трей Windows на 15 секунд", act(TogglePeek), menu(null));
                 case "quick": return Tile(G(""), "Быстрые переключатели: Wi-Fi, Bluetooth, звук, яркость", act(ShowQuick), menu(m => m.Items.Add(Item("Быстрые настройки Windows (Win+A)", () => ShellToggle(0x5B, 0x41)))));
-                case "notif": return Tile(G(""), "Уведомления и календарь Windows (Win+N)", act(() => ShellToggle(0x5B, 0x4E)), menu(null));
+                case "notif": return Tile(G(""), "Уведомления и календарь Windows (Win+N)", act(() => ShellToggle(0x5B, 0x4E)), menu(null)).Shell();
                 case "lang":
                     {
                         var lt = L("", 11.5 * f, true); lt.HorizontalAlignment = HorizontalAlignment.Center;
@@ -2312,8 +2323,8 @@ namespace FlowBar
             KeyboardNavigation.SetTabNavigation(root, KeyboardNavigationMode.Cycle);
 
             startLogo = new StartLogo();
-            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), null); // в ряду: его можно поставить между модулями
-            searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellOver(searchEl, 0x5B, 0x53), null) : null;
+            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), null); ((Press)startEl).ShellKey = true; // в ряду: его можно поставить между модулями
+            searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellOver(searchEl, 0x5B, 0x53), null) : null; if (searchEl != null) ((Press)searchEl).ShellKey = true;
             strip = new StackPanel { Orientation = Orientation.Horizontal };
             stripScroll = new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
             strip.SizeChanged += (s, e) => { if (e.WidthChanged) Fit(); }; // панель уже во всю ширину и не растёт — ряд внутри меняется, следующий шаг сжатия нужен всё равно

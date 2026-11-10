@@ -408,10 +408,11 @@ namespace FlowBar
     class Press : Border
     {
         public static Brush Ring = Brushes.DodgerBlue;
-        public Action Invoke; public Action<Press> Menu;
+        public Action Invoke; public Action<Press> Menu; public bool ShellKey; // кнопка сама открывает и закрывает окно Windows (Пуск, поиск, уведомления)
         public Color Base; // подложка в покое — к ней возвращается подсветка наведения
         Brush savedBrush; Thickness savedThick;
         public Press() { Focusable = true; FocusVisualStyle = null; }
+        public Press Shell() { ShellKey = true; return this; }
         protected override void OnKeyDown(KeyEventArgs e)
         {
             if ((e.Key == System.Windows.Input.Key.Enter || e.Key == System.Windows.Input.Key.Space) && Invoke != null) { Invoke(); e.Handled = true; }
@@ -1256,8 +1257,12 @@ namespace FlowBar
             // какие окна на какой панели — настройка «Мониторы»: all — все окна везде; main — основная всё, остальные свои; own — каждая свои
             var mode = WinMode;
             bool all = bars.Count < 2 || mode == "all" || (mode == "main" && primary);
+            allWins = list;
             return all ? list : list.Where(w => w.Mon == mon).ToList();
         }
+        // окна на всех мониторах (панель со «своими окнами» показывает только свои): клик по ярлыку выводит уже открытое окно с другого экрана, а не запускает программу заново
+        List<Win> allWins = new List<Win>();
+        List<Win> Elsewhere(string path) { if (path == null) return new List<Win>(); var k = Key(Target(path)); return allWins.Where(w => w.Mon != mon && Key(w.Path) == k).OrderBy(w => w.H.ToInt64()).ToList(); }
         static string WinMode { get { var m = C("winMode", "own"); return m == "all" || m == "main" ? m : "own"; } }
         // монитор окна; у свёрнутого — монитор его обычного положения (свёрнутое стоит за пределами экранов)
         [StructLayout(LayoutKind.Sequential)] struct WinPlace { public int length, flags, showCmd; public N.POINT minPos, maxPos; public N.RECT normal; }
@@ -1610,7 +1615,7 @@ namespace FlowBar
             var groups = wins.GroupBy(w => Key(w.Path)).ToDictionary(g => g.Key, g => g.OrderBy(w => w.H.ToInt64()).ToList());
             var fg = N.GetForegroundWindow();
 
-            var key = GroupsKey() + "#" + string.Join("|", pinned) + "#" + string.Join("|", runOrder.Select(k => k + ":" + string.Join(",", groups[k].Select(w => w.H)))) + "#" + fg;
+            var key = GroupsKey() + "#" + string.Join("|", pinned) + "#" + string.Join("|", runOrder.Select(k => k + ":" + string.Join(",", groups[k].Select(w => w.H)))) + "#" + fg + "#" + string.Join(",", allWins.Where(w => w.Mon != mon).Select(w => w.H));
             if (key == lastKey) return;
             lastKey = key;
 
@@ -1654,10 +1659,17 @@ namespace FlowBar
             else grid.Children.Add(G(path != null && Directory.Exists(path) ? "" : ""));
             bool active = ws.Any(w => w.H == fg);
             if (ws.Count > 0) grid.Children.Add(Indicator(active, ws.Count > 1));
+            else if (Elsewhere(path).Count > 0)
+            {
+                // открыта на другом мониторе: полая отметка вместо сплошной
+                var o = new Rectangle { Width = 8, Height = 4, RadiusX = 2, RadiusY = 2, StrokeThickness = 1, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1), Opacity = 0.6 };
+                FgBind(o, Shape.StrokeProperty); grid.Children.Add(o);
+            }
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
             if (active) { tile.Base = Fa(0x1E); tile.Background = new SolidColorBrush(tile.Base); } // активное приложение — мягкая подложка
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
+            if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
             tile.AllowDrop = true;
 
@@ -1693,14 +1705,30 @@ namespace FlowBar
         void Activate(string path, List<Win> ws)
         {
             if ((DateTime.Now - lastDragEnd).TotalMilliseconds < 400) return; // отпускание после перетаскивания — не клик
-            ClosePreview();
-            if (ws.Count == 0) { if (path != null) Launch(path); return; }
+            bool wasOpen = preview != null && previewFor == anchor; ClosePreview(); if (wasOpen && ws.Count > 1 && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0) return; // повторный клик закрывает миниатюры
+            bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0, ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            if (shift && path != null) { Launch(path); return; } // как в Windows: Shift+клик — новое окно
             var fg = N.GetForegroundWindow();
+            if (ws.Count == 0)
+            {
+                var other = Elsewhere(path);
+                if (other.Count > 0) { int j = other.FindIndex(w => w.H == fg); ActivateWin(other[(j + 1) % other.Count].H); }
+                else if (path != null) Launch(path);
+                return;
+            }
             int i = ws.FindIndex(w => w.H == fg);
-            if (ws.Count == 1 && i == 0) { N.ShowWindow(ws[0].H, 6); return; } // повторный клик — свернуть
-            ActivateWin(ws[(i + 1) % ws.Count].H); // несколько окон — переключаем по кругу
+            if (ws.Count == 1) { if (i == 0) N.ShowWindow(ws[0].H, 6); else ActivateWin(ws[0].H); return; } // повторный клик — свернуть
+            if (ctrl) { ActivateWin(ws[(i + 1) % ws.Count].H); return; } // Ctrl+клик — по кругу
+            // несколько окон — как в Windows: клик показывает миниатюры, выбор окна — по ним
+            Border tile = anchor as Border;
+            if (tile != null) ShowPreview(tile, ws, true); else ActivateWin(ws[(i + 1) % ws.Count].H);
         }
-        static void ActivateWin(IntPtr h) { if (N.IsIconic(h)) N.ShowWindow(h, 9); N.SetForegroundWindow(h); }
+        static void ActivateWin(IntPtr h)
+        {
+            if (N.IsIconic(h)) N.ShowWindow(h, 9);
+            if (N.SetForegroundWindow(h) && N.GetForegroundWindow() == h) return;
+            Keys(0x12); N.SetForegroundWindow(h); // Windows отказала (передний план у другой программы): нажатие Alt снимает запрет
+        }
 
         void AppMenu(ContextMenu m, string path, List<Win> ws, bool isPinned)
         {
@@ -1735,9 +1763,10 @@ namespace FlowBar
             t.Tick += (s, e) => { t.Stop(); if (!dragging && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
             t.Start();
         }
-        void ShowPreview(Border tile, List<Win> ws)
+        bool previewPinned;
+        void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
-            ClosePreview();
+            ClosePreview(); previewPinned = pinned;
             const double BW = 220, BH = 130;
             var w = new Window
             {
@@ -1757,6 +1786,8 @@ namespace FlowBar
                 var cell = new StackPanel { Width = BW, Margin = new Thickness(6), Background = Brushes.Transparent, Cursor = Cursors.Hand };
                 cell.Children.Add(head); cell.Children.Add(slot);
                 cell.MouseLeftButtonUp += (s, e) => { ClosePreview(); ActivateWin(h); };
+                cell.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); ClosePreview(); } }; // средний клик — закрыть окно
+                cell.MouseEnter += (s, e) => cell.Background = Frozen(CardFg, 0x14); cell.MouseLeave += (s, e) => cell.Background = Brushes.Transparent;
                 row.Children.Add(cell); slots.Add(Tuple.Create(slot, h));
             }
             w.Content = row;
@@ -1792,7 +1823,7 @@ namespace FlowBar
         {
             if (preview == null) { hoverT.Stop(); return; }
             previewMiss = previewFor.IsMouseOver || preview.IsMouseOver ? 0 : previewMiss + 1;
-            if (previewMiss >= 3) ClosePreview(); // ¾ секунды на переход курсора со значка на миниатюру
+            if (previewMiss >= (previewPinned ? 12 : 3)) ClosePreview(); // ¾ секунды на переход курсора со значка на миниатюру; открытые кликом ждут дольше
         }
         void ClosePreview()
         {
