@@ -229,7 +229,7 @@ namespace FlowBar
         // ползунок уровня — настоящий Slider: фокус по Tab, стрелки, Home/End, имя для экранного диктора; пока тянут — внешнее обновление его не трогает
         static Slider LevelSlider(double val, double width, string name, Action<double> moving, Action<double> done)
         {
-            var sl = new Slider { Minimum = 0, Maximum = 100, Value = double.IsNaN(val) ? 0 : Math.Round(val * 100), Width = width, SmallChange = 1, LargeChange = 10, IsMoveToPointEnabled = true, Margin = new Thickness(44, 0, 0, 6), Focusable = true, HorizontalAlignment = HorizontalAlignment.Left };
+            var sl = new Slider { Minimum = 0, Maximum = 100, Value = double.IsNaN(val) ? 0 : Math.Round(val * 100), Width = width, SmallChange = 1, LargeChange = 10, IsMoveToPointEnabled = true, Margin = new Thickness(44, 0, 0, 6), Focusable = true, HorizontalAlignment = HorizontalAlignment.Left }; sl.Style = SliderSty(); sl.AutoToolTipPlacement = System.Windows.Controls.Primitives.AutoToolTipPlacement.TopLeft;
             System.Windows.Automation.AutomationProperties.SetName(sl, name);
             bool quiet = false;
             sl.ValueChanged += (o, e) => { if (!quiet && moving != null) moving(sl.Value / 100); };
@@ -958,7 +958,7 @@ namespace FlowBar
         static StackPanel SliderRow(double min, double max, double value, double step, Func<double, string> fmt, Action<double> set, string name)
         {
             var val = Txt(fmt(value), 12, true); val.Width = 70; val.Margin = new Thickness(12, 0, 0, 0);
-            var sl = new Slider { Minimum = min, Maximum = max, Value = value, Width = 300, IsSnapToTickEnabled = true, TickFrequency = step, SmallChange = step, LargeChange = step * 2, VerticalAlignment = VerticalAlignment.Center };
+            var sl = new Slider { Minimum = min, Maximum = max, Value = value, Width = 300, IsSnapToTickEnabled = true, TickFrequency = step, SmallChange = step, LargeChange = step * 2, VerticalAlignment = VerticalAlignment.Center }; sl.Style = SliderSty(); sl.AutoToolTipPlacement = System.Windows.Controls.Primitives.AutoToolTipPlacement.TopLeft;
             System.Windows.Automation.AutomationProperties.SetName(sl, name);
             sl.ValueChanged += (s, e) => { val.Text = fmt(sl.Value); set(sl.Value); };
             return HS(sl, val);

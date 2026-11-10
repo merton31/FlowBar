@@ -413,6 +413,27 @@ namespace FlowBar
             new[] { "Arabian Standard Time", "Дубай" }, new[] { "China Standard Time", "Пекин" }, new[] { "Tokyo Standard Time", "Токио" },
             new[] { "Eastern Standard Time", "Нью-Йорк" }, new[] { "Pacific Standard Time", "Лос-Анджелес" } };
         public static double NiceTop(double v) { return Spark.Nice(v); }
+        // Общий вид ползунков (громкость, яркость, отступы, прозрачность): тонкая дорожка, пройденная часть — акцент, круглая ручка с точкой акцента, как в Windows 11
+        static Style sliderSty; static string sliderKey;
+        internal static Style SliderSty()
+        {
+            Color a = AccentColor, f = CardFg; string acc = "#" + a.R.ToString("X2") + a.G.ToString("X2") + a.B.ToString("X2"), tr = "#38" + f.R.ToString("X2") + f.G.ToString("X2") + f.B.ToString("X2");
+            if (sliderSty != null && sliderKey == acc + tr) return sliderSty;
+            var x = "<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Slider'>" +
+                "<Setter Property='Height' Value='26'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/><Setter Property='Template'><Setter.Value><ControlTemplate TargetType='Slider'><Grid Background='Transparent'>" +
+                "<Border Height='4' CornerRadius='2' Background='" + tr + "' VerticalAlignment='Center' Margin='2,0'/>" +
+                "<Track x:Name='PART_Track'>" +
+                "<Track.DecreaseRepeatButton><RepeatButton Command='Slider.DecreaseLarge' Focusable='False' IsTabStop='False'><RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'><Border Height='4' CornerRadius='2' Background='" + acc + "' VerticalAlignment='Center' Margin='2,0,-9,0'/></Border></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>" +
+                "<Track.IncreaseRepeatButton><RepeatButton Command='Slider.IncreaseLarge' Focusable='False' IsTabStop='False'><RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton>" +
+                "<Track.Thumb><Thumb Width='20' Height='20' Cursor='Hand'><Thumb.Template><ControlTemplate TargetType='Thumb'><Grid>" +
+                "<Ellipse x:Name='o' Fill='White' Stroke='#33000000' StrokeThickness='1' Margin='1'><Ellipse.Effect><DropShadowEffect BlurRadius='5' ShadowDepth='1' Opacity='0.35'/></Ellipse.Effect></Ellipse>" +
+                "<Ellipse x:Name='i' Width='8' Height='8' Fill='" + acc + "'/></Grid>" +
+                "<ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='i' Property='Width' Value='11'/><Setter TargetName='i' Property='Height' Value='11'/></Trigger>" +
+                "<Trigger Property='IsDragging' Value='True'><Setter TargetName='i' Property='Width' Value='7'/><Setter TargetName='i' Property='Height' Value='7'/><Setter TargetName='o' Property='Margin' Value='0'/></Trigger></ControlTemplate.Triggers>" +
+                "</ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track></Grid>" +
+                "<ControlTemplate.Triggers><Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>";
+            sliderSty = (Style)System.Windows.Markup.XamlReader.Parse(x); sliderKey = acc + tr; return sliderSty;
+        }
         static void VolBeep() { if (C("volBeep", "1") == "1" && !live.Muted && live.Vol > 0) Audio.Beep(); }
         // пункты «Устройство вывода» — в меню модуля громкости
         static void DeviceItems(ItemsControl m)
