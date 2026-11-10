@@ -607,7 +607,7 @@ namespace FlowBar
             public bool CanPrev, CanNext, CanToggle = true, CanSeek; public string MediaError; public List<Tuple<string, string>> Sessions = new List<Tuple<string, string>>();
             public string Lang = "…";
             // подключение: вид −1 — ещё не проверено, 0 — нет, 1 — кабель, 2 — Wi-Fi, 3 — сотовая; доступ 0 — нет, 1 — только локальная сеть, 2 — ограничен, 3 — интернет
-            public int NetKind = -1, NetLevel, NetBars = -1; public string NetName;
+            public int NetKind = -1, NetLevel, NetBars = -1; public string NetName; public bool NetVpn;
             public double Vol = double.NaN; public bool Muted; public string VolName;
             public List<double> TempHist = new List<double>(); public List<DateTime> TempTimes = new List<DateTime>(); public List<Tuple<string, double>> TempZones = new List<Tuple<string, double>>();
             public string ToolLabel, ToolTime;
@@ -731,6 +731,41 @@ namespace FlowBar
                     }
                 }
                 catch { }
+                // VPN (Happ, Cloudflare WARP, WireGuard…): профилем интернета становится адаптер VPN — Wi-Fi показывался как Ethernet, а доступ как «без интернета».
+                // Показываем настоящее подключение (кабель или Wi-Fi) и отдельно отметку VPN; доступ — лучший из всех профилей.
+                bool vpn = false;
+                try
+                {
+                    NetworkInterface phys = null;
+                    foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                        if (IsVpnAdapter(ni.NetworkInterfaceType, ni.Description + " " + ni.Name)) { vpn = true; continue; }
+                        if (IsVirtualAdapter(ni.Description)) continue;
+                        bool gw = false; try { gw = ni.GetIPProperties().GatewayAddresses.Any(g => g.Address != null && !g.Address.Equals(System.Net.IPAddress.Any)); } catch { }
+                        if (gw && phys == null) phys = ni;
+                    }
+                    if (vpn && phys != null)
+                    {
+                        kind = phys.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? 2 : 1; name = phys.Name; bars = -1;
+                        foreach (var q in NC.NetworkInformation.GetConnectionProfiles())
+                        {
+                            var ql = q.GetNetworkConnectivityLevel();
+                            level = Math.Max(level, ql == NC.NetworkConnectivityLevel.InternetAccess ? 3 : ql == NC.NetworkConnectivityLevel.ConstrainedInternetAccess ? 2 : ql == NC.NetworkConnectivityLevel.LocalAccess ? 1 : 0);
+                            if (kind == 2 && q.IsWlanConnectionProfile && ql != NC.NetworkConnectivityLevel.None) { try { name = q.WlanConnectionProfileDetails.GetConnectedSsid(); var sb = q.GetSignalBars(); if (sb.HasValue) bars = sb.Value; } catch { } }
+                        }
+                    }
+                }
+                catch { }
+                // проверка Windows (NCSI) иногда опаздывает: сеть есть, а «без интернета» — раз в 10 с спрашиваем сами, ждём не дольше 3 с
+                if (kind > 0 && level < 3)
+                    try
+                    {
+                        var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://www.msftconnecttest.com/connecttest.txt"); rq.Timeout = 3000; rq.ReadWriteTimeout = 3000; rq.AllowAutoRedirect = false;
+                        using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) if ((int)rs.StatusCode == 200) level = 3;
+                    }
+                    catch { }
+                live.NetVpn = vpn;
                 if (kind == 0 || level == 0)
                     foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
                     {
@@ -743,6 +778,14 @@ namespace FlowBar
                 live.NetKind = kind; live.NetLevel = kind == 0 ? 0 : level; live.NetBars = bars; live.NetName = name; connBusy = false;
             });
         }
+        // адаптер VPN: туннель, PPP или известные драйверы (Happ и sing-box — wintun; WARP; WireGuard; OpenVPN — TAP)
+        public static bool IsVpnAdapter(NetworkInterfaceType t, string text)
+        {
+            if (t == NetworkInterfaceType.Ppp) return true;
+            return System.Text.RegularExpressions.Regex.IsMatch(text ?? "", @"wintun|wireguard|\btap\b|tap-windows|\bvpn\b|openvpn|cloudflare|warp|sing-?box|happ|tailscale|zerotier|nordlynx|fortinet|anyconnect|outline|amnezia|v2ray|xray|tun2", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+        // виртуальные адаптеры, которые не подключение и не VPN: виртуальные машины, WSL
+        public static bool IsVirtualAdapter(string desc) { return System.Text.RegularExpressions.Regex.IsMatch(desc ?? "", @"hyper-v|vethernet|vmware|virtualbox|virtual switch|wsl|bluetooth", System.Text.RegularExpressions.RegexOptions.IgnoreCase); }
         public static string ConnKind(int kind) { return kind == 1 ? "Ethernet" : kind == 2 ? "Wi-Fi" : kind == 3 ? "Сотовая сеть" : kind == 0 ? "Нет подключения" : "Проверка сети…"; }
         public static string ConnAccess(int kind, int level) { return kind < 0 ? "проверка…" : kind == 0 ? "нет сети" : level >= 3 ? "есть интернет" : level == 2 ? "интернет ограничен" : "без интернета"; }
 
@@ -1729,7 +1772,7 @@ namespace FlowBar
                             name.Text = k > 0 ? (string.IsNullOrEmpty(s.NetName) ? ConnKind(k) : s.NetName) : ConnKind(k);
                             stat.Text = k > 0 ? ConnKind(k) + " · " + ConnAccess(k, s.NetLevel) : ConnAccess(k, s.NetLevel);
                             Warn(stat, limited ? 80 : 0);
-                            t.ToolTip = (k > 0 ? ConnKind(k) + (string.IsNullOrEmpty(s.NetName) ? "" : ": " + s.NetName) + (k == 2 && s.NetBars >= 0 ? ", сигнал " + s.NetBars + " из 5" : "") + "\n" + char.ToUpper(ConnAccess(k, s.NetLevel)[0]) + ConnAccess(k, s.NetLevel).Substring(1) : ConnKind(k))
+                            t.ToolTip = (k > 0 ? ConnKind(k) + (s.NetVpn ? " + VPN" : "") + (string.IsNullOrEmpty(s.NetName) ? "" : ": " + s.NetName) + (k == 2 && s.NetBars >= 0 ? ", сигнал " + s.NetBars + " из 5" : "") + "\n" + char.ToUpper(ConnAccess(k, s.NetLevel)[0]) + ConnAccess(k, s.NetLevel).Substring(1) : ConnKind(k))
                                 + "\nКлик — карточка сети · ПКМ — параметры";
                         });
                         return t;
@@ -1767,20 +1810,18 @@ namespace FlowBar
             }
             return null;
         }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct SHFILEOPSTRUCT { public IntPtr hwnd; public uint wFunc; [MarshalAs(UnmanagedType.LPWStr)] public string pFrom; [MarshalAs(UnmanagedType.LPWStr)] public string pTo; public ushort fFlags; public bool fAnyOperationsAborted; public IntPtr hNameMappings; [MarshalAs(UnmanagedType.LPWStr)] public string lpszProgressTitle; }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
+        // файлы и папки, брошенные на «Корзину»: одно обычное подтверждение Windows на всю группу; только в Корзину — удаление можно отменить (Ctrl+Z в Проводнике)
         void BinDrop(object sender, DragEventArgs e)
         {
-            var files = e.Data.GetData(DataFormats.FileDrop) as string[]; if (files == null) return;
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[]; if (files == null || files.Length == 0) return;
             e.Handled = true; // не закреплять на панели
-            foreach (var f in files)
-                try
-                {
-                    // в корзину, с обычным подтверждением Windows — удаление можно отменить
-                    if (Directory.Exists(f)) Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(f, Microsoft.VisualBasic.FileIO.UIOption.AllDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-                    else Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(f, Microsoft.VisualBasic.FileIO.UIOption.AllDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex) { MessageBox.Show(ex.Message, "FlowBar"); }
-            UpdateBin();
+            var op = new SHFILEOPSTRUCT { wFunc = 3 /* FO_DELETE */, pFrom = string.Join("\0", files) + "\0\0", fFlags = (ushort)(0x40 /* FOF_ALLOWUNDO */ | (C("binConfirm", "1") == "1" ? 0 : 0x10 /* FOF_NOCONFIRMATION */)) };
+            int rc = SHFileOperation(ref op);
+            if (rc != 0 && rc != 1223 && !op.fAnyOperationsAborted) Notify("Корзина", "Не удалось удалить (код " + rc + ")", true);
+            UpdateBin(); All(b => b.Render());
         }
         // значок сервиса ИИ: Claude — восьмилучевая звезда, Codex — символ кода в круге
         // значок модуля ИИ на цветной скруглённой плитке, как значок приложения

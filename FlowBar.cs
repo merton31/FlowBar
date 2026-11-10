@@ -1722,9 +1722,22 @@ namespace FlowBar
             if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
             tile.AllowDrop = true;
+            // файл тянут над значком открытой программы — через полсекунды её окно выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
+            DispatcherTimer spring = null;
+            tile.DragEnter += (s, e) =>
+            {
+                if (!e.Data.GetDataPresent(DataFormats.FileDrop) || ws.Count == 0) return;
+                if (spring != null) spring.Stop();
+                spring = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                spring.Tick += (o2, e2) => { spring.Stop(); if (ws.Count == 1) ActivateWin(ws[0].H); else ShowPreview(tile, ws, true); };
+                spring.Start();
+            };
+            tile.DragOver += (s, e) => { if (preview != null && previewFor == tile) previewMiss = 0; };
+            tile.DragLeave += (s, e) => { if (spring != null) spring.Stop(); };
 
             tile.Drop += (s, e) =>
             {
+                if (spring != null) spring.Stop();
                 var files = e.Data.GetData(DataFormats.FileDrop) as string[];
                 // ярлык или программа, брошенные на значок, закрепляются на его месте
                 if (files != null && !Locked && files.All(IsProgram))
@@ -1836,6 +1849,10 @@ namespace FlowBar
                 var cell = new StackPanel { Width = BW, Margin = new Thickness(6), Background = Brushes.Transparent, Cursor = Cursors.Hand };
                 cell.Children.Add(head); cell.Children.Add(slot);
                 cell.MouseLeftButtonUp += (s, e) => { ClosePreview(); ActivateWin(h); };
+                // файл над миниатюрой — это окно выходит вперёд
+                cell.AllowDrop = true; DispatcherTimer cs = null;
+                cell.DragEnter += (s, e) => { previewMiss = 0; if (cs != null) cs.Stop(); cs = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) }; cs.Tick += (o2, e2) => { cs.Stop(); ClosePreview(); ActivateWin(h); }; cs.Start(); };
+                cell.DragOver += (s, e) => { previewMiss = 0; e.Effects = DragDropEffects.None; e.Handled = true; }; cell.DragLeave += (s, e) => { if (cs != null) cs.Stop(); };
                 cell.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); ClosePreview(); } }; // средний клик — закрыть окно
                 cell.MouseEnter += (s, e) => cell.Background = Frozen(CardFg, 0x14); cell.MouseLeave += (s, e) => cell.Background = Brushes.Transparent;
                 row.Children.Add(cell); slots.Add(Tuple.Create(slot, h));
@@ -3563,6 +3580,7 @@ namespace FlowBar
                     var dst = Setup.Backup(tmp, System.IO.Path.Combine(tmp, "backups"), "1.0.0");
                     fails += check(File.ReadAllText(System.IO.Path.Combine(dst, "notes.txt")) == "заметка" && File.Exists(System.IO.Path.Combine(dst, "screentime", "d.txt"))
                         && !Directory.Exists(System.IO.Path.Combine(dst, "cache")) && !File.Exists(System.IO.Path.Combine(dst, "error.log")) && !Directory.Exists(System.IO.Path.Combine(dst, "backups")), "Обновление: резервная копия данных");
+                    fails += check(Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Wintun Userspace Tunnel") && Bar.IsVpnAdapter(NetworkInterfaceType.Ppp, "x") && !Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Realtek PCIe 5GbE Family Controller") && Bar.IsVirtualAdapter("Hyper-V Virtual Ethernet Adapter"), "Сеть: адаптер VPN отличается от обычного");
                     fails += check(Setup.V3(new Version(1, 2)) == "1.2.0" && new Version("1.1.0.0") > new Version("1.0.0.0"), "Обновление: сравнение версий");
                 }
                 finally { try { Directory.Delete(tmp, true); } catch { } }
