@@ -257,8 +257,26 @@ namespace FlowBar
             body.Children.Add(QRow("\uE702", "Bluetooth", br == null ? null : Switch(() => br.State == RD.RadioState.On, radioAct(br), "Bluetooth", fail), ShowBluetooth, out sub, out ic));
             { var t = sub; var i = ic; upd.Add(() => { bool on = br != null && br.State == RD.RadioState.On; PaintIcon(i, on); t.Text = br == null ? "Адаптер Bluetooth не найден" : on ? "Включён" : "Выключен"; }); }
             body.Children.Add(QRow("\uE767", "Звук", Switch(() => !double.IsNaN(live.Vol) && !live.Muted, v => { Audio.SetMute(!v); ReadVolume(); All(b => b.Render()); return Done(double.IsNaN(live.Vol) ? "Устройство вывода не найдено" : live.Muted == v ? "Windows не изменила звук" : null); }, "Звук", fail), null, out sub, out ic));
-            var vol = LevelSlider(s.Vol, 290, "Громкость", x => { Audio.SetVolume((float)x); }, x => { ReadVolume(); All(b => b.Render()); });
+            var vol = LevelSlider(s.Vol, 290, "Громкость", x => { Audio.SetVolume((float)x); }, x => { ReadVolume(); All(b => b.Render()); VolBeep(); });
             body.Children.Add(vol);
+            // устройство вывода: список включённых, клик — сделать основным
+            var devHost = new StackPanel { Margin = new Thickness(44, 2, 0, 6) }; body.Children.Add(devHost); string devKey = null;
+            Action devFill = () =>
+            {
+                var ds = Audio.Devices(); var key = string.Join("|", ds.Select(x => x.Item1 + x.Item3)); if (key == devKey) return; devKey = key;
+                devHost.Children.Clear(); if (ds.Count < 2) return;
+                foreach (var d0 in ds)
+                {
+                    var dv = d0; var row = new DockPanel { Margin = new Thickness(6, 4, 6, 4) };
+                    var chk = new TextBlock { Text = dv.Item3 ? "" : "", FontFamily = Icons, FontSize = 11, Width = 18, VerticalAlignment = VerticalAlignment.Center, Foreground = Accent };
+                    var nm = Txt(dv.Item2, 12, dv.Item3); nm.TextTrimming = TextTrimming.CharacterEllipsis; if (!dv.Item3) nm.Opacity = 0.8;
+                    row.Children.Add(chk); row.Children.Add(nm);
+                    var p = Act(row, "Устройство вывода: " + dv.Item2, () => { var e2 = Audio.SetDefault(dv.Item1); if (e2 != null) fail(e2); ReadVolume(); All(b => b.Render()); devKey = null; });
+                    p.MouseEnter += (o, e) => Fade(p, Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B), 100); p.MouseLeave += (o, e) => Fade(p, Colors.Transparent, 140);
+                    devHost.Children.Add(p);
+                }
+            };
+            devFill(); upd.Add(devFill);
             { var t = sub; var i = ic; upd.Add(() => { bool none = double.IsNaN(s.Vol); PaintIcon(i, !none && !s.Muted); ((TextBlock)i.Child).Text = none || s.Muted ? "\uE74F" : "\uE767"; vol.IsEnabled = !none;
                 // подпись — по ползунку, пока его тянут; иначе — подтверждённое значение устройства
                 double shown = vol.IsMouseCaptureWithin || vol.IsKeyboardFocusWithin ? vol.Value / 100 : s.Vol;

@@ -413,6 +413,12 @@ namespace FlowBar
             new[] { "Arabian Standard Time", "Дубай" }, new[] { "China Standard Time", "Пекин" }, new[] { "Tokyo Standard Time", "Токио" },
             new[] { "Eastern Standard Time", "Нью-Йорк" }, new[] { "Pacific Standard Time", "Лос-Анджелес" } };
         public static double NiceTop(double v) { return Spark.Nice(v); }
+        static void VolBeep() { if (C("volBeep", "1") == "1" && !live.Muted && live.Vol > 0) Audio.Beep(); }
+        // пункты «Устройство вывода» — в меню модуля громкости
+        static void DeviceItems(ItemsControl m)
+        {
+            foreach (var dv in Audio.Devices()) { var x = dv; m.Items.Add(Item(ShortDev(x.Item2), () => { var err = Audio.SetDefault(x.Item1); if (err != null) MessageBox.Show(err, "FlowBar"); ReadVolume(); All(b => b.Render()); }, x.Item3)); }
+        }
         static void ReadVolume() { double vv; bool mu; string vn; Audio.Read(out vv, out mu, out vn); live.Vol = vv; live.Muted = mu; live.VolName = vn; }
         // «Динамики (Realtek(R) Audio)» → «Динамики»: полное имя — в подсказке и карточке
         public static string ShortDev(string n) { if (string.IsNullOrEmpty(n)) return "Устройство вывода"; int i = n.IndexOf(" ("); return i > 0 ? n.Substring(0, i) : n; }
@@ -1657,7 +1663,7 @@ namespace FlowBar
                         var name = L("", 10 * f, false, 0.72); var pct = L("", 10.5 * f, true);
                         var top = new DockPanel { Width = bw }; if (v > 0) { DockPanel.SetDock(pct, Dock.Right); top.Children.Add(pct); top.Children.Add(name); } // в мини-виде процент стоит у значка
                         UIElement content = v == 0 ? HS(mb, Mg(pct, 4 * f, 0, 4 * f, 0)) : HS(mb, Mg(VS(top, hit), 6 * f));
-                        var t = Tile(content, "Громкость", act(ShowQuick), menu(m => { m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Параметры звука", () => Launch("ms-settings:sound"))); }), true);
+                        var t = Tile(content, "Громкость", act(ShowQuick), menu(m => { var dm = new MenuItem { Header = "Устройство вывода" }; DeviceItems(dm); if (dm.Items.Count > 1) m.Items.Add(dm); m.Items.Add(Item("Звук при изменении громкости", () => { cfg["volBeep"] = C("volBeep", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("volBeep", "1") == "1")); m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Параметры звука", () => Launch("ms-settings:sound"))); }), true);
                         bool drag = false; var gray = new SolidColorBrush(Color.FromArgb(0x90, 0x90, 0x90, 0x98));
                         Func<MouseEventArgs, float> at = e => (float)Math.Max(0, Math.Min(1, e.GetPosition(bar).X / bar.Width));
                         if (live)
@@ -1665,8 +1671,8 @@ namespace FlowBar
                             hit.PreviewMouseLeftButtonDown += (o, e) => dragTok = null; // ползунок, а не перестановка модуля
                             hit.MouseLeftButtonDown += (o, e) => { drag = true; hit.CaptureMouse(); var x = at(e); Audio.SetVolume(x); bar.Set(x, Accent, true); e.Handled = true; };
                             hit.MouseMove += (o, e) => { if (!drag) return; var x = at(e); Audio.SetVolume(x); bar.Set(x, Accent, true); };
-                            hit.MouseLeftButtonUp += (o, e) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); e.Handled = true; ReadVolume(); All(b => b.Render()); };
-                            t.MouseWheel += (o, e) => { if (double.IsNaN(s.Vol)) return; Audio.SetVolume((float)Math.Max(0, Math.Min(1, s.Vol + (e.Delta > 0 ? 0.02 : -0.02)))); ReadVolume(); All(b => b.Render()); e.Handled = true; };
+                            hit.MouseLeftButtonUp += (o, e) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); e.Handled = true; ReadVolume(); All(b => b.Render()); VolBeep(); };
+                            t.MouseWheel += (o, e) => { if (double.IsNaN(s.Vol)) return; Audio.SetVolume((float)Math.Max(0, Math.Min(1, s.Vol + (e.Delta > 0 ? 0.02 : -0.02)))); ReadVolume(); All(b => b.Render()); VolBeep(); e.Handled = true; };
                         }
                         up.Add(() =>
                         {

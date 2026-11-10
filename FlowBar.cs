@@ -104,9 +104,11 @@ namespace FlowBar
     {
         [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class Enumerator { }
         [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        interface IMMDeviceEnumerator { [PreserveSig] int EnumAudioEndpoints(int flow, int mask, out IntPtr devs); [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
+        interface IMMDeviceEnumerator { [PreserveSig] int EnumAudioEndpoints(int flow, int mask, out IMMDeviceCollection devs); [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
         [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        interface IMMDevice { [PreserveSig] int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); [PreserveSig] int OpenPropertyStore(int access, out IPropertyStore ps); }
+        interface IMMDevice { [PreserveSig] int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); [PreserveSig] int OpenPropertyStore(int access, out IPropertyStore ps); [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id); }
+        [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IMMDeviceCollection { [PreserveSig] int GetCount(out int n); [PreserveSig] int Item(int i, out IMMDevice dev); }
         [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         interface IPropertyStore { [PreserveSig] int GetCount(out int n); [PreserveSig] int GetAt(int i, out PKey k); [PreserveSig] int GetValue(ref PKey k, out PropVar v); }
         [StructLayout(LayoutKind.Sequential)] struct PKey { public Guid Fmt; public int Pid; }
@@ -186,6 +188,54 @@ namespace FlowBar
             }
             catch { return null; }
         }
+        // ---------- устройства вывода ----------
+        // Сменить устройство по умолчанию официально нельзя: недокументированный IPolicyConfig (тот же, что у EarTrumpet и SoundSwitch); может перестать работать в новой Windows
+        [ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")] class PolicyConfigClient { }
+        [ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IPolicyConfig
+        {
+            [PreserveSig] int GetMixFormat(); [PreserveSig] int GetDeviceFormat(); [PreserveSig] int ResetDeviceFormat(); [PreserveSig] int SetDeviceFormat(); [PreserveSig] int GetProcessingPeriod();
+            [PreserveSig] int SetProcessingPeriod(); [PreserveSig] int GetShareMode(); [PreserveSig] int SetShareMode(); [PreserveSig] int GetPropertyValue(); [PreserveSig] int SetPropertyValue();
+            [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, int role);
+        }
+        static string NameOf(IMMDevice dev)
+        {
+            IPropertyStore ps; string n = null;
+            if (dev.OpenPropertyStore(0, out ps) == 0 && ps != null)
+            {
+                var k = new PKey { Fmt = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), Pid = 14 }; PropVar v;
+                if (ps.GetValue(ref k, out v) == 0) { if (v.Vt == 31) n = Marshal.PtrToStringUni(v.P); PropVariantClear(ref v); }
+            }
+            return n;
+        }
+        // включённые устройства вывода: id, имя, по умолчанию ли
+        public static List<Tuple<string, string, bool>> Devices()
+        {
+            var res = new List<Tuple<string, string, bool>>();
+            try
+            {
+                var en = (IMMDeviceEnumerator)new Enumerator(); IMMDevice def; string defId = null;
+                if (en.GetDefaultAudioEndpoint(0, 1, out def) == 0 && def != null) def.GetId(out defId);
+                IMMDeviceCollection col; if (en.EnumAudioEndpoints(0, 1 /* DEVICE_STATE_ACTIVE */, out col) != 0 || col == null) return res;
+                int n; col.GetCount(out n);
+                for (int i = 0; i < n; i++) { IMMDevice dv; string id; if (col.Item(i, out dv) != 0 || dv == null || dv.GetId(out id) != 0) continue; res.Add(Tuple.Create(id, NameOf(dv) ?? "Устройство " + (i + 1), id == defId)); }
+            }
+            catch (Exception ex) { Bar.Log(ex); }
+            return res;
+        }
+        public static string SetDefault(string id)
+        {
+            try
+            {
+                var pc = (IPolicyConfig)new PolicyConfigClient();
+                for (int role = 0; role < 3; role++) { int hr = pc.SetDefaultEndpoint(id, role); if (hr != 0) return "Windows не переключила устройство (0x" + hr.ToString("X8") + ")"; } // консоль, мультимедиа, связь
+                ep = null; return null;
+            }
+            catch (Exception ex) { Bar.Log(ex); return "Эта версия Windows не даёт переключить устройство: " + ex.Message; }
+        }
+        // сигнал при смене громкости, как в Windows: стандартный звук схемы на новом уровне; не чаще раза в 150 мс
+        static DateTime beepAt;
+        public static void Beep() { if ((DateTime.Now - beepAt).TotalMilliseconds < 150) return; beepAt = DateTime.Now; try { SystemSounds.Beep.Play(); } catch { } }
         public static void SetVolume(float v) { try { var e = Ep(); if (e == null) return; var g = Guid.Empty; e.SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(1, v)), ref g); if (v > 0) e.SetMute(false, ref g); } catch { ep = null; } }
         public static void SetMute(bool on) { try { var e = Ep(); if (e == null) return; var g = Guid.Empty; e.SetMute(on, ref g); } catch { ep = null; } }
     }
