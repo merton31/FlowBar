@@ -1196,16 +1196,19 @@ namespace FlowBar
             const string ns = "xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' ";
             // поверхность меню: тень — отдельный слой позади, без эффекта на тексте
             Func<string, string> surface = inner =>
-                "<Grid Margin='4,2,14,16'>" +
+                "<Grid Margin='4,2,14,16'><Grid.RenderTransform><TranslateTransform/></Grid.RenderTransform><Grid.Triggers><EventTrigger RoutedEvent='FrameworkElement.Loaded'><BeginStoryboard><Storyboard>" +
+                "<DoubleAnimation Storyboard.TargetProperty='Opacity' From='0' To='1' Duration='0:0:0.11'/><DoubleAnimation Storyboard.TargetProperty='RenderTransform.Y' From='" + (IsTop ? "-6" : "6") + "' To='0' Duration='0:0:0.16' DecelerationRatio='0.8'/>" +
+                "</Storyboard></BeginStoryboard></EventTrigger></Grid.Triggers>" +
                 "<Border CornerRadius='10' Background='" + bg + "'><Border.Effect><DropShadowEffect BlurRadius='16' ShadowDepth='4' Direction='270' Opacity='0.35'/></Border.Effect></Border>" +
                 "<Border CornerRadius='10' Background='" + bg + "' BorderBrush='" + edge + "' BorderThickness='1' Padding='4'>" + inner + "</Border></Grid>";
             var menuT = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='ContextMenu'>" +
                 surface("<ScrollViewer VerticalScrollBarVisibility='Auto'><ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/></ScrollViewer>") + "</ControlTemplate>");
             var itemT = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='MenuItem'>" +
                 "<Grid SnapsToDevicePixels='True'>" +
-                "<Border Name='Bd' CornerRadius='6' Background='Transparent' Padding='8,6,10,6' MinWidth='180'><Grid>" +
-                "<Grid.ColumnDefinitions><ColumnDefinition Width='22'/><ColumnDefinition Width='*'/><ColumnDefinition Width='18'/></Grid.ColumnDefinitions>" +
+                "<Border Name='Bd' CornerRadius='7' Background='Transparent' Padding='9,7,10,7' MinWidth='200'><Grid>" +
+                "<Grid.ColumnDefinitions><ColumnDefinition Width='27'/><ColumnDefinition Width='*'/><ColumnDefinition Width='18'/></Grid.ColumnDefinitions>" +
                 "<TextBlock Name='Chk' Text='&#xE73E;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='12' Foreground='" + acc + "' VerticalAlignment='Center' Visibility='Collapsed'/>" +
+                "<ContentPresenter Name='Ico' ContentSource='Icon' VerticalAlignment='Center' HorizontalAlignment='Left' Opacity='0.78'/>" +
                 "<ContentPresenter Grid.Column='1' ContentSource='Header' RecognizesAccessKey='True' VerticalAlignment='Center'/>" +
                 "<TextBlock Name='Arrow' Grid.Column='2' Text='&#xE76C;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='9' Opacity='0.7' HorizontalAlignment='Right' VerticalAlignment='Center' Visibility='Collapsed'/>" +
                 "</Grid></Border>" +
@@ -1214,7 +1217,8 @@ namespace FlowBar
                 surface("<ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/>") + "</Popup>" +
                 "</Grid><ControlTemplate.Triggers>" +
                 "<Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Bd' Property='Background' Value='" + hover + "'/></Trigger>" +
-                "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Chk' Property='Visibility' Value='Visible'/></Trigger>" +
+                "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Chk' Property='Visibility' Value='Visible'/><Setter TargetName='Ico' Property='Visibility' Value='Collapsed'/></Trigger>" +
+                "<Trigger Property='Tag' Value='danger'><Setter Property='Foreground' Value='#F0705F'/></Trigger>" +
                 "<Trigger Property='Role' Value='SubmenuHeader'><Setter TargetName='Arrow' Property='Visibility' Value='Visible'/></Trigger>" +
                 "<Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger>" +
                 "</ControlTemplate.Triggers></ControlTemplate>");
@@ -1226,7 +1230,7 @@ namespace FlowBar
             mi.Setters.Add(new Setter(Control.TemplateProperty, itemT)); mi.Setters.Add(new Setter(Control.ForegroundProperty, Frozen(CardFg, 255)));
             mi.Setters.Add(new Setter(Control.FontFamilyProperty, font)); mi.Setters.Add(new Setter(Control.FontSizeProperty, 13.0));
             var sep = new Style(typeof(Separator));
-            sep.Setters.Add(new Setter(Control.TemplateProperty, System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='Separator'><Border Height='1' Margin='10,4,10,4' Background='" + edge + "'/></ControlTemplate>")));
+            sep.Setters.Add(new Setter(Control.TemplateProperty, System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='Separator'><Border Height='1' Margin='9,5,9,5' Background='" + edge + "'/></ControlTemplate>")));
             var r = Application.Current.Resources;
             r[typeof(ContextMenu)] = cm; r[typeof(MenuItem)] = mi; r[MenuItem.SeparatorStyleKey] = sep;
         }

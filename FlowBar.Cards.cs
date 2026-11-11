@@ -699,22 +699,21 @@ namespace FlowBar
             body.Children.Add(CardActions(Btn("Разгруппировать", () => { if (panel != null) panel.Close(); Ungroup(name); })));
             ShowPanel(name, body, 340, null);
         }
-        // отметка под значком: одно окно — одна черта; несколько окон — черта и точка рядом (как две отметки в Windows)
-        static FrameworkElement Indicator(bool active, bool many)
+        // отметка под значком: одно окно — одна черта; несколько окон — две равные черты рядом; hollow — окна на другом мониторе (полые)
+        public static FrameworkElement Indicator(bool active, bool many, bool hollow = false)
         {
-            var one = Indicator1(active, many);
-            if (!many) return one;
-            var dot = new Rectangle { Width = 3, Height = 3, RadiusX = 1.5, RadiusY = 1.5, Margin = new Thickness(2, 0, 0, 0) };
-            if (active) { dot.Fill = Accent; dot.Opacity = 0.75; } else { FgBind(dot, Shape.FillProperty); dot.Opacity = 0.5; }
-            one.VerticalAlignment = VerticalAlignment.Center; one.Margin = new Thickness(0);
-            var sp = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) };
-            sp.Children.Add(one); sp.Children.Add(dot); return sp;
-        }
-        static Rectangle Indicator1(bool active, bool many)
-        {
-            var r = new Rectangle { Width = active ? Math.Round(TileH * (many ? 0.28 : 0.36)) : 6, Height = 3, RadiusX = 1.5, RadiusY = 1.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) };
-            if (active) r.Fill = Accent; else { FgBind(r, Shape.FillProperty); r.Opacity = 0.5; } // фоновое приложение — заметно скромнее
-            return r;
+            Func<Rectangle> bar = () =>
+            {
+                var r = new Rectangle { Width = active ? Math.Round(TileH * (many ? 0.17 : 0.36)) : (hollow ? 8 : 6), Height = hollow ? 4 : 3, RadiusX = hollow ? 2 : 1.5, RadiusY = hollow ? 2 : 1.5 };
+                if (hollow) { r.StrokeThickness = 1; FgBind(r, Shape.StrokeProperty); r.Opacity = 0.6; }
+                else if (active) r.Fill = Accent;
+                else { FgBind(r, Shape.FillProperty); r.Opacity = 0.5; } // фоновое приложение — заметно скромнее
+                return r;
+            };
+            var sp = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1), IsHitTestVisible = false };
+            sp.Children.Add(bar());
+            if (many) { var b2 = bar(); b2.Margin = new Thickness(3, 0, 0, 0); sp.Children.Add(b2); }
+            return sp;
         }
 
         // ---------- окна FlowBar: каталог и настройки ----------

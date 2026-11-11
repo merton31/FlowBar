@@ -1451,10 +1451,30 @@ namespace FlowBar
             br.BeginAnimation(SolidColorBrush.ColorProperty, new System.Windows.Media.Animation.ColorAnimation(to, TimeSpan.FromMilliseconds(ms)));
         }
 
+        // значок пункта меню — по началу подписи (Segoe Fluent Icons); нет подходящего — пункт без значка
+        static readonly string[][] MenuGlyphs = {
+            new[] { "Открыть новое окно", "\uE8A7" }, new[] { "Открепить", "\uE77A" }, new[] { "Закрепить", "\uE718" }, new[] { "Добавить в группу", "\uE8F4" }, new[] { "Убрать из группы", "\uE8F6" },
+            new[] { "Новая группа", "\uE8F4" }, new[] { "Закрыть", "\uE8BB" }, new[] { "Завершить", "\uE7E8" }, new[] { "Очистить", "\uE74D" }, new[] { "Открыть корзину", "\uE74D" }, new[] { "Открыть диск", "\uEDA2" },
+            new[] { "Открыть Spotify", "\uE8D6" }, new[] { "Открыть", "\uE8E5" }, new[] { "Показать в папке", "\uE838" }, new[] { "Параметры", "\uE713" }, new[] { "Настройки", "\uE713" }, new[] { "Каталог", "\uE71D" },
+            new[] { "Убрать с панели", "\uE738" }, new[] { "Размер", "\uE740" }, new[] { "Оставлять видимым", "\uE7B3" }, new[] { "Микшер", "\uE9E9" }, new[] { "Обновить", "\uE72C" }, new[] { "Диспетчер задач", "\uE9D9" },
+            new[] { "Устройство вывода", "\uE7F5" }, new[] { "Без звука", "\uE74F" }, new[] { "Список сетей", "\uE701" }, new[] { "Состояние сети", "\uE774" }, new[] { "Сети Wi-Fi", "\uE701" }, new[] { "Устройства Bluetooth", "\uE702" },
+            new[] { "Быстрые настройки", "\uE9E9" }, new[] { "Перенести на этот экран", "\uE7F4" }, new[] { "Свернуть панель", "\uE73F" }, new[] { "Заблокировать", "\uE72E" } };
+        static string MenuGlyph(string header) { foreach (var g in MenuGlyphs) if (header.StartsWith(g[0])) return g[1]; return null; }
+        // шапка меню программы: её значок и название
+        static FrameworkElement MenuHead(ImageSource icon, string name)
+        {
+            var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(9, 6, 12, 6), IsHitTestVisible = false };
+            if (icon != null) { var img = new Image { Source = icon, Width = 20, Height = 20, Margin = new Thickness(0, 0, 9, 0) }; RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality); sp.Children.Add(img); }
+            sp.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.SemiBold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 240, TextTrimming = TextTrimming.CharacterEllipsis });
+            return sp;
+        }
         static MenuItem Item(string header, Action a, bool? check = null)
         {
             var it = new MenuItem { Header = header };
             if (check.HasValue) { it.IsCheckable = true; it.IsChecked = check.Value; }
+            var gl = MenuGlyph(header);
+            if (gl != null) it.Icon = new TextBlock { Text = gl, FontFamily = Icons, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
+            if (header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
             it.Click += (s, e) => a();
             return it;
         }
@@ -1741,12 +1761,7 @@ namespace FlowBar
             else grid.Children.Add(G(path != null && Directory.Exists(path) ? "" : ""));
             bool active = ws.Any(w => w.H == fg);
             if (ws.Count > 0) grid.Children.Add(Indicator(active, ws.Count > 1));
-            else if (Elsewhere(path).Count > 0)
-            {
-                // открыта на другом мониторе: полая отметка вместо сплошной
-                var o = new Rectangle { Width = 8, Height = 4, RadiusX = 2, RadiusY = 2, StrokeThickness = 1, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1), Opacity = 0.6 };
-                FgBind(o, Shape.StrokeProperty); grid.Children.Add(o);
-            }
+            else { int far = Elsewhere(path).Count; if (far > 0) grid.Children.Add(Indicator(false, far > 1, true)); } // открыта на другом мониторе: полая отметка, несколько окон — две
             int badge = ws.Sum(w => BadgeOf(TitleOf(w.H), w.Path)); bool flash = ws.Any(w => flashing.Contains(w.H));
             if (badge > 0 && C("badges", "1") == "1")
             {
@@ -1848,12 +1863,22 @@ namespace FlowBar
         void AppMenu(ContextMenu m, string path, List<Win> ws, bool isPinned)
         {
             ClosePreview();
-            foreach (var w in ws)
+            var shown = ws.Count > 0 ? ws : Elsewhere(path);
+            var hp = path ?? (shown.Count > 0 ? shown[0].Path : null);
+            if (hp != null) { m.Items.Add(MenuHead(IconFor(hp) ?? IconFor(Target(hp)), PinName(hp))); m.Items.Add(new Separator()); }
+            foreach (var w in shown)
             {
-                var h = w.H; var title = TitleOf(h);
-                m.Items.Add(Item(title.Length > 60 ? title.Substring(0, 60) + "…" : title, () => ActivateWin(h)));
+                var h = w.H; var title = TitleOf(h); bool far = w.Mon != mon;
+                var tx = new TextBlock { Text = (title.Length > 48 ? title.Substring(0, 48) + "…" : title) + (far ? "  · другой экран" : ""), VerticalAlignment = VerticalAlignment.Center, MaxWidth = 300, TextTrimming = TextTrimming.CharacterEllipsis };
+                MenuItem wi = null;
+                var x = Cross("Закрыть окно «" + title + "»", () => { N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); if (wi != null) wi.Visibility = Visibility.Collapsed; });
+                x.Width = 20; x.Height = 20; x.Margin = new Thickness(10, -2, -4, -2); x.PreviewMouseLeftButtonUp += (s, e) => e.Handled = true; x.PreviewMouseLeftButtonDown += (s, e) => { e.Handled = true; x.Invoke(); };
+                var dp = new DockPanel(); DockPanel.SetDock(x, Dock.Right); dp.Children.Add(x); dp.Children.Add(tx);
+                wi = new MenuItem { Header = dp, Icon = new TextBlock { Text = "\uE737", FontFamily = Icons, FontSize = 13, VerticalAlignment = VerticalAlignment.Center } };
+                wi.Click += (s, e) => ActivateWin(h);
+                m.Items.Add(wi);
             }
-            if (ws.Count > 0) m.Items.Add(new Separator());
+            if (shown.Count > 0) m.Items.Add(new Separator());
             if (path != null) m.Items.Add(Item("Открыть новое окно", () => Launch(path)));
             // при закреплении/откреплении значок остаётся на своём месте
             if (isPinned) m.Items.Add(Item("Открепить", () => { Retag("p|" + path, "r|" + Key(Target(path))); pinned.Remove(path); SavePinned(); }));
@@ -1861,6 +1886,7 @@ namespace FlowBar
             else if (path != null) m.Items.Add(Item("Закрепить", () => { Retag("r|" + Key(path), "p|" + path); pinned.Add(path); SavePinned(); }));
             if (ws.Count > 0)
             {
+                m.Items.Add(new Separator());
                 m.Items.Add(Item(ws.Count > 1 ? "Закрыть все окна" : "Закрыть окно", () => { foreach (var w in ws) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
                 m.Items.Add(Item("Завершить процесс", () =>
                 {
