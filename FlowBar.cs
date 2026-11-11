@@ -2467,9 +2467,9 @@ namespace FlowBar
             {
                 WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false,
                 ResizeMode = ResizeMode.NoResize, SizeToContent = SizeToContent.Height, Width = width + Shadow * 2, FontFamily = FontFamily,
-                Foreground = Frozen(fg, 255), Title = "FlowBar — " + title
+                Foreground = Frozen(fg, 255)
             };
-            StylePopupText(w); ShowOnBar(w); // на панели — как открытая программа
+            StylePopupText(w);
             System.Windows.Documents.Typography.SetNumeralAlignment(w, FontNumeralAlignment.Tabular); UseCardScroll(w);
             // заголовок всегда виден, длинное содержимое прокручивается целиком (поле ввода и кнопки внизу тоже достижимы)
             var sp = new DockPanel();

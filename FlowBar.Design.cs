@@ -1462,7 +1462,7 @@ namespace FlowBar
             bool xl = SizeKey == "XL"; // у XL поля карточек плотнее, как на образце: восемь блоков помещаются в одну строку
             if (wide) { b.MinWidth = th; b.Padding = new Thickness(Math.Round(th * (xl ? 0.16 : 0.26)), 0, Math.Round(th * (xl ? 0.19 : 0.3)), 0); } else b.Width = Math.Min(th, IconPx + 22); // у XL плитка значка уже высоты, как на образце
             if (tip != null) { b.ToolTip = tip; System.Windows.Automation.AutomationProperties.SetName(b, tip.Split('\n')[0]); }
-            b.MouseEnter += (s, e) => Fade(b, Lift(b.Base, 0x16), 120);
+            // подсветки при наведении нет: плитки не серятся под курсором; живой отклик — только короткое затемнение при нажатии
             b.MouseLeave += (s, e) => Fade(b, b.Base, 140);
             if (Material == "metal" && content != null)
             {
@@ -1478,7 +1478,7 @@ namespace FlowBar
             b.PreviewMouseLeftButtonDown += (s, e) => { shellAtDown = ShellFlyoutOpen(); Fade(b, Lift(b.Base, 0x2C), 60); };  // нажатие
             b.MouseLeftButtonUp += (s, e) =>
             {
-                Fade(b, Lift(b.Base, 0x16), 120); e.Handled = true; anchor = b; anchorAt = DateTime.Now; if (click == null) return;
+                Fade(b, b.Base, 120); e.Handled = true; anchor = b; anchorAt = DateTime.Now; if (click == null) return;
                 // открыт Пуск или поиск: панель не забирает фокус, поэтому он сам не закрывается, а Windows не даёт вывести окно программы — закрываем и действуем следом
                 if (shellAtDown && !b.ShellKey && ShellFlyoutOpen())
                 {
