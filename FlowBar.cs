@@ -1663,6 +1663,8 @@ namespace FlowBar
                 int code = w.ToInt32();
                 if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); }
                 else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
+                // активное окно сменилось — подложка переезжает сразу, а не при опросе раз в секунду
+                if (code == 4 || code == 0x8004) Dispatcher.BeginInvoke(new Action(() => All(b => b.RefreshApps())));
             }
             if (msg == AppBarMsg && w.ToInt32() == 1) { reserveKey = null; Place(); } // ABN_POSCHANGED: соседние панели сдвинулись
             if (msg == TaskbarCreatedMsg && (DateTime.Now - Tray.Broadcast).TotalSeconds > 5) { appBar = false; reserveKey = null; Place(); if (HideTb) SetTaskbar(false); } // перезапуск Проводника: регистрация полосы потеряна
@@ -1883,7 +1885,7 @@ namespace FlowBar
                     double x; try { x = tile.PointToScreen(new Point(tile.ActualWidth / 2, 0)).X / Scale; } catch { return; }
                     double from = activeX; activeX = x;
                     if (!Motion || double.IsNaN(from) || Math.Abs(from - x) < 2 || Math.Abs(from - x) > 1600) return;
-                    ((TranslateTransform)hl.RenderTransform).BeginAnimation(TranslateTransform.XProperty, new System.Windows.Media.Animation.DoubleAnimation(from - x, 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
+                    ((TranslateTransform)hl.RenderTransform).BeginAnimation(TranslateTransform.XProperty, new System.Windows.Media.Animation.DoubleAnimation(from - x, 0, TimeSpan.FromMilliseconds(150)) { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
                 };
             }
             else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
