@@ -1856,7 +1856,7 @@ namespace FlowBar
         bool previewPinned;
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
-            ClosePreview(); previewPinned = pinned;
+            ClosePreview(); previewPinned = pinned; TipHide(true);
             const double BW = 220, BH = 130;
             var w = new Window
             {
@@ -2225,7 +2225,7 @@ namespace FlowBar
         static FrameworkElement anchor; static DateTime anchorAt; // плитка, по которой только что кликнули: карточка откроется у неё
         void ShowPanel(string title, UIElement body, double width, IInputElement focus, Action tick = null)
         {
-            ClosePreview();
+            ClosePreview(); TipHide(true);
             double keepCx = cx0Back; cx0Back = double.NaN;
             var from = (DateTime.Now - anchorAt).TotalSeconds < 2 && anchor != null && anchor.IsVisible ? anchor : null; anchor = null;
             // Нажатие на панель сначала уводит фокус с карточки и закрывает её, а клик приходит уже после.

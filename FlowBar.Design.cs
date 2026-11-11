@@ -1222,6 +1222,67 @@ namespace FlowBar
         static void RebuildAll() { ApplyAppTheme(); All(b => { b.ResetFit(true); b.Rebuild(); }); }
 
         // ---------- плитка ----------
+        // ---------- подсказка панели ----------
+        Window tipWin; Border tipBubble; TextBlock tipText; DispatcherTimer tipShowT, tipHideT; FrameworkElement tipFor; bool tipOn;
+        const double TipH = 130;
+        void TipEnsure()
+        {
+            if (tipWin != null) return;
+            tipText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxWidth = 320, LineHeight = 16 };
+            tipBubble = new Border { Child = tipText, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(9), Padding = new Thickness(10, 6, 10, 7), Opacity = 0, Margin = new Thickness(0, 10, 0, 10),
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = IsTop ? VerticalAlignment.Top : VerticalAlignment.Bottom, RenderTransform = new TranslateTransform(),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Direction = 270, Opacity = 0.3 } };
+            var host = new Grid(); host.Children.Add(tipBubble);
+            tipWin = new Window { WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize,
+                Width = scr.Bounds.Width / Scale, Height = TipH, Content = host, FontFamily = FontFamily, IsHitTestVisible = false, Focusable = false };
+            tipWin.SourceInitialized += (s, e) => { var ph = new WindowInteropHelper(tipWin).Handle; N.SetWindowLongPtr(ph, -20, new IntPtr(N.GetWindowLongPtr(ph, -20).ToInt64() | 0x08000000 | 0x80 | 0x20)); }; // не забирает фокус и пропускает мышь
+            Closed += (s, e) => { if (tipWin != null) { tipWin.Close(); tipWin = null; } };
+            tipWin.Show();
+        }
+        void TipShow(FrameworkElement el)
+        {
+            var text = el.ToolTip as string;
+            if (string.IsNullOrEmpty(text) || dragging) { TipHide(true); return; }
+            tipFor = el; if (tipHideT != null) tipHideT.Stop(); if (tipShowT != null) tipShowT.Stop();
+            if (tipOn) { TipMove(el, text); return; }
+            tipShowT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+            tipShowT.Tick += (s, e) => { tipShowT.Stop(); if (tipFor == el && el.IsMouseOver && !dragging && preview == null) TipMove(el, el.ToolTip as string ?? text); };
+            tipShowT.Start();
+        }
+        void TipMove(FrameworkElement el, string text)
+        {
+            TipEnsure();
+            tipBubble.Background = Frozen(CardBg, 255); tipBubble.BorderBrush = CardEdge; tipText.Foreground = Frozen(CardFg, 255);
+            double sc = Scale; PlaceWin(tipWin, scr.Bounds.Left / sc, IsTop ? CapBottom - 4 : CapTop - TipH + 4);
+            tipText.Text = text; tipText.Measure(new Size(320, double.PositiveInfinity));
+            double w = Math.Ceiling(tipText.DesiredSize.Width) + 22;
+            double cx = el.PointToScreen(new Point(el.ActualWidth / 2, 0)).X / sc - scr.Bounds.Left / sc;
+            double x = Math.Round(Math.Max(6, Math.Min(tipWin.Width - w - 6, cx - w / 2)));
+            var tt = (TranslateTransform)tipBubble.RenderTransform;
+            if (!tipOn || !Motion)
+            {
+                tt.BeginAnimation(TranslateTransform.XProperty, null); tipBubble.BeginAnimation(WidthProperty, null); tt.X = x; tipBubble.Width = w;
+                tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(Motion ? 120 : 0)));
+            }
+            else
+            {
+                var ease = new CubicEase { EasingMode = EasingMode.EaseOut }; var dur = TimeSpan.FromMilliseconds(190);
+                tt.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(x, dur) { EasingFunction = ease });
+                tipBubble.BeginAnimation(WidthProperty, new DoubleAnimation(w, dur) { EasingFunction = ease });
+                tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(80)));
+            }
+            tipOn = true;
+        }
+        void TipHide(bool now)
+        {
+            if (tipShowT != null) tipShowT.Stop(); if (tipHideT != null) tipHideT.Stop();
+            if (!tipOn) { tipFor = null; return; }
+            Action hide = () => { tipOn = false; tipFor = null; if (tipBubble != null) tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(Motion ? 110 : 0))); };
+            if (now) { hide(); return; }
+            tipHideT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) }; // переход на соседний значок не гасит подсказку
+            tipHideT.Tick += (s, e) => { tipHideT.Stop(); hide(); };
+            tipHideT.Start();
+        }
         Press Tile(UIElement content, string tip, Action click, Action<ContextMenu> menu, bool wide = false)
         {
             double th = TileH;
@@ -1235,6 +1296,9 @@ namespace FlowBar
             if (tip != null) { b.ToolTip = tip; System.Windows.Automation.AutomationProperties.SetName(b, tip.Split('\n')[0]); }
             b.MouseEnter += (s, e) => Fade(b, Lift(b.Base, 0x16), 120);
             b.MouseLeave += (s, e) => Fade(b, b.Base, 140);
+            // подсказка — своя, одна на панель: перетекает от значка к значку (стандартная остаётся у плиток в карточке «Ещё»)
+            b.MouseEnter += (s, e) => { bool mine = Window.GetWindow(b) == this; ToolTipService.SetIsEnabled(b, !mine); if (mine) TipShow(b); };
+            b.MouseLeave += (s, e) => TipHide(false); b.PreviewMouseDown += (s, e) => TipHide(true);
             b.PreviewMouseLeftButtonDown += (s, e) => { shellAtDown = ShellFlyoutOpen(); Fade(b, Lift(b.Base, 0x2C), 60); };  // нажатие
             b.MouseLeftButtonUp += (s, e) =>
             {
@@ -1655,8 +1719,21 @@ namespace FlowBar
                     {
                         var g = G("");
                         var t = Tile(g, "Корзина", act(() => Launch("shell:RecycleBinFolder")),
-                            menu(m => m.Items.Add(Item("Очистить корзину…", () => { N.SHEmptyRecycleBin(hwnd, null, 0); UpdateBin(); })))); // Windows сам спросит подтверждение
-                        if (live) { t.AllowDrop = true; t.Drop += BinDrop; }
+                            menu(m => { m.Items.Add(Item("Открыть корзину", () => Launch("shell:RecycleBinFolder"))); m.Items.Add(Item("Очистить корзину…", () => { N.SHEmptyRecycleBin(hwnd, null, 0); UpdateBin(); })); m.Items.Add(Item("Спрашивать перед удалением", () => { cfg["binConfirm"] = C("binConfirm", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("binConfirm", "1") == "1")); })); // Windows сам спросит подтверждение
+                        if (live)
+                        {
+                            t.AllowDrop = true; t.Drop += BinDrop;
+                            // файлы над корзиной: подсветка и подсказка, сколько объектов удалится
+                            t.DragEnter += (o, e) =>
+                            {
+                                var fs = e.Data.GetData(DataFormats.FileDrop) as string[]; if (fs == null) return;
+                                Fade(t, Color.FromArgb(0x66, AccentColor.R, AccentColor.G, AccentColor.B), 100); g.Opacity = 1;
+                                t.ToolTip = "Удалить в корзину: " + fs.Length + (fs.Length == 1 ? " объект" : fs.Length < 5 ? " объекта" : " объектов"); tipOn = true; TipMove(t, (string)t.ToolTip);
+                            };
+                            t.DragOver += (o, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) { e.Effects = DragDropEffects.Move; e.Handled = true; } };
+                            t.DragLeave += (o, e) => { Fade(t, t.Base, 140); TipHide(true); };
+                            t.Drop += (o, e) => { Fade(t, t.Base, 140); TipHide(true); };
+                        }
                         up.Add(() =>
                         {
                             g.Opacity = s.BinItems > 0 ? 1 : 0.55; // пустая корзина — приглушённый значок
