@@ -165,6 +165,17 @@ namespace FlowBar
         public void Set(IntPtr owner, int x, int y, int w, int h, double r, bool show, float blur = -1)
         {
             if (host == null) return;
+            // сбой композиции не должен валить панель: объект Windows мог быть закрыт (смена видеорежима, перезапуск DWM) — стекла нет, заливка станет сплошной
+            try { SetCore(owner, x, y, w, h, r, show, blur); }
+            catch (Exception ex)
+            {
+                failedAt = DateTime.Now; lastError = ex.Message; comp = null; blurFactory = null; blurUnavailable = false;
+                Bar.Log(new Exception("Подложка стекла сломалась (host=" + (host != null) + ", shown=" + shown + ", " + w + "×" + h + "): темы рисуются сплошной поверхностью, новая попытка через минуту", ex));
+                Dispose();
+            }
+        }
+        void SetCore(IntPtr owner, int x, int y, int w, int h, double r, bool show, float blur)
+        {
             if (!show || w < 1 || h < 1) { if (shown) { ShowWindow(host.Handle, 0); shown = false; } return; }
             SetBlur(blur);
             var size = new Vector2(w, h);
@@ -201,8 +212,8 @@ namespace FlowBar
             }
         }
         // уход вместе с карточкой
-        public void Fade() { if (host != null && shown) Animate(1, 0, 120); }
-        public void Unfade() { if (host != null && shown) Animate(0, 1, 150); } // панель вернули, пока она уезжала
+        public void Fade() { if (host != null && shown) try { Animate(1, 0, 120); } catch (Exception ex) { Bar.Log(ex); } }
+        public void Unfade() { if (host != null && shown) try { Animate(0, 1, 150); } catch (Exception ex) { Bar.Log(ex); } } // панель вернули, пока она уезжала
         void Animate(float from, float to, int ms)
         {
             var a = comp.CreateScalarKeyFrameAnimation(); a.InsertKeyFrame(0f, from); a.InsertKeyFrame(1f, to); a.Duration = TimeSpan.FromMilliseconds(ms);
