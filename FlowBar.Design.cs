@@ -587,14 +587,25 @@ namespace FlowBar
         static Press RoundBtn(string glyph, double d, bool primary, Action a, string tip, Color? col = null)
         {
             var g = new TextBlock { Text = glyph, FontFamily = Icons, FontSize = Math.Round(d * 0.42), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            var b = new Press { Width = d, Height = d, CornerRadius = new CornerRadius(d / 2), Cursor = Cursors.Hand, Invoke = a, ToolTip = tip, Child = g, VerticalAlignment = VerticalAlignment.Center };
+            var ring = new SolidColorBrush(Colors.Transparent);
+            var b = new Press { Width = d, Height = d, CornerRadius = new CornerRadius(d / 2), Cursor = Cursors.Hand, ToolTip = tip, Child = g, VerticalAlignment = VerticalAlignment.Center,
+                BorderBrush = ring, BorderThickness = new Thickness(1) };
+            Action invoke = () =>
+            {
+                if (a == null) return;
+                if (Motion && !b.IsKeyboardFocused)
+                    ring.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(Color.FromArgb(0xD8, 255, 255, 255), Colors.Transparent, TimeSpan.FromMilliseconds(220))
+                    { FillBehavior = FillBehavior.Stop });
+                a();
+            };
+            b.Invoke = a == null ? null : invoke;
             b.Base = primary ? col ?? AccentColor : Colors.Transparent; b.Background = new SolidColorBrush(b.Base);
             if (primary) g.Foreground = Frozen(Sty.Lum(b.Base) > 150 ? Color.FromRgb(0x10, 0x10, 0x10) : Colors.White, 255);
             System.Windows.Automation.AutomationProperties.SetName(b, tip);
             b.MouseEnter += (s, e) => Fade(b, primary ? Color.FromArgb(0xD8, b.Base.R, b.Base.G, b.Base.B) : Fa(0x22), 110);
             b.MouseLeave += (s, e) => Fade(b, b.Base, 130);
             b.PreviewMouseLeftButtonDown += (s, e) => e.Handled = false;
-            b.MouseLeftButtonUp += (s, e) => { e.Handled = true; if (a != null) a(); };
+            b.MouseLeftButtonUp += (s, e) => { e.Handled = true; invoke(); };
             return b;
         }
 
@@ -2250,14 +2261,28 @@ namespace FlowBar
         void GroupDrop(string targetTok, string path)
         {
             var tp = targetTok.Substring(2);
-            if (targetTok.StartsWith("p|") && tp.StartsWith("group:")) { AddToGroup(path, tp.Substring(6)); return; }
+            if (targetTok.StartsWith("p|") && tp.StartsWith("group:"))
+            {
+                AddToGroup(path, tp.Substring(6)); AnimateGroupTile(targetTok); return;
+            }
             string tpath = targetTok.StartsWith("p|") ? tp : null;
             if (tpath == null) { List<Win> ws; if (appWins.TryGetValue(targetTok, out ws) && ws.Count > 0) tpath = ws[0].Path; }
             if (tpath == null || string.Equals(tpath, path, StringComparison.OrdinalIgnoreCase)) return;
-            var before = new HashSet<string>(appGroups.Keys);
-            NewGroup(tpath);
-            var name = appGroups.Keys.FirstOrDefault(k => !before.Contains(k));
-            if (name != null) AddToGroup(path, name);
+            var name = NewGroup(tpath, path);
+            AnimateGroupTile("p|group:" + name);
+        }
+        void AnimateGroupTile(string token)
+        {
+            if (!Motion) return;
+            var tile = ElOf(token) as Border;
+            var icon = tile == null ? null : tile.Child as FrameworkElement;
+            if (icon == null) return;
+            var scale = new ScaleTransform(1, 1);
+            icon.RenderTransformOrigin = new Point(0.5, 0.5);
+            icon.RenderTransform = scale;
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, SettingsMotion(0.78, 1, 200));
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, SettingsMotion(0.78, 1, 200));
+            icon.BeginAnimation(OpacityProperty, SettingsMotion(0.65, 1, 160));
         }
         void LandGhost(FrameworkElement el, Action done)
         {
@@ -2682,7 +2707,10 @@ namespace FlowBar
             root.Background = glass ? (Brush)new LinearGradientBrush(new GradientStopCollection { new GradientStop(Color.FromArgb((byte)Math.Min(255, bg.A + 0x14), (byte)Math.Min(255, bg.R + 0x18), (byte)Math.Min(255, bg.G + 0x18), (byte)Math.Min(255, bg.B + 0x18)), 0), new GradientStop(bg, 0.55) }, 90)
                 : new SolidColorBrush(bg);
             // тонкая обводка; у стекла — блик сверху, светлее у верхнего края
-            root.BorderBrush = glass ? (Brush)new LinearGradientBrush(Color.FromArgb(0x78, 255, 255, 255), Color.FromArgb(0x16, 255, 255, 255), 90) : new SolidColorBrush(Fa(s.LightText ? (byte)0x24 : (byte)0x1C));
+            root.BorderBrush = glass ? (Brush)new LinearGradientBrush(
+                Color.FromArgb(0x86, 255, 255, 255),
+                Frozen(C("style", "") == "Liquid Glass" ? Color.FromRgb(170, 231, 249) : Colors.White, 0x26).Color, 90)
+                : new SolidColorBrush(Fa(s.LightText ? (byte)0x24 : (byte)0x1C));
             shadow.Background = new SolidColorBrush(Color.FromArgb((byte)Math.Max(1, (int)bg.A), s.Bg.R, s.Bg.G, s.Bg.B));
             shadow.Visibility = glass || s.Bg.A < 0x60 || (Flush && !collapsed) ? Visibility.Collapsed : Visibility.Visible; // размытие обрезается по форме капсулы — тень снаружи не видна
             Foreground = new SolidColorBrush(s.Fg);

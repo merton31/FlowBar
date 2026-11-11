@@ -926,9 +926,9 @@ namespace FlowBar
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         // Базовые стили + 10 тем из Theme Factory. Пары текст/фон подобраны с контрастом ≥ 4.5:1, акцент ≥ 3:1 к фону.
         static readonly Dictionary<string, Sty> Styles = new Dictionary<string, Sty> {
-            { "Black", new Sty("#EE121212", "#FFFFFFFF", "#4CC2FF", 0) },
+            { "Black", new Sty("#EE121212", "#FFFFFFFF", "#FF7049", 0) },
             { "White", new Sty("#F2F7F7F7", "#FF161616", "#005FB8", 0) },
-            { "Midnight", new Sty("#EE0D1426", "#FFE6ECFF", "#7AA2FF", 0) },
+            { "Midnight", new Sty("#EE0D1426", "#FFE6ECFF", "#B39BFF", 0) },
             { "Clear", new Sty("#30000000", "#FFFFFFFF", "#FFFFFF", 0) },
             { "Liquid Glass", new Sty("#3C000000", "#FFFFFFFF", "#9FE1FF", 3) },
             { "iOS Glass", new Sty("#D0F4F4F7", "#FF111111", "#0A63D6", 4) },
@@ -3452,7 +3452,13 @@ namespace FlowBar
                     bool cur = day ? k == DateTime.Now.Hour : k == 6;
                     var r = new Rectangle { Fill = Accent, RadiusX = 2, RadiusY = 2, Margin = new Thickness(day ? 1 : 7, 0, day ? 1 : 7, 0), VerticalAlignment = VerticalAlignment.Bottom, Height = Math.Max(2, 70 * vals[k] / mx), Opacity = cur ? 1 : 0.55,
                         ToolTip = (day ? k + ":00" : DateTime.Now.AddDays(k - 6).ToString("ddd, d MMM")) + " — " + ScreenTime.Fmt((int)vals[k]) };
-                    Grid.SetColumn(r, k); chart.Children.Add(r);
+                    double restingOpacity = r.Opacity;
+                    var column = new Grid { Background = Brushes.Transparent, ToolTip = r.ToolTip };
+                    r.ToolTip = null;
+                    column.Children.Add(r);
+                    column.MouseEnter += (s, e) => { r.Opacity = 1; };
+                    column.MouseLeave += (s, e) => { r.Opacity = restingOpacity; };
+                    Grid.SetColumn(column, k); chart.Children.Add(column);
                     if (!day || k % 6 == 0)
                     {
                         var t = Txt(day ? k.ToString("00") + ":00" : DateTime.Now.AddDays(k - 6).ToString("ddd"), 9, cur); Grid.SetColumn(t, k);
