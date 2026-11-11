@@ -154,13 +154,18 @@ namespace FlowBar
         int AppMax { get { int n; return int.TryParse(CM("appMax", "0"), out n) ? Math.Max(0, n) : 0; } }
 
         // стартовые наборы панели; «Своя» — раскладка пользователя, сохраняется перед первым выбором набора
-        static readonly string[] PresetKeys = { "", "compact", "info", "minimal" };
-        static readonly string[] PresetNames = { "Своя", "Компактная", "Информативная", "Минимальная" };
+        static readonly string[] PresetKeys = { "", "compact", "info", "minimal", "work", "dev", "laptop", "system", "clean" };
+        static readonly string[] PresetNames = { "Своя", "Компактная", "Информативная", "Минимальная", "Работа", "Разработка", "Ноутбук", "Система", "Как Windows" };
         static readonly string[] PresetHints = {
             "Ваша раскладка и виды модулей.",
             "Модули коротко: значок и главный показатель, подробности — по нажатию. Значкам программ больше места.",
             "Музыка и ближайшее событие читаются прямо на панели и не прячутся; значков программ до 10, остальные — в «…».",
-            "До 6 значков программ, музыка, погода, раскладка и часы." };
+            "До 6 значков программ, музыка, погода, раскладка и часы.",
+            "Для сосредоточенной работы: фокус-таймер, задачи, заметки и ближайшее событие всегда на виду, музыка рядом; до 8 значков программ.",
+            "Для программиста: лимиты Claude и Codex всегда на виду, процессор, память и сеть, задачи и таймер; до 10 значков программ.",
+            "Для ноутбука: батарея всегда на виду, Wi-Fi и Bluetooth, громкость, погода, календарь и музыка; до 8 значков программ.",
+            "Наблюдение за компьютером: процессор, память и температура не прячутся, сеть, накопитель, громкость.",
+            "Как обычная панель Windows: только значки программ, сеть, громкость, раскладка и часы." };
         int PresetIndex { get { return Math.Max(0, Array.IndexOf(PresetKeys, C(MK("preset"), ""))); } }
         // набор и снимок «Своя» — у каждой панели свои (у монитора со своей раскладкой); у «Как на основном» — общие с основным
         void ApplyPreset(int i)
@@ -190,6 +195,35 @@ namespace FlowBar
                     views["media"] = "full"; views["event"] = "full"; views["claude"] = "compact"; views["codex"] = "compact";
                     views["cpu"] = "compact"; views["ram"] = "compact"; views["weather"] = "compact"; views["clock"] = "compact";
                     keep = new[] { "media", "event" }; apps = 10;
+                }
+                else if (key == "work")
+                {
+                    show = new[] { "pomo", "todos", "notes", "event", "media", "conn", "lang" };
+                    views["event"] = "full"; views["pomo"] = "compact"; views["todos"] = "compact"; views["notes"] = "min"; views["media"] = "compact"; views["clock"] = "compact";
+                    keep = new[] { "pomo", "event" }; apps = 8;
+                }
+                else if (key == "dev")
+                {
+                    show = new[] { "claude", "codex", "cpu", "ram", "net", "todos", "timer", "event", "conn", "lang" };
+                    views["claude"] = "compact"; views["codex"] = "compact"; views["cpu"] = "compact"; views["ram"] = "compact"; views["net"] = "compact"; views["timer"] = "min"; views["clock"] = "compact";
+                    keep = new[] { "claude", "codex" }; apps = 10;
+                }
+                else if (key == "laptop")
+                {
+                    show = new[] { "bat", "radios", "vol", "weather", "event", "media", "quick", "lang" };
+                    views["bat"] = "compact"; views["vol"] = "min"; views["weather"] = "compact"; views["event"] = "compact"; views["media"] = "compact"; views["clock"] = "compact";
+                    keep = new[] { "bat" }; apps = 8;
+                }
+                else if (key == "system")
+                {
+                    show = new[] { "cpu", "ram", "temp", "net", "disk", "vol", "conn", "quick", "lang" };
+                    foreach (var v in new[] { "cpu", "ram", "temp", "net", "disk" }) views[v] = "compact"; views["vol"] = "min"; views["clock"] = "compact";
+                    keep = new[] { "cpu", "ram", "temp" };
+                }
+                else if (key == "clean")
+                {
+                    show = new[] { "conn", "vol", "lang" };
+                    views["vol"] = "min"; views["clock"] = "compact";
                 }
                 else
                 {

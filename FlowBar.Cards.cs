@@ -1705,7 +1705,8 @@ namespace FlowBar
             c.Children.Add(SetRow("Общий размер", "S — 48, M — 60, L — 72, XL — 88 логических пикселей. Размер отдельного экрана можно задать в разделе «Мониторы».",
                 Seg(sizes, Math.Max(0, Array.IndexOf(sizes, C("size", "M"))), i => { cfg["size"] = sizes[i]; SaveCfg(); RebuildAll(); again(); })));
             c.Children.Add(SetRow("Компоновка", PresetHints[PresetIndex] + " Набор — только начало: потом всё можно переставить, а «Своя» вернёт прежнюю раскладку.",
-                Seg(PresetNames, PresetIndex, i => { ApplyPreset(i); again(); })));
+                VS(Seg(PresetNames.Take(4).ToArray(), PresetIndex < 4 ? PresetIndex : -1, i => { ApplyPreset(i); again(); }),
+                   Mg(Seg(PresetNames.Skip(4).ToArray(), PresetIndex >= 4 ? PresetIndex - 4 : -1, i => { ApplyPreset(i + 4); again(); }), 0, 6, 0, 0)))); // два ряда: в один все наборы не помещаются
             var budgets = new[] { 0, 6, 8, 10, 14 }; int bi = Math.Max(0, Array.IndexOf(budgets, AppMax));
             c.Children.Add(SetRow("Значков программ на панели", "Остальные — в «…» (активная программа всегда на панели). «Все» — значки не прячутся; если места нет, ряд листается колесом.",
                 Seg(new[] { "Все", "6", "8", "10", "14" }, bi, i => { cfg[MK("appMax")] = budgets[i].ToString(); MarkCustom(); SaveCfg(); All(b => { b.ResetFit(false); b.Compose(); }); again(); })));
