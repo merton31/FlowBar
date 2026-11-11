@@ -2942,14 +2942,44 @@ namespace FlowBar
                                       : p.X >= b.Left && p.X < b.Right && (IsTop ? p.Y <= b.Top + 1 : p.Y >= b.Bottom - 2);
             if (autoHidden) { if (atEdge) { autoHidden = false; lastUse = DateTime.Now; ApplyVis(); } return; }
             if (InUse || atEdge) { lastUse = DateTime.Now; return; }
-            if ((DateTime.Now - lastUse).TotalMilliseconds > 900) { autoHidden = true; ApplyVis(); }
+            autoHidden = true; ApplyVis(); // мышь ушла и панель ничем не занята — сразу (опрос раз в 150 мс)
         }
+        bool sliding; // панель уезжает за край
         void ApplyVis()
         {
-            var v = fsHidden || autoHidden ? Visibility.Hidden : Visibility.Visible;
-            if (Visibility == v) return;
-            Visibility = v;
-            if (v == Visibility.Visible && Motion && frame != null) frame.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
+            bool hide = fsHidden || autoHidden;
+            if (frame == null || !Motion || fsHidden) // полный экран и выключенные анимации — без движения
+            {
+                sliding = false; if (frame != null) frame.BeginAnimation(OpacityProperty, null);
+                var v = hide ? Visibility.Hidden : Visibility.Visible; if (Visibility != v) Visibility = v; return;
+            }
+            var tt = frame.RenderTransform as TranslateTransform; if (tt == null) frame.RenderTransform = tt = new TranslateTransform();
+            var axis = VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty;
+            // уезжает к своему краю экрана на свою толщину с отступом
+            double away = (VerticalBar ? SideWidth : BarH) + Gap + SM; if (IsTop || (VerticalBar && LeftBar)) away = -away;
+            if (hide)
+            {
+                if (Visibility != Visibility.Visible || sliding) return;
+                sliding = true; if (glassBg != null) glassBg.Fade();
+                var o = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200));
+                o.Completed += (s, e) =>
+                {
+                    if (!sliding) return; // успели вернуть мышь — панель уже едет обратно
+                    sliding = false; Visibility = Visibility.Hidden;
+                    frame.BeginAnimation(OpacityProperty, null); tt.BeginAnimation(axis, null);
+                };
+                tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
+                frame.BeginAnimation(OpacityProperty, o);
+            }
+            else
+            {
+                if (Visibility == Visibility.Visible && !sliding) return;
+                double from = sliding ? (double)tt.GetValue(axis) : away, op = sliding ? frame.Opacity : 0;
+                if (sliding && glassBg != null) glassBg.Unfade();
+                sliding = false; Visibility = Visibility.Visible;
+                tt.BeginAnimation(axis, new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+                frame.BeginAnimation(OpacityProperty, new DoubleAnimation(op, 1, TimeSpan.FromMilliseconds(180)));
+            }
         }
 
         // ---------- стиль и позиция ----------

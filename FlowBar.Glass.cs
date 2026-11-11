@@ -202,6 +202,7 @@ namespace FlowBar
         }
         // уход вместе с карточкой
         public void Fade() { if (host != null && shown) Animate(1, 0, 120); }
+        public void Unfade() { if (host != null && shown) Animate(0, 1, 150); } // панель вернули, пока она уезжала
         void Animate(float from, float to, int ms)
         {
             var a = comp.CreateScalarKeyFrameAnimation(); a.InsertKeyFrame(0f, from); a.InsertKeyFrame(1f, to); a.Duration = TimeSpan.FromMilliseconds(ms);
