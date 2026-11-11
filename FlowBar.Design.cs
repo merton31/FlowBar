@@ -2980,7 +2980,18 @@ namespace FlowBar
             if (guarded == null || !guarded.IsOpen || N.GetForegroundWindow() != menuFg) CloseGuarded();
         }
         // пока открыта карточка или меню, идёт перетаскивание, правка или фокус клавиатуры на панели — не скрываемся
-        bool InUse { get { return IsMouseOver || panel != null || preview != null || dragging || sDragging || editMode || menusOpen > 0 || IsKeyboardFocusWithin || (toast != null && primary); } }
+        // курсор — не IsMouseOver: в прозрачных местах окна (между секциями, края капсулы) WPF считает, что мыши нет, и панель уезжала из-под курсора,
+        // а у спрятанного окна признак мог залипнуть, и панель не пряталась
+        bool InUse { get { return panel != null || preview != null || dragging || sDragging || editMode || menusOpen > 0 || IsKeyboardFocusWithin || (toast != null && primary); } }
+        // курсор над капсулой (с полем 8 px) или между ней и краем экрана
+        bool CursorOverBar(N.POINT p)
+        {
+            if (root == null || !IsVisible || root.ActualWidth <= 0) return false;
+            Point a, z; try { a = root.PointToScreen(new Point(0, 0)); z = root.PointToScreen(new Point(root.ActualWidth, root.ActualHeight)); } catch { return false; }
+            double pad = 8 * MonScale, l = Math.Min(a.X, z.X) - pad, r = Math.Max(a.X, z.X) + pad, t = Math.Min(a.Y, z.Y) - pad, btm = Math.Max(a.Y, z.Y) + pad; var b = scr.Bounds;
+            if (VerticalBar) { if (LeftBar) l = b.Left; else r = b.Right; } else if (IsTop) t = b.Top; else btm = b.Bottom;
+            return p.X >= l && p.X <= r && p.Y >= t && p.Y <= btm;
+        }
         void AutoHideTick()
         {
             if (!AutoHide) { if (autoHidden) { autoHidden = false; ApplyVis(); } return; }
@@ -2988,8 +2999,9 @@ namespace FlowBar
             bool atEdge = VerticalBar ? p.Y >= b.Top && p.Y < b.Bottom && (LeftBar ? p.X <= b.Left + 1 && p.X >= b.Left : p.X >= b.Right - 2 && p.X < b.Right)
                                       : p.X >= b.Left && p.X < b.Right && (IsTop ? p.Y <= b.Top + 1 : p.Y >= b.Bottom - 2);
             if (autoHidden) { if (atEdge) { autoHidden = false; lastUse = DateTime.Now; ApplyVis(); } return; }
-            if (InUse || atEdge) { lastUse = DateTime.Now; return; }
-            autoHidden = true; ApplyVis(); // мышь ушла и панель ничем не занята — сразу (опрос раз в 150 мс)
+            if (InUse || atEdge || CursorOverBar(p)) { lastUse = DateTime.Now; return; }
+            if ((DateTime.Now - lastUse).TotalMilliseconds < 250) return; // короткая пауза: проход мыши мимо края не прячет панель
+            autoHidden = true; ApplyVis();
         }
         bool sliding; // панель уезжает за край
         void ApplyVis()
