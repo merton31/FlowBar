@@ -1329,7 +1329,7 @@ namespace FlowBar
             c.Children.Add(SSub("Клавиатура"));
             c.Children.Add(SHint("Ctrl+Alt+B — перейти на панель; стрелки и Tab — по элементам; Enter или Пробел — нажать; Shift+F10 — меню; Esc — вернуться в прежнее окно.\nAlt+T — задачи. Win+S — поиск Windows."));
             c.Children.Add(SSub("Панель Windows"));
-            c.Children.Add(CardActions(Btn("Вернуть панель Windows и выйти", () => { cfg["hideTaskbar"] = "0"; SaveCfg(); Application.Current.Shutdown(); })));
+            c.Children.Add(CardActions(Btn("Вернуть панель Windows и выйти", () => { cfg["hideTaskbar"] = "0"; SaveCfg(); ExitWhy = "кнопка «Вернуть панель Windows и выйти»"; Application.Current.Shutdown(); })));
             var exe = Assembly.GetExecutingAssembly().Location;
             c.Children.Add(CardStatus("FlowBar · сборка от " + File.GetLastWriteTime(exe).ToString("d MMMM yyyy, HH:mm") + " · " + exe));
         }
@@ -1514,7 +1514,7 @@ namespace FlowBar
             switch (code < OpenNames.Length ? OpenNames[code] : "")
             {
                 case "settings": b.ShowSettings(null); break;
-                case "quit": Application.Current.Shutdown(); break;
+                case "quit": ExitWhy = "команда quit от другого запуска FlowBar (обновление или --open quit)"; Application.Current.Shutdown(); break;
                 case "currency": b.ShowFx(); break;
                 case "report": SaveReport(); break;
                 case "news": b.ShowNews(); break;

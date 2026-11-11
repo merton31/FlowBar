@@ -2577,7 +2577,7 @@ namespace FlowBar
             m.Items.Add(Item("Закрепить программу…", () => Primary.ShowPinPicker()));
             m.Items.Add(Item("Заблокировать расположение значков", () => { cfg["lock"] = Locked ? "0" : "1"; SaveCfg(); }, Locked));
             m.Items.Add(new Separator());
-            m.Items.Add(Item("Выход", () => Application.Current.Shutdown()));
+            m.Items.Add(Item("Выход", () => { ExitWhy = "пункт «Выход» в меню панели"; Application.Current.Shutdown(); }));
             return m;
         }
 

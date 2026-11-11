@@ -1025,6 +1025,7 @@ namespace FlowBar
             LoadGroups(); ApplyAppTheme();
             screen = ScreenTime.Load(Today);
         }
+        public static string ExitWhy; // кто попросил закрыть панель — для журнала
         public static void Shutdown() { foreach (var b in bars.ToList()) b.Unreserve(); Tray.Stop(); Taskbar.Restore(false, true); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
 
         public Bar(System.Windows.Forms.Screen s)
@@ -1789,13 +1790,13 @@ namespace FlowBar
             if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
             tile.AllowDrop = true;
-            // файл тянут над значком открытой программы — через полсекунды её окно выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
+            // файл тянут над значком открытой программы — её окно сразу выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
             DispatcherTimer spring = null;
             tile.DragEnter += (s, e) =>
             {
                 if (!e.Data.GetDataPresent(DataFormats.FileDrop) || ws.Count == 0) return;
                 if (spring != null) spring.Stop();
-                spring = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                spring = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(70) }; // почти сразу; пауза только чтобы окна не мелькали, когда файл проносят вдоль панели
                 spring.Tick += (o2, e2) => { spring.Stop(); if (ws.Count == 1) ActivateWin(ws[0].H); else ShowPreview(tile, ws, true); };
                 spring.Start();
             };
@@ -1929,7 +1930,7 @@ namespace FlowBar
                 cell.MouseLeftButtonUp += (s, e) => { ClosePreview(); ActivateWin(h); };
                 // файл над миниатюрой — это окно выходит вперёд
                 cell.AllowDrop = true; DispatcherTimer cs = null;
-                cell.DragEnter += (s, e) => { previewMiss = 0; if (cs != null) cs.Stop(); cs = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) }; cs.Tick += (o2, e2) => { cs.Stop(); ClosePreview(); ActivateWin(h); }; cs.Start(); };
+                cell.DragEnter += (s, e) => { previewMiss = 0; if (cs != null) cs.Stop(); cs = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(90) }; cs.Tick += (o2, e2) => { cs.Stop(); ClosePreview(); ActivateWin(h); }; cs.Start(); };
                 cell.DragOver += (s, e) => { previewMiss = 0; e.Effects = DragDropEffects.None; e.Handled = true; }; cell.DragLeave += (s, e) => { if (cs != null) cs.Stop(); };
                 cell.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); ClosePreview(); } }; // средний клик — закрыть окно
                 cell.MouseEnter += (s, e) => cell.Background = Frozen(CardFg, 0x14); cell.MouseLeave += (s, e) => cell.Background = Brushes.Transparent;
@@ -3646,11 +3647,25 @@ namespace FlowBar
             Bar.WatchOk = StartWatch();
             System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; // TLS 1.2
             // Панель Windows возвращается при любом завершении, чтобы не оставить пользователя без неё
-            AppDomain.CurrentDomain.UnhandledException += (s, e) => Bar.Shutdown();
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                Bar.Info("сбой, панель закрывается: " + e.ExceptionObject);
+                Bar.Shutdown();
+                try
+                {
+                    var mark = System.IO.Path.Combine(Bar.Dir, "restart.txt");
+                    if (!File.Exists(mark) || (DateTime.Now - File.GetLastWriteTime(mark)).TotalSeconds > 60)
+                    {
+                        File.WriteAllText(mark, DateTime.Now.ToString("s"));
+                        mtx.ReleaseMutex(); Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "--fromshell") { UseShellExecute = true });
+                    }
+                }
+                catch { }
+            };
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             app.DispatcherUnhandledException += (s, e) => { Bar.Log(e.Exception); e.Handled = true; };
-            app.Exit += (s, e) => Bar.Shutdown();
-            app.SessionEnding += (s, e) => Bar.Shutdown();
+            app.Exit += (s, e) => { Bar.Info("выход: " + (Bar.ExitWhy ?? "приложение завершено без названной причины")); Bar.Shutdown(); };
+            app.SessionEnding += (s, e) => { Bar.ExitWhy = "завершение сеанса Windows (" + e.ReasonSessionEnding + ")"; Bar.Info("выход: " + Bar.ExitWhy); Bar.Shutdown(); };
             Bar.Init();
             if (Bar.C("ownTray", "1") == "1") Tray.Start(); // свой трей (до панелей: рассылка TaskbarCreated их не касается)
             foreach (var scr in System.Windows.Forms.Screen.AllScreens) new Bar(scr).Show();
