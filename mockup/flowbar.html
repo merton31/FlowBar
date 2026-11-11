@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowBar — макет</title>
+<style>
+/* Токены вида. Правки макета — в основном здесь; утверждённые значения переносятся в FlowBar.Design.cs */
+:root{
+  --accent:#F87171; --on-accent:#111;
+  --bar:#1c1c1e; --card:#232325; --fg:#f5f5f7; --edge:rgba(255,255,255,.09); --chip:rgba(255,255,255,.06);
+  --tile:52px; --icon:32px; --bar-pad:6px; --bar-radius:38px; --card-radius:12px; --chip-radius:12px;
+  --font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; --display:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --wall:linear-gradient(135deg,#0d1b2a,#1b263b 45%,#415a77);
+}
+body.light{ --bar:#f3f3f5; --card:#fbfbfd; --fg:#1b1b1f; --edge:rgba(0,0,0,.10); --chip:rgba(0,0,0,.05); --on-accent:#fff; --wall:linear-gradient(135deg,#dfe7f1,#c7d5e6 50%,#f3e9dc); }
+body.glass{ --bar:rgba(28,28,30,.55); --card:rgba(35,35,37,.72); }
+body.s{ --tile:42px; --icon:26px; } body.l{ --tile:60px; --icon:38px; }
+*{box-sizing:border-box} html,body{height:100%}
+body{margin:0;font-family:var(--font);color:var(--fg);background:var(--wall);background-attachment:fixed;overflow-x:hidden}
+.tools{position:fixed;top:12px;left:12px;z-index:9;display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:10px 12px;font-size:12px;max-width:calc(100vw - 24px)}
+.tools label{display:flex;gap:6px;align-items:center;opacity:.9}
+.tools select,.tools input[type=range]{accent-color:var(--accent)}
+.tools select{background:var(--chip);color:var(--fg);border:1px solid var(--edge);border-radius:8px;padding:4px 6px;font:inherit}
+.stage{min-height:100vh;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;padding:150px 16px 18px;gap:14px}
+.cards{display:flex;flex-wrap:wrap;gap:16px;justify-content:center;align-items:flex-end;width:100%}
+.card{width:340px;max-width:100%;background:var(--card);border:1px solid var(--edge);border-radius:var(--card-radius);padding:16px;box-shadow:0 10px 28px rgba(0,0,0,.32);backdrop-filter:blur(24px)}
+.card h3{margin:0 0 12px;font:600 16px var(--display)}
+.sub{font-size:11px;opacity:.6}
+/* панель */
+.barwrap{position:relative;max-width:100%}
+.bar{display:flex;align-items:center;gap:4px;height:calc(var(--tile) + var(--bar-pad)*2);padding:var(--bar-pad);background:var(--bar);border:1px solid var(--edge);border-radius:var(--bar-radius);backdrop-filter:blur(30px);max-width:100%;overflow-x:auto;scrollbar-width:none}
+.tile{position:relative;flex:none;width:var(--tile);height:var(--tile);border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:background .12s}
+.tile:hover{background:var(--chip)}
+.app{width:var(--icon);height:var(--icon);border-radius:9px;display:grid;place-items:center;font:700 13px var(--display);color:#fff}
+.ind{position:absolute;bottom:2px;left:50%;transform:translateX(-50%);display:flex;gap:2px}
+.ind i{display:block;width:6px;height:3px;border-radius:2px;background:var(--fg);opacity:.5}
+.ind.many i+i{width:3px}
+.ind.other i{background:none;border:1px solid var(--fg);width:8px;height:4px}
+.tile.active .ind i{background:var(--accent);opacity:1;width:18px} .tile.active .ind.many i+i{width:3px;opacity:.75}
+.badge{position:absolute;top:3px;right:-2px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--on-accent);font:600 9.5px var(--font);display:grid;place-items:center}
+.hl{position:absolute;top:var(--bar-pad);left:0;width:var(--tile);height:var(--tile);border-radius:50%;background:var(--chip);transition:transform .24s cubic-bezier(.2,.8,.2,1);pointer-events:none}
+.chip{flex:none;height:var(--tile);display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--chip);border:1px solid var(--edge);border-radius:var(--chip-radius);font-size:12px;white-space:nowrap}
+.chip b{font:600 13px var(--display)} .cover{width:calc(var(--tile) - 12px);height:calc(var(--tile) - 12px);border-radius:8px;background:linear-gradient(135deg,#555,#999)}
+.play{width:30px;height:30px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;cursor:pointer;font-size:12px}
+.sep{flex:none;width:1px;height:24px;background:var(--edge);margin:0 4px}
+.tip{position:absolute;bottom:calc(100% + 8px);left:0;background:var(--card);border:1px solid var(--edge);border-radius:9px;padding:6px 10px;font-size:12px;white-space:nowrap;opacity:0;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.3);transition:transform .19s cubic-bezier(.2,.8,.2,1),width .19s,opacity .12s}
+/* элементы карточек */
+.row{display:flex;align-items:center;gap:12px;padding:7px 0}
+.ic{flex:none;width:36px;height:36px;border-radius:50%;background:var(--chip);display:grid;place-items:center;font-size:15px}
+.ic.on{background:var(--accent);color:var(--on-accent)} body.calm .ic.on{background:var(--chip);color:var(--accent)}
+.row .t{flex:1;min-width:0} .row .t div:first-child{font-size:13px}
+.sw{flex:none;width:40px;height:22px;border-radius:11px;background:var(--chip);position:relative;cursor:pointer;transition:background .15s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .15s}
+.sw.on{background:var(--accent)} .sw.on::after{transform:translateX(18px)}
+input[type=range].sl{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:none;margin:0}
+input[type=range].sl::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(to right,var(--accent) var(--v,66%),var(--chip) var(--v,66%))}
+input[type=range].sl::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;margin-top:-7px;border-radius:50%;background:#fff;border:5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35),inset 0 0 0 5px var(--accent);cursor:pointer}
+.dev{display:flex;gap:8px;padding:5px 8px;border-radius:8px;font-size:12px;opacity:.8;cursor:pointer} .dev:hover{background:var(--chip)} .dev.cur{opacity:1} .dev span{width:14px;color:var(--accent)}
+.todo{display:flex;gap:10px;align-items:flex-start;padding:7px 8px;border-radius:8px;font-size:12.5px;cursor:pointer} .todo:hover{background:var(--chip)}
+.todo .ck{flex:none;width:18px;height:18px;border-radius:50%;border:1.5px solid color-mix(in srgb,var(--fg) 45%,transparent);display:grid;place-items:center;font-size:10px;color:transparent;transition:.12s}
+.todo.done .ck{background:var(--accent);border-color:var(--accent);color:var(--on-accent)} .todo.done span{text-decoration:line-through;opacity:.45}
+.todo em{margin-left:auto;font-style:normal;font-size:10.5px;padding:2px 7px;border-radius:6px;background:var(--chip);opacity:.8;white-space:nowrap}
+.field{width:100%;margin-top:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--edge);background:var(--chip);color:var(--fg);font:inherit;font-size:12.5px}
+.big{font:600 40px var(--display);font-variant-numeric:tabular-nums;text-align:center;margin:6px 0 10px}
+.pills{display:flex;gap:8px;justify-content:center;flex-wrap:wrap} .pill{padding:7px 14px;border-radius:16px;background:var(--chip);font-size:12px;cursor:pointer;border:1px solid var(--edge)} .pill.pri{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}
+.prog{height:4px;border-radius:2px;background:var(--chip);margin:14px 0 4px;overflow:hidden;transition:transform .22s,opacity .22s} .prog i{display:block;height:100%;width:38%;background:var(--accent);border-radius:2px}
+.paused .prog{transform:scaleY(.45);opacity:.6}
+.seg{display:inline-flex;background:var(--chip);border-radius:9px;padding:3px;gap:2px;font-size:12px;margin-bottom:6px} .seg span{padding:4px 12px;border-radius:7px;cursor:pointer} .seg span.on{background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.25)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="tools">
+  <b>Макет FlowBar</b>
+  <label>Тема <select id="theme"><option value="">Тёмная</option><option value="light">Светлая</option><option value="glass">Стекло</option></select></label>
+  <label>Размер <select id="size"><option value="s">S</option><option value="" selected>M</option><option value="l">L</option></select></label>
+  <label>Акцент <input type="color" id="accent" value="#F87171"></label>
+  <label>Скругление карточек <input type="range" id="rad" min="4" max="24" value="12"></label>
+  <label><input type="checkbox" id="calm"> спокойные значки (unslop)</label>
+</div>
+
+<div class="stage">
+  <div class="cards">
+    <div class="card">
+      <h3>Быстрые переключатели</h3>
+      <div class="row"><div class="ic on">ᛒ</div><div class="t"><div>Bluetooth</div><div class="sub">Включён</div></div><div class="sw on"></div></div>
+      <div class="row"><div class="ic on">♪</div><div class="t"><div>Звук</div><div class="sub" id="volsub">Наушники · 66%</div></div><div class="sw on"></div></div>
+      <input class="sl" type="range" id="vol" value="66">
+      <div class="dev">  <span></span>Монитор (HDMI)</div>
+      <div class="dev cur"><span>✓</span>Наушники</div>
+      <div class="dev"><span></span>Динамики</div>
+      <div class="row"><div class="ic">☾</div><div class="t"><div>Не засыпать</div><div class="sub">Экран не уходит в сон</div></div><div class="sw"></div></div>
+    </div>
+
+    <div class="card">
+      <h3>Задачи</h3>
+      <div class="sub" id="left" style="margin:-6px 0 6px"></div>
+      <div id="todos">
+        <div class="todo"><div class="ck">✓</div><span>Оплатить счёт за электричество</span><em>Сегодня</em></div>
+        <div class="todo"><div class="ck">✓</div><span>Отправить акт за сентябрь</span><em>Пятница</em></div>
+        <div class="todo done"><div class="ck">✓</div><span>Записать кота к ветеринару</span></div>
+      </div>
+      <input class="field" placeholder="Новая задача — Enter">
+    </div>
+
+    <div class="card" id="timer">
+      <div style="text-align:center"><div class="seg"><span class="on">Сейчас</span><span>Статистика</span></div></div>
+      <div class="sub" style="text-align:center">Перерыв через</div>
+      <div class="big">24:30</div>
+      <div class="pills"><div class="pill pri" id="pause">Пауза</div><div class="pill">+1 мин</div><div class="pill">+5 мин</div></div>
+      <div class="prog"><i></i></div>
+      <div class="row"><div class="ic">⚡</div><div class="t"><div>Фокус сейчас</div></div><div class="sub">5 мин</div></div>
+      <div class="row"><div class="ic">☕</div><div class="t"><div>Следующий перерыв</div></div><div class="sub">короткий · 1 мин</div></div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="tip" id="tip"></div>
+    <div class="bar" id="bar">
+      <div class="hl" id="hl"></div>
+      <div class="tile" data-tip="Пуск"><div style="font-size:18px;color:var(--accent)">⊞</div></div>
+      <div class="tile" data-tip="Поиск (Win+S)"><div style="font-size:17px">⌕</div></div>
+      <div class="tile" data-tip="Проводник"><div class="app" style="background:#e9a23b">П</div><div class="ind"><i></i></div></div>
+      <div class="tile" data-tip="Мессенджер — 12 непрочитанных"><div class="app" style="background:#2aa3e0">М</div><div class="badge">12</div><div class="ind"><i></i></div></div>
+      <div class="tile active" data-tip="Браузер — 2 окна"><div class="app" style="background:#4b8bf5">Б</div><div class="ind many"><i></i><i></i></div></div>
+      <div class="tile" data-tip="Музыка"><div class="app" style="background:#1db954">♪</div><div class="ind"><i></i></div></div>
+      <div class="tile" data-tip="Игры — открыто на другом мониторе"><div class="app" style="background:#1b2838">И</div><div class="ind other"><i></i></div></div>
+      <div class="tile" data-tip="Редактор"><div class="app" style="background:#7a5cf0">Р</div></div>
+      <div class="sep"></div>
+      <div class="chip"><div class="cover"></div><div><b>Movie</b><div class="sub">twentythree</div></div><div class="play">▶</div></div>
+      <div class="chip">↓ 15 КБ/с</div>
+      <div class="chip">☁ <b>8°</b></div>
+      <div class="chip"><div style="text-align:center"><b>22:02</b><div class="sub">Вт, 10 ноя</div></div></div>
+    </div>
+  </div>
+  <div class="sub">Наведите на значки — подсказка перетекает. Клик по значку программы — подложка переезжает. Всё здесь — макет: настоящая панель меняется только после вашего «да».</div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s), body=document.body;
+function cls(){ body.className=[$('#theme').value,$('#size').value,$('#calm').checked?'calm':''].join(' ').trim(); moveHl(); }
+$('#theme').onchange=cls; $('#size').onchange=cls; $('#calm').onchange=cls;
+$('#accent').oninput=e=>document.documentElement.style.setProperty('--accent',e.target.value);
+$('#rad').oninput=e=>document.documentElement.style.setProperty('--card-radius',e.target.value+'px');
+// ползунок
+const vol=$('#vol'); const setVol=()=>{vol.style.setProperty('--v',vol.value+'%'); $('#volsub').textContent='Наушники · '+vol.value+'%';}; vol.oninput=setVol; setVol();
+document.querySelectorAll('.sw').forEach(s=>s.onclick=()=>{s.classList.toggle('on'); const ic=s.parentElement.querySelector('.ic'); if(ic) ic.classList.toggle('on',s.classList.contains('on'));});
+document.querySelectorAll('.dev').forEach(d=>d.onclick=()=>{document.querySelectorAll('.dev').forEach(x=>{x.classList.remove('cur');x.querySelector('span').textContent='';}); d.classList.add('cur'); d.querySelector('span').textContent='✓';});
+// задачи
+function count(){const a=document.querySelectorAll('.todo'),l=[...a].filter(x=>!x.classList.contains('done')).length; $('#left').textContent=l?`Осталось ${l} из ${a.length}`:'Всё сделано';}
+function bind(t){t.onclick=()=>{t.classList.toggle('done'); setTimeout(()=>{ if(t.classList.contains('done')) $('#todos').appendChild(t); else $('#todos').prepend(t); count(); },420);};}
+document.querySelectorAll('.todo').forEach(bind); count();
+$('.field').onkeydown=e=>{ if(e.key!=='Enter'||!e.target.value.trim())return; const t=document.createElement('div'); t.className='todo'; t.innerHTML='<div class="ck">✓</div><span></span>'; t.querySelector('span').textContent=e.target.value.trim(); $('#todos').prepend(t); bind(t); e.target.value=''; count(); };
+// таймер: пауза сжимает полосу
+$('#pause').onclick=e=>{const p=$('#timer').classList.toggle('paused'); e.target.textContent=p?'Продолжить':'Пауза';};
+document.querySelectorAll('.seg span').forEach(s=>s.onclick=()=>{s.parentElement.querySelectorAll('span').forEach(x=>x.classList.remove('on')); s.classList.add('on');});
+// подсказка и подложка активного значка
+const tip=$('#tip'), bar=$('#bar'), hl=$('#hl'); let tipOn=false, hideT;
+function place(el){ const b=bar.getBoundingClientRect(), r=el.getBoundingClientRect(); tip.textContent=el.dataset.tip; tip.style.width='auto'; const w=tip.offsetWidth;
+  const x=Math.max(0,Math.min(b.width-w,r.left-b.left+r.width/2-w/2)); if(!tipOn){tip.style.transition='opacity .12s';} else tip.style.transition='';
+  tip.style.transform=`translateX(${x}px)`; tip.style.opacity=1; tipOn=true; }
+document.querySelectorAll('.tile').forEach(t=>{ t.onmouseenter=()=>{clearTimeout(hideT); place(t);}; t.onmouseleave=()=>{hideT=setTimeout(()=>{tip.style.opacity=0;tipOn=false;},180);};
+  t.onclick=()=>{ if(!t.querySelector('.app'))return; document.querySelectorAll('.tile').forEach(x=>x.classList.remove('active')); t.classList.add('active'); moveHl(); }; });
+function moveHl(){ const a=$('.tile.active'); if(!a){hl.style.opacity=0;return;} hl.style.opacity=1; hl.style.transform=`translateX(${a.offsetLeft}px)`; }
+bar.onscroll=moveHl; addEventListener('resize',moveHl); moveHl();
+</script>
+</body>
+</html>
