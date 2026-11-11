@@ -990,7 +990,14 @@ namespace FlowBar
                 if (ss != null && !ReferenceEquals(ss, hooked)) { hooked = ss; ss.PlaybackInfoChanged += (a, b) => KickMedia(); ss.MediaPropertiesChanged += (a, b) => { lastMedia = null; KickMedia(); }; } // пауза, перемотка и смена трека — сразу, а не при следующем опросе
                 s.Sessions = mediaMgr.GetSessions().Where(x => !SpotifyOnly || IsSpotify(x.SourceAppUserModelId)).Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
                 { var sp = System.Diagnostics.Process.GetProcessesByName("Spotify"); spotifyUp = sp.Length > 0; foreach (var x in sp) x.Dispose(); }
-                if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
+                if (ss == null)
+                {
+                    bool was = s.HasMedia; string wasKey = s.Title + "\u0001" + s.Artist;
+                    s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null;
+                    if (!SpotifyByTitle(s)) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; }
+                    if (was != s.HasMedia || wasPlaying != s.Playing || wasKey != s.Title + "\u0001" + s.Artist) All(b => b.Render());
+                    return;
+                }
                 var info = ss.GetPlaybackInfo();
                 s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; bool smtcPlaying = s.Playing;
                 // Spotify сообщает Windows о паузе и воспроизведении через 5–10 с, а заголовок окна меняет сразу: «Spotify Premium» — пауза, «Исполнитель - трек» — играет
@@ -1023,6 +1030,24 @@ namespace FlowBar
             }
             catch (Exception ex) { Log(ex); var s = live; s.MediaError = ex.Message; s.HasMedia = s.Playing = false; s.Cover = null; lastMedia = null; } // источник сломался — не держим старую обложку
             finally { mediaBusy = false; if (mediaAgain) { mediaAgain = false; Dispatcher.BeginInvoke(new Action(UpdateMedia)); } }
+        }
+        // Spotify не сообщает Windows о треке, если в нём выключено «Показывать оверлей при использовании медиаклавиш»: тогда трек — из заголовка окна
+        // «Исполнитель - трек» (пока играет), на паузе («Spotify Premium») — последний трек; кнопки работают медиаклавишами
+        static string[] titleTrack;
+        static bool SpotifyByTitle(Snap s)
+        {
+            if (!spotifyUp) { titleTrack = null; return false; }
+            string t = null;
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("Spotify"))
+                try { var w = p.MainWindowTitle; if (!string.IsNullOrEmpty(w)) t = w; } catch { } finally { p.Dispose(); }
+            if (t == null) return titleTrack != null && s.HasMedia; // окно свёрнуто в трей — оставляем, что было
+            int i = t.IndexOf(" - ", StringComparison.Ordinal);
+            bool playing = i > 0;
+            if (playing) titleTrack = new[] { t.Substring(0, i), t.Substring(i + 3) };
+            if (titleTrack == null) return false;
+            s.HasMedia = true; s.Playing = playing; s.Remote = false; s.Artist = titleTrack[0]; s.Title = titleTrack[1]; s.App = "Spotify.exe";
+            s.CanToggle = s.CanNext = s.CanPrev = true; s.CanSeek = false; s.MediaError = null;
+            return true;
         }
         // плеер, который показан и которым управляют кнопки; null — текущий по мнению Windows
         static string mediaPick;

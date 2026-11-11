@@ -2482,6 +2482,7 @@ namespace FlowBar
                 var hp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, -4, 0, 8) }; hp.Children.Add(arrow); hp.Children.Add(head); top = hp;
                 w.PreviewKeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Back && !(Keyboard.FocusedElement is TextBox)) { e.Handled = true; back(); } };
             }
+            if (title == "Значки трея") { head.Text = ""; if (back == null) top.Visibility = Visibility.Collapsed; } // сетка значков говорит сама за себя; стрелка «Назад» остаётся
             DockPanel.SetDock(top, Dock.Top); sp.Children.Add(top);
             sp.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Padding = new Thickness(0, 0, 6, 0), Margin = new Thickness(0, 0, -6, 0) });
             StyleInputs(sp, fg);
