@@ -2302,24 +2302,43 @@ namespace FlowBar
 
         void ShowTodos()
         {
-            var list = new StackPanel();
-            var input = new TextBox { Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 8, 0, 0), ToolTip = "Новая задача — Enter" };
+            var list = new StackPanel { Margin = new Thickness(-8, 0, -4, 0) }; var count = Txt("", 11, false); count.Opacity = 0.6; count.Margin = new Thickness(0, -6, 0, 6);
+            var input = new TextBox { Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 8, 0, 0), ToolTip = "Новая задача — Enter" };
             Action render = null;
             render = () =>
             {
                 list.Children.Clear();
-                if (todos.Count == 0) list.Children.Add(new TextBlock { Text = "Задач нет — введите ниже и нажмите Enter", Opacity = 0.6 });
-                foreach (var td in todos.ToList())
+                if (todos.Count == 0) list.Children.Add(new TextBlock { Text = "Задач нет — введите ниже и нажмите Enter", Opacity = 0.6, Margin = new Thickness(8, 0, 0, 0) });
+                // сначала несделанные; строка — круглая отметка, текст и крестик, который виден при наведении
+                foreach (var td in todos.OrderBy(x => x.Done).ToList())
                 {
                     var t = td;
-                    var cb = new CheckBox { Content = new TextBlock { Text = t.Text, TextWrapping = TextWrapping.Wrap }, IsChecked = t.Done, Margin = new Thickness(0, 3, 0, 3), VerticalContentAlignment = VerticalAlignment.Top };
-                    System.Windows.Automation.AutomationProperties.SetName(cb, t.Text);
-                    RoutedEventHandler onT = (s, e) => { t.Done = cb.IsChecked == true; SaveTodos(); }; cb.Checked += onT; cb.Unchecked += onT; // и мышью, и через специальные возможности
-                    var del = Cross("Удалить задачу «" + t.Text + "»", () => { todos.Remove(t); SaveTodos(); render(); });
-                    var dp = new DockPanel(); DockPanel.SetDock(del, Dock.Right);
-                    dp.Children.Add(del); dp.Children.Add(cb);
-                    list.Children.Add(dp);
+                    var mark = new TextBlock { Text = "\uE73E", FontFamily = Icons, FontSize = 10, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Opacity = t.Done ? 1 : 0 };
+                    var ring = new Border { Width = 18, Height = 18, CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1.5), Child = mark, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 1, 10, 0),
+                        BorderBrush = t.Done ? Accent : Frozen(CardFg, 0x70), Background = t.Done ? Accent : Brushes.Transparent };
+                    var tx = new TextBlock { Text = t.Text, TextWrapping = TextWrapping.Wrap, FontSize = 12.5, Opacity = t.Done ? 0.45 : 1, VerticalAlignment = VerticalAlignment.Center };
+                    if (t.Done) tx.TextDecorations = TextDecorations.Strikethrough;
+                    var del = Cross("Удалить задачу «" + t.Text + "»", () => { todos.Remove(t); SaveTodos(); render(); }); del.Opacity = 0;
+                    var dp = new DockPanel { Margin = new Thickness(8, 6, 4, 6) }; DockPanel.SetDock(del, Dock.Right); DockPanel.SetDock(ring, Dock.Left);
+                    dp.Children.Add(del); dp.Children.Add(ring); dp.Children.Add(tx);
+                    Press row = null;
+                    row = Act(dp, (t.Done ? "Сделано: " : "Задача: ") + t.Text, () =>
+                    {
+                        t.Done = !t.Done; SaveTodos();
+                        // отметка заполняется, текст гаснет — затем список перестраивается (сделанные уходят вниз)
+                        ring.Background = t.Done ? Accent : Brushes.Transparent; ring.BorderBrush = t.Done ? Accent : Frozen(CardFg, 0x70);
+                        mark.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(t.Done ? 1 : 0, TimeSpan.FromMilliseconds(120)));
+                        tx.TextDecorations = t.Done ? TextDecorations.Strikethrough : null;
+                        tx.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(t.Done ? 0.45 : 1, TimeSpan.FromMilliseconds(180)));
+                        var later = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Motion ? 420 : 0) }; later.Tick += (o2, e2) => { later.Stop(); render(); }; later.Start();
+                    });
+                    row.CornerRadius = new CornerRadius(8);
+                    row.MouseEnter += (s, e) => { Fade(row, Color.FromArgb(0x14, CardFg.R, CardFg.G, CardFg.B), 100); del.Opacity = 0.75; };
+                    row.MouseLeave += (s, e) => { Fade(row, Colors.Transparent, 140); del.Opacity = 0; };
+                    list.Children.Add(row);
                 }
+                int left = todos.Count(x => !x.Done);
+                count.Text = todos.Count == 0 ? "" : left == 0 ? "Всё сделано" : "Осталось " + left + " из " + todos.Count;
             };
             input.KeyDown += (s, e) =>
             {
@@ -2327,7 +2346,7 @@ namespace FlowBar
                 todos.Add(new Todo { Text = input.Text.Trim() }); input.Text = ""; SaveTodos(); render();
             };
             render();
-            var body = new StackPanel(); body.Children.Add(list); body.Children.Add(input);
+            var body = new StackPanel(); body.Children.Add(count); body.Children.Add(list); body.Children.Add(input);
             ShowPanel("Задачи", body, 320, input);
         }
 
