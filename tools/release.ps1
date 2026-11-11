@@ -1,4 +1,4 @@
-# Выпуск FlowBar: архив FlowBar.zip и описание из CHANGELOG.md. Запуск: tools\release.ps1 -Version 1.6.0 (после сборки и слияния в main)
+﻿# Выпуск FlowBar: архив FlowBar.zip и описание из CHANGELOG.md. Запуск: tools\release.ps1 -Version 1.6.0 (после сборки и слияния в main)
 param([Parameter(Mandatory)][string]$Version)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
