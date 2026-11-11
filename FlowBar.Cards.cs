@@ -801,7 +801,7 @@ namespace FlowBar
                 Background = Frozen(CardBg, 255), Foreground = Frozen(CardFg, 255), FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI"), ShowInTaskbar = true,
                 UseLayoutRounding = true, SnapsToDevicePixels = true
             };
-            System.Windows.Documents.Typography.SetNumeralAlignment(win, FontNumeralAlignment.Tabular); UseCardScroll(win);
+            System.Windows.Documents.Typography.SetNumeralAlignment(win, FontNumeralAlignment.Tabular); UseCardScroll(win); ShowOnBar(win);
             win.SourceInitialized += (s, e) => { var hw = new WindowInteropHelper(win).Handle; int dark = Sty.Lum(CardBg) < 128 ? 1 : 0; N.DwmSetWindowAttribute(hw, 20, ref dark, 4); };
             win.PreviewKeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.Escape && !(Keyboard.FocusedElement is TextBox && ((TextBox)Keyboard.FocusedElement).Text != "")) { e.Handled = true; win.Close(); } };
             return win;
