@@ -1921,6 +1921,7 @@ namespace FlowBar
                 inst.Visibility = Visibility.Collapsed; inst.Margin = new Thickness(8, 0, 0, 0);
                 var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 4) }; row.Children.Add(chk); row.Children.Add(inst);
                 c.Children.Add(row); c.Children.Add(upSt);
+                c.Children.Add(CheckRow("Сообщать о новой версии", "Раз в несколько часов FlowBar проверяет GitHub и показывает уведомление с кнопкой «Установить».", C("update.notify", "1") == "1", v => { cfg["update.notify"] = v ? "1" : "0"; SaveCfg(); }));
             }
             c.Children.Add(CardActions(Btn("Что нового в этой версии", () => { if (Primary != null) Primary.ShowNews(); })));
             c.Children.Add(CheckRow("Запускать вместе с Windows", null, AutoStart, v => AutoStart = v));
@@ -1949,6 +1950,32 @@ namespace FlowBar
         static HashSet<string> notifyKeys = new HashSet<string>();
         // force — сигнал, который пользователь завёл сам (таймер): звучит и в тихие часы. key — одно событие = одно уведомление
         // после установки или обновления — одно уведомление «было → стало»
+        // раз в 6 часов (первый раз через 2 минуты после запуска): новая версия на GitHub — одно уведомление на версию, кнопка «Установить»
+        static DateTime nextUpdateCheck = DateTime.Now.AddMinutes(2);
+        internal static void CheckUpdateQuietly()
+        {
+            if (DateTime.Now < nextUpdateCheck || Primary == null) return;
+            nextUpdateCheck = DateTime.Now.AddHours(6);
+            if (C("update.notify", "1") != "1" || !Setup.RepoKnown) return;
+            var b = Primary;
+            Task.Run(() => Setup.Latest()).ContinueWith(t => b.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (t.IsFaulted) return; // нет сети или GitHub недоступен — молча, проверим в следующий раз
+                var r = t.Result; var v = Setup.V3(r.Ver);
+                if (r.Ver <= Setup.Current || C("update.told", "") == v) return;
+                cfg["update.told"] = v; SaveCfg();
+                b.Notify("Доступно обновление", "FlowBar " + v + " — у вас " + Setup.VersionText + ". Настройки и записи сохранятся.", false, "", "Установить", () =>
+                {
+                    b.Notify("FlowBar", "Скачиваем " + v + "… FlowBar перезапустится сам.", true, "");
+                    Task.Run(() => Setup.InstallRelease(r)).ContinueWith(t2 => b.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (!t2.IsFaulted) return;
+                        var e0 = t2.Exception.InnerException ?? t2.Exception;
+                        b.Notify("Обновление не установлено", e0.Message + ". Можно повторить: «Настройки» → «Общие» → «Проверить обновления».", true, "");
+                    })));
+                });
+            })));
+        }
         internal static void ShowUpdateNote() { var n = Setup.TakeUpdateNote(); if (n != null && Primary != null) Primary.Notify("FlowBar", n, true, "", "Что нового", () => Primary.ShowNews()); }
         // «Что нового»: CHANGELOG.md встроен в exe при сборке. Разделы «## версия», пункты «- …», вложенные — с отступом
         internal static List<Tuple<int, string>> ParseNews(string md)

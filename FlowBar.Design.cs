@@ -1144,7 +1144,7 @@ namespace FlowBar
                 if (WantsGlass(Cur)) UpdateRegion();
                 if (primary && !DemoMode)
                 {
-                    ticks++; CheckHide("опрос"); CheckReminders();
+                    ticks++; CheckHide("опрос"); CheckReminders(); CheckUpdateQuietly();
                     if (DateTime.Now < peekUntil && TrayOpen()) peekUntil = DateTime.Now.AddSeconds(3); // пока открыты скрытые значки — панель Windows не прячем
                     bool peek = DateTime.Now < peekUntil;
                     if (HideTb && !peek) SetTaskbar(false);
