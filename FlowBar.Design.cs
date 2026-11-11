@@ -2490,10 +2490,19 @@ namespace FlowBar
         }
         void BeginSec()
         {
-            if (dragTok == null || sDragging || Mouse.LeftButton != MouseButtonState.Pressed || !UseSections) return;
+            if (dragTok == null || sDragging || Mouse.LeftButton != MouseButtonState.Pressed || !UseSections)
+            { Info("секция: зажатие не начало перетаскивание (значок " + (dragTok != null) + ", перенос значка " + sDragging + ", кнопка " + Mouse.LeftButton + ", секции " + UseSections + ")"); return; }
             N.POINT p; N.GetCursorPos(out p);
             secDragging = true; dragging = true; secIdx = SectionFor(dragTok); secStartX = p.X / MonScale;
             secCur1 = secX1 = SecExtra(1); secCur2 = secX2 = SecExtra(2); secRoom = Math.Max(0, FreeWidth - 4);
+            Info("секция " + secIdx + ": перетаскивание, свободно " + Math.Round(secRoom) + " px, промежутки " + Math.Round(secX1) + "/" + Math.Round(secX2));
+            if (secRoom < 16 && secX1 + secX2 < 1)
+            {
+                // двигать некуда: панель шире не станет, а промежутков между секциями ещё нет
+                secDragging = false; dragging = false; dragTok = null;
+                Notify("Секциям некуда двигаться", "Панель занимает почти всю ширину экрана. Освободите место: меньше значков программ («Настройки» → «Панель» → «Значков программ на панели»), размер поменьше или выравнивание к краю.", true, "");
+                return;
+            }
             ClosePreview(); Mouse.Capture(strip, CaptureMode.SubTree); Mouse.OverrideCursor = Cursors.SizeWE;
         }
         void MoveSec()
@@ -2513,7 +2522,7 @@ namespace FlowBar
             Func<double, string> f = v => Math.Round(v).ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (secCur1 > 0) cfg[SecKey(1)] = f(secCur1); else cfg.Remove(SecKey(1));
             if (secCur2 > 0) cfg[SecKey(2)] = f(secCur2); else cfg.Remove(SecKey(2));
-            SaveCfg();
+            SaveCfg(); Info("секция " + secIdx + ": промежутки " + f(secCur1) + "/" + f(secCur2));
         }
         void FinishStripDrag()
         {
