@@ -237,7 +237,44 @@ namespace FlowBar
             }
             SaveCfg(); RebuildAll(); RestyleWindows();
         }
-        static readonly string[] ViewKeys = { "", "min", "compact", "full" };
+        // ---------- свои наборы: раскладка и виды модулей под своим названием ----------
+        // В наборе — то же, что меняют готовые наборы: состав и порядок модулей, их виды, «Оставлять видимым», число значков программ.
+        // Хранится как cpreset.<название> без суффикса монитора, поэтому набор можно применить к любой панели. «Вернуть прежнюю» — раскладка до последнего применения.
+        bool MineKey(string k)
+        {
+            string sfx = MK("");
+            return k == LayoutKey || ((sfx == "" ? !k.Contains("@") : k.EndsWith(sfx)) && (k.StartsWith("view.") || k.StartsWith("keep.") || k.StartsWith("appMax")));
+        }
+        string LayoutPayload()
+        {
+            string sfx = MK(""), lk = LayoutKey;
+            return string.Join("\u001F", cfg.Where(kv => MineKey(kv.Key)).Select(kv => (kv.Key == lk ? "widgets" : sfx != "" ? kv.Key.Substring(0, kv.Key.Length - sfx.Length) : kv.Key) + "\u001E" + kv.Value));
+        }
+        void ApplyLayoutPayload(string payload)
+        {
+            foreach (var k in cfg.Keys.Where(MineKey).ToList()) cfg.Remove(k);
+            foreach (var p in payload.Split('\u001F')) { var kv = p.Split('\u001E'); if (kv.Length == 2 && kv[0] != "") cfg[kv[0] == "widgets" ? LayoutKey : MK(kv[0])] = kv[1]; }
+            cfg.Remove(MK("preset")); // раскладка теперь «Своя»
+        }
+        internal static string PresetName(string n) { return new string((n ?? "").Where(ch => ch != '=' && ch != '\r' && ch != '\n' && ch != '\u001E' && ch != '\u001F').ToArray()).Trim(); }
+        static List<string> MyPresets() { return cfg.Keys.Where(k => k.StartsWith("cpreset.")).Select(k => k.Substring(8)).OrderBy(x => x, StringComparer.CurrentCultureIgnoreCase).ToList(); }
+        void SaveMyPreset(string name)
+        {
+            name = PresetName(name); if (name.Length > 24) name = name.Substring(0, 24).Trim();
+            if (name == "") { int n = 1; while (cfg.ContainsKey("cpreset.Набор " + n)) n++; name = "Набор " + n; }
+            cfg["cpreset." + name] = LayoutPayload(); SaveCfg();
+        }
+        void UseMyPreset(string name)
+        {
+            string payload; if (!cfg.TryGetValue("cpreset." + name, out payload)) return;
+            cfg[MK("cprev")] = LayoutPayload(); // прежняя раскладка — вернуть кнопкой
+            ApplyLayoutPayload(payload); SaveCfg(); RebuildAll(); RestyleWindows();
+        }
+        void RestorePrevLayout()
+        {
+            string payload; if (!cfg.TryGetValue(MK("cprev"), out payload)) return;
+            cfg[MK("cprev")] = LayoutPayload(); ApplyLayoutPayload(payload); SaveCfg(); RebuildAll(); RestyleWindows(); // ещё нажатие вернёт обратно
+        }        static readonly string[] ViewKeys = { "", "min", "compact", "full" };
         static readonly string[] ViewNames = { "Авто (по размеру панели)", "Компактный · S", "Обычный · M", "Расширенный · L" };
 
         // ---------- мелкие строительные блоки ----------
@@ -3025,7 +3062,23 @@ namespace FlowBar
         // пока открыта карточка или меню, идёт перетаскивание, правка или фокус клавиатуры на панели — не скрываемся
         // курсор — не IsMouseOver: в прозрачных местах окна (между секциями, края капсулы) WPF считает, что мыши нет, и панель уезжала из-под курсора,
         // а у спрятанного окна признак мог залипнуть, и панель не пряталась
-        bool InUse { get { return panel != null || preview != null || dragging || sDragging || editMode || menusOpen > 0 || IsKeyboardFocusWithin || (toast != null && primary); } }
+        // каждый признак проверяется на «залипание»: флаг мог остаться включённым после сбоя (меню закрыто, перетаскивание оборвано, фокус ушёл
+        // в другую программу), и тогда панель не пряталась, пока что-то не сбросит его — например, нажатие на виджет или настройки
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+        string UseWhy()
+        {
+            var r = new List<string>();
+            if (panel != null && panel.IsVisible) r.Add("открыта карточка");
+            if (preview != null) r.Add("миниатюры окон");
+            if ((dragging || sDragging) && (GetAsyncKeyState(0x01) & 0x8000) != 0) r.Add("перетаскивание");
+            if (editMode) r.Add("правка панели");
+            if (guarded != null && guarded.IsOpen) r.Add("меню");
+            if (IsKeyboardFocusWithin && IsActive) r.Add("фокус клавиатуры");
+            if (toast != null && primary) r.Add("уведомление");
+            return string.Join(", ", r);
+        }
+        bool InUse { get { return UseWhy() != ""; } }
+        string loggedWhy = ""; DateTime blockedSince = DateTime.MinValue, slideAt;
         // курсор над капсулой (с полем 8 px) или между ней и краем экрана
         bool CursorOverBar(N.POINT p)
         {
@@ -3042,11 +3095,26 @@ namespace FlowBar
             bool atEdge = VerticalBar ? p.Y >= b.Top && p.Y < b.Bottom && (LeftBar ? p.X <= b.Left + 1 && p.X >= b.Left : p.X >= b.Right - 2 && p.X < b.Right)
                                       : p.X >= b.Left && p.X < b.Right && (IsTop ? p.Y <= b.Top + 1 : p.Y >= b.Bottom - 2);
             if (autoHidden) { if (atEdge) { autoHidden = false; lastUse = DateTime.Now; ApplyVis(); } return; }
-            if (InUse || atEdge || CursorOverBar(p)) { lastUse = DateTime.Now; return; }
+            // состояния разошлись: окно видно, хотя по записи скрыто, — убираем (иначе панель висела и не реагировала на уход мыши)
+            if (Visibility == Visibility.Hidden && hwnd != IntPtr.Zero && N.IsWindowVisible(hwnd)) { Info("автоскрытие: окно видно при Visibility=Hidden, прячу"); N.ShowWindow(hwnd, 0); }
+            if (sliding && (DateTime.Now - slideAt).TotalMilliseconds > 500) { Info("автоскрытие: анимация ухода не завершилась, завершаю"); FinishSlide(); }
+            var why = UseWhy(); bool near = atEdge || CursorOverBar(p);
+            if (why != "" || near) { lastUse = DateTime.Now; }
+            // в журнал — причина, если мышь давно ушла, а панель не прячется (по отчёту видно, что держит)
+            if (why != "" && !near) { if (blockedSince == DateTime.MinValue) blockedSince = DateTime.Now; if ((DateTime.Now - blockedSince).TotalSeconds > 4 && why != loggedWhy) { loggedWhy = why; Info("автоскрытие не срабатывает: " + why + "; foreground=" + Cls(N.GetForegroundWindow())); } }
+            else { blockedSince = DateTime.MinValue; loggedWhy = ""; }
+            if (why != "" || near) return;
             if ((DateTime.Now - lastUse).TotalMilliseconds < 250) return; // короткая пауза: проход мыши мимо края не прячет панель
             autoHidden = true; ApplyVis();
         }
         bool sliding; // панель уезжает за край
+        void FinishSlide()
+        {
+            if (!sliding) return;
+            sliding = false; Visibility = Visibility.Hidden;
+            frame.BeginAnimation(OpacityProperty, null);
+            var tt = frame.RenderTransform as TranslateTransform; if (tt != null) tt.BeginAnimation(VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty, null);
+        }
         void ApplyVis()
         {
             bool hide = fsHidden || autoHidden;
@@ -3062,14 +3130,9 @@ namespace FlowBar
             if (hide)
             {
                 if (Visibility != Visibility.Visible || sliding) return;
-                sliding = true; if (glassBg != null) glassBg.Fade();
+                sliding = true; slideAt = DateTime.Now; if (glassBg != null) glassBg.Fade();
                 var o = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200));
-                o.Completed += (s, e) =>
-                {
-                    if (!sliding) return; // успели вернуть мышь — панель уже едет обратно
-                    sliding = false; Visibility = Visibility.Hidden;
-                    frame.BeginAnimation(OpacityProperty, null); tt.BeginAnimation(axis, null);
-                };
+                o.Completed += (s, e) => FinishSlide(); // успели вернуть мышь — sliding уже сброшен, ничего не делаем
                 tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
                 frame.BeginAnimation(OpacityProperty, o);
             }

@@ -1707,7 +1707,26 @@ namespace FlowBar
             c.Children.Add(SetRow("Компоновка", PresetHints[PresetIndex] + " Набор — только начало: потом всё можно переставить, а «Своя» вернёт прежнюю раскладку.",
                 VS(Seg(PresetNames.Take(4).ToArray(), PresetIndex < 4 ? PresetIndex : -1, i => { ApplyPreset(i); again(); }),
                    Mg(Seg(PresetNames.Skip(4).ToArray(), PresetIndex >= 4 ? PresetIndex - 4 : -1, i => { ApplyPreset(i + 4); again(); }), 0, 6, 0, 0)))); // два ряда: в один все наборы не помещаются
-            var budgets = new[] { 0, 6, 8, 10, 14 }; int bi = Math.Max(0, Array.IndexOf(budgets, AppMax));
+            // свои наборы: имя + «Сохранить текущую раскладку»; нажатие на имя применяет, крестик удаляет
+            {
+                var mine = new StackPanel(); var chips = new WrapPanel();
+                foreach (var nm0 in MyPresets())
+                {
+                    var nm = nm0;
+                    var apply = Btn(nm, () => { UseMyPreset(nm); again(); });
+                    var del = Cross("Удалить набор «" + nm + "»", () => { cfg.Remove("cpreset." + nm); SaveCfg(); again(); });
+                    var chip = HS(apply, del); chip.Margin = new Thickness(0, 0, 8, 6); chips.Children.Add(chip);
+                }
+                if (chips.Children.Count > 0) mine.Children.Add(chips);
+                var nameBox = new TextBox { Width = 190, MaxLength = 24, VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "Название набора; пусто — «Набор N»" };
+                Action save = () => { SaveMyPreset(nameBox.Text); again(); };
+                nameBox.KeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Enter) { save(); e.Handled = true; } };
+                var row = HS(nameBox, Mg(Btn("Сохранить текущую раскладку", save, true), 8, 0, 0, 0)); row.Margin = new Thickness(0, 2, 0, 0);
+                mine.Children.Add(row);
+                if (cfg.ContainsKey(MK("cprev"))) { var back = Btn("Вернуть прежнюю раскладку", () => { RestorePrevLayout(); again(); }); back.HorizontalAlignment = HorizontalAlignment.Left; back.Margin = new Thickness(0, 8, 0, 0); mine.Children.Add(back); }
+                StyleInputs(mine, CardFg);
+                c.Children.Add(SetRow("Свои наборы", "Сохраните текущий состав и порядок модулей, их виды и число значков под своим названием. Применение набора заменяет раскладку; прежняя запоминается.", mine));
+            }            var budgets = new[] { 0, 6, 8, 10, 14 }; int bi = Math.Max(0, Array.IndexOf(budgets, AppMax));
             c.Children.Add(SetRow("Значков программ на панели", "Остальные — в «…» (активная программа всегда на панели). «Все» — значки не прячутся; если места нет, ряд листается колесом.",
                 Seg(new[] { "Все", "6", "8", "10", "14" }, bi, i => { cfg[MK("appMax")] = budgets[i].ToString(); MarkCustom(); SaveCfg(); All(b => { b.ResetFit(false); b.Compose(); }); again(); })));
             c.Children.Add(SetRow("Отступ от края экрана", null, SliderRow(0, 32, Gap, 1, v => Math.Round(v) + " px", v => { cfg["gap"] = Math.Round(v).ToString(); SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); preview(null); }, "Отступ от края экрана")));
