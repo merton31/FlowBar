@@ -1049,7 +1049,7 @@ namespace FlowBar
             screen = ScreenTime.Load(Today);
         }
         public static string ExitWhy; // кто попросил закрыть панель — для журнала
-        public static void Shutdown() { foreach (var b in bars.ToList()) b.Unreserve(); Tray.Stop(); Taskbar.Restore(false, true); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
+        public static void Shutdown() { CloseGuarded(); foreach (var b in bars.ToList()) b.Unreserve(); Tray.Stop(); Taskbar.Restore(false, true); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
 
         public Bar(System.Windows.Forms.Screen s)
         {
@@ -1694,12 +1694,16 @@ namespace FlowBar
         // область — развёрнутые окна уходили под FlowBar. Пока панель Windows скрыта, задаём рабочую область монитора сами и держим её (раз в секунду).
         [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint p, ref N.RECT r, uint flags);
         bool workSet;
+        // Проводнику и окнам — «рабочая область изменилась», не дожидаясь ответа каждого окна.
+        // SPIF_SENDCHANGE рассылает синхронно: зависшее окно задерживало выход на секунды, а с открытым меню (перехват мыши) замирала мышь
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SendNotifyMessage(IntPtr h, uint m, IntPtr w, string l);
+        static void WorkAreaChanged() { SendNotifyMessage(new IntPtr(0xFFFF), 0x1A /* WM_SETTINGCHANGE */, new IntPtr(0x2F), null); }
         void EnsureWorkArea()
         {
             if (hwnd == IntPtr.Zero) return;
             var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
             var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
-            if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 2); } return; }
+            if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); } return; }
             int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
             if (VerticalBar)
             {
@@ -1714,7 +1718,7 @@ namespace FlowBar
         }
         public void Unreserve()
         {
-            if (workSet) { workSet = false; var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (GetMonitorInfo(mon, ref mi)) SystemParametersInfo(0x2F, 0, ref mi.rcMonitor, 2); } // вернуть экран целиком; панель Windows затем займёт своё место сама
+            if (workSet) { workSet = false; var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (GetMonitorInfo(mon, ref mi)) { SystemParametersInfo(0x2F, 0, ref mi.rcMonitor, 0); WorkAreaChanged(); } } // вернуть экран целиком; панель Windows затем займёт своё место сама
             if (!appBar || hwnd == IntPtr.Zero) return;
             var d = new N.APPBARDATA { cbSize = Marshal.SizeOf(typeof(N.APPBARDATA)), hWnd = hwnd };
             N.SHAppBarMessage(1 /* REMOVE */, ref d); appBar = false; reserveKey = null;
@@ -2326,6 +2330,7 @@ namespace FlowBar
 
         // ---------- всплывающие карточки ----------
         static FrameworkElement anchor; static DateTime anchorAt; // плитка, по которой только что кликнули: карточка откроется у неё
+        static uint stickyPid; // процесс программы, по значку трея которой только что нажали: карточка трея не закрывается, пока работают с ней
         void ShowPanel(string title, UIElement body, double width, IInputElement focus, Action tick = null)
         {
             ClosePreview(); TipHide(true);
@@ -2396,10 +2401,24 @@ namespace FlowBar
                 card.RenderTransform.BeginAnimation(TranslateTransform.YProperty, new System.Windows.Media.Animation.DoubleAnimation(IsTop ? -10 : 10, 0, TimeSpan.FromMilliseconds(160)) { EasingFunction = ease, FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop });
                 card.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop });
             };
-            w.Deactivated += (o, e) => w.Dispatcher.BeginInvoke(new Action(() => { if (!closed && !dragging) w.Close(); })); // из «…» модуль тянут на панель — карточка остаётся
+            w.Deactivated += (o, e) => w.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (closed || dragging) return;
+                if (stickyPid == 0) { w.Close(); return; }
+                // карточка трея: после нажатия на значок программа выводит своё меню или окно — карточка остаётся, пока работают с этой программой
+                uint pid0 = stickyPid; var watch = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+                watch.Tick += (o2, e2) =>
+                {
+                    if (closed) { watch.Stop(); return; }
+                    if (w.IsActive || stickyPid != pid0) { watch.Stop(); return; } // вернулись в карточку или нажали другой значок — дальше следит новый
+                    uint fp; var fgw = N.GetForegroundWindow(); N.GetWindowThreadProcessId(fgw, out fp);
+                    if (fp != pid0 && Cls(fgw) != "#32768") { watch.Stop(); stickyPid = 0; w.Close(); } // ушли в другую программу — закрыть
+                };
+                watch.Start();
+            })); // из «…» модуль тянут на панель — карточка остаётся
             // Esc закрывает карточку и возвращает фокус на плитку, если на панель пришли с клавиатуры
             w.PreviewKeyDown += (o, e) => { if (e.Key != System.Windows.Input.Key.Escape) return; e.Handled = true; w.Close(); if (backTo != IntPtr.Zero && from != null) { N.SetForegroundWindow(hwnd); Keyboard.Focus(from); } };
-            w.Closed += (o, e) => { closed = true; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
+            w.Closed += (o, e) => { closed = true; stickyPid = 0; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
             panel = w; panelTitle = title; panelTick = tick;
             w.Show(); w.Activate();
         }

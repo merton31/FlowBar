@@ -1971,7 +1971,7 @@ namespace FlowBar
                     var from = it.GetType().InvokeMember("ExtendedProperty", call, null, it, new object[] { "System.Recycle.DeletedFrom" }) as string;
                     var name = it.GetType().InvokeMember("Name", get, null, it, null) as string;
                     if (from == null || name == null) continue;
-                    int k = want.FindIndex(w => string.Equals(System.IO.Path.GetDirectoryName(w), from.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+                    int k = want.FindIndex(w => string.Equals((System.IO.Path.GetDirectoryName(w) ?? "").TrimEnd('\\'), from.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
                         && (string.Equals(System.IO.Path.GetFileName(w), name, StringComparison.OrdinalIgnoreCase) || string.Equals(System.IO.Path.GetFileNameWithoutExtension(w), name, StringComparison.OrdinalIgnoreCase)));
                     if (k < 0) continue;
                     it.GetType().InvokeMember("InvokeVerb", call, null, it, new object[] { "undelete" });

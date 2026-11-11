@@ -113,6 +113,8 @@ namespace FlowBar
                         using (var p = new NamedPipeServerStream(Pipe, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.None))
                         {
                             p.WaitForConnection();
+                            using (new Timer(_ => { try { p.Dispose(); } catch { } }, null, 5000, Timeout.Infinite)) // клиент молчит дольше 5 с — отключаем, канал свободен для других
+                            {
                             var rd = new StreamReader(p, utf8); var wr = new StreamWriter(p, utf8) { AutoFlush = true };
                             KeyValuePair<bool, string> r;
                             try
@@ -124,6 +126,7 @@ namespace FlowBar
                             catch (Exception ex) { Bar.Log(ex); r = new KeyValuePair<bool, string>(false, "Ошибка FlowBar: " + ex.Message); }
                             wr.WriteLine(js.Serialize(new Dictionary<string, object> { { "ok", r.Key }, { "text", r.Value } }));
                             p.WaitForPipeDrain();
+                            }
                         }
                     }
                     catch (Exception ex) { Bar.Log(ex); Thread.Sleep(1000); }
@@ -181,6 +184,8 @@ namespace FlowBar
             string text = AStr(a, "text"); var now = DateTime.Now;
             Info("агент: " + tool + (text == "" ? "" : " — " + (text.Length > 80 ? text.Substring(0, 80) + "…" : text)));
             if (reminders == null) LoadReminders();
+            if ((tool == "list_tasks" || tool == "read_notes" || tool == "list_reminders" || tool == "list_events") && C("agent.read", "0") != "1")
+                return no("Чтение задач, заметок и календаря выключено: «Настройки FlowBar» → «Подключения» → «Разрешить агентам читать задачи, заметки и календарь».");
             switch (tool)
             {
                 case "add_task":
@@ -202,7 +207,11 @@ namespace FlowBar
                 case "add_note":
                     {
                         if (text == "") return no("Пустой текст заметки.");
-                        var old = SafeFile.Read(F("notes.txt")) ?? ""; SafeFile.Write(F("notes.txt"), old.TrimEnd('\r', '\n') + (old.Trim() == "" ? "" : "\r\n") + text + "\r\n"); live.Note = null;
+                        // открытый редактор держит свой текст и при сохранении перезаписал бы файл — закрываем его (он сохраняется), потом дописываем
+                        All(b => { if (b.panel != null && b.panelTitle == "Заметки") b.panel.Close(); });
+                        Func<string, string> append = s => (s ?? "").TrimEnd('\r', '\n') + ((s ?? "").Trim() == "" ? "" : "\r\n") + text + "\r\n";
+                        if (unsavedNote != null) { unsavedNote = append(unsavedNote); return ok("Записано в заметки (сохранятся вместе с несохранённым текстом)."); }
+                        SafeFile.Write(F("notes.txt"), append(SafeFile.Read(F("notes.txt")))); live.Note = null;
                         return ok("Записано в заметки.");
                     }
                 case "read_notes": { var n = (SafeFile.Read(F("notes.txt")) ?? "").Trim(); return ok(n == "" ? "Заметок нет." : n); }
@@ -228,7 +237,7 @@ namespace FlowBar
                 case "start_timer":
                     {
                         double m; if (!double.TryParse(AStr(a, "minutes"), NumberStyles.Float, CultureInfo.InvariantCulture, out m) || m <= 0 || m > 1440) return no("Минуты — число от 1 до 1440.");
-                        timerEnd = now.AddMinutes(m); timerRunning = true; return ok("Таймер запущен до " + timerEnd.ToString("HH:mm") + ".");
+                        timerEnd = now.AddMinutes(m); timerLeft = TimeSpan.Zero; timerRunning = true; return ok("Таймер запущен до " + timerEnd.ToString("HH:mm") + ".");
                     }
                 case "list_events":
                     {

@@ -556,12 +556,12 @@ namespace FlowBar
                     var t = t0; var exe = ExePath(Tray.Pid(t)); string tip = t.Tip != "" ? t.Tip : AppName(exe);
                     var img = new Image { Source = t.Image ?? (exe != null ? ShellIcon(exe, IconPxFor(20, MonScale)) : null), Width = 20, Height = 20, Stretch = Stretch.Uniform };
                     RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-                    var b = Act(new Border { Width = 44, Height = 44, Child = img }, tip, () => Tray.Click(t, false, false));
+                    var b = Act(new Border { Width = 44, Height = 44, Child = img }, tip, () => { stickyPid = Tray.Pid(t); Tray.Click(t, false, false); });
                     b.ToolTip = tip + "\nКлик и двойной клик — как в трее Windows, правая кнопка — меню программы"; b.CornerRadius = new CornerRadius(10); b.Margin = new Thickness(2);
                     b.MouseEnter += (o, e) => Fade(b, Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B), 100); b.MouseLeave += (o, e) => Fade(b, Colors.Transparent, 140);
-                    b.PreviewMouseLeftButtonDown += (o, e) => { if (e.ClickCount == 2) { Tray.Click(t, false, true); e.Handled = true; } };
+                    b.PreviewMouseLeftButtonDown += (o, e) => { if (e.ClickCount == 2) { stickyPid = Tray.Pid(t); Tray.Click(t, false, true); e.Handled = true; } };
                     // меню программы: карточку не закрываем сами — пока она активна, программе можно выйти вперёд; карточка закроется, когда меню заберёт фокус
-                    b.MouseRightButtonUp += (o, e) => { e.Handled = true; Tray.Click(t, true, false); };
+                    b.MouseRightButtonUp += (o, e) => { e.Handled = true; stickyPid = Tray.Pid(t); Tray.Click(t, true, false); };
                     wp.Children.Add(b);
                 }
                 // запущенные программы, чей значок FlowBar не получил: открыть окно программы (меню трея у них недоступно)
@@ -1571,6 +1571,7 @@ namespace FlowBar
             c.Children.Add(SSub("Агенты · MCP"));
             c.Children.Add(SHint("Claude Code, Codex и другие агенты могут добавлять задачи, заметки и напоминания, запускать таймер и показывать уведомления. Работает только на этом компьютере, без сети. Удалять данные агенты не могут."));
             c.Children.Add(CheckRow("Разрешить агентам управлять FlowBar", null, C("agent", "1") == "1", v => { cfg["agent"] = v ? "1" : "0"; SaveCfg(); }));
+            c.Children.Add(CheckRow("Разрешить агентам читать задачи, заметки и календарь", "Без этого агенты могут только добавлять.", C("agent.read", "0") == "1", v => { cfg["agent.read"] = v ? "1" : "0"; SaveCfg(); }));
             {
                 string exe = Setup.InstalledExe, cmd = "claude mcp add flowbar -- \"" + exe + "\" --mcp";
                 var box = new TextBox { Text = cmd, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 6, 0, 0), FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11.5 };
