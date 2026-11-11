@@ -108,6 +108,13 @@ namespace FlowBar
             ShowPanel("Система", body, 380, null, tick);
         }
 
+        // сеансы звука процессов плеера в микшере Windows: «Spotify.exe» → Spotify, «Издатель.Пакет!Spotify» → Spotify, «Chrome» → chrome.exe
+        static List<Audio.MixerSession> PlayerSessions(Snap s)
+        {
+            var player = !s.HasMedia || string.IsNullOrEmpty(s.App) ? null : s.App.Contains("!") ? s.App.Substring(s.App.LastIndexOf('!') + 1) : System.IO.Path.GetFileNameWithoutExtension(s.App);
+            if (player == null) return new List<Audio.MixerSession>();
+            return Audio.MixerSessions().Where(x => { var ep = ExePath(x.Pid); return ep != null && string.Equals(System.IO.Path.GetFileNameWithoutExtension(ep), player, StringComparison.OrdinalIgnoreCase); }).ToList();
+        }
         void ShowMusic()
         {
             var s = live; var body = new StackPanel();
@@ -187,9 +194,7 @@ namespace FlowBar
                     cover.Child = s.Cover != null ? null : G("", 36);
                 }
                 status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count : "";
-                // сеансы звука процессов плеера: «Spotify.exe» → Spotify, «Издатель.Пакет!Spotify» → Spotify, «Chrome» → chrome.exe
-                var player = !s.HasMedia || string.IsNullOrEmpty(s.App) ? null : s.App.Contains("!") ? s.App.Substring(s.App.LastIndexOf('!') + 1) : System.IO.Path.GetFileNameWithoutExtension(s.App);
-                volSess = player == null ? new List<Audio.MixerSession>() : Audio.MixerSessions().Where(x => { var ep = ExePath(x.Pid); return ep != null && string.Equals(System.IO.Path.GetFileNameWithoutExtension(ep), player, StringComparison.OrdinalIgnoreCase); }).ToList();
+                volSess = PlayerSessions(s);
                 volRow.Visibility = volSess.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
                 if (volSess.Count > 0 && !vol.IsMouseCaptureWithin)
                 {

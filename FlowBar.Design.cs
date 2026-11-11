@@ -1690,6 +1690,20 @@ namespace FlowBar
                         if (v == 0) { ring = new Gauge(th - 8, 2.4, -90, 360, 1) { Plain = true }; play.Width = play.Height = th - 16; var pg = new Grid { VerticalAlignment = VerticalAlignment.Center }; pg.Children.Add(ring); pg.Children.Add(play); playEl = pg; }
                         body.Children.Add(Mg(playEl, v == 0 ? 6 * f : 2, 0, 2, 0));
                         if (v >= 2) body.Children.Add(nextB);
+                        // свёрнутый вид: мини-кнопка «без звука» — только для плеера, общий звук Windows не трогает
+                        Press muteB = null; bool playerMuted = false; int muteCheck = 0;
+                        if (v < 2)
+                        {
+                            double md = Math.Max(18, Math.Round(nd * 0.8));
+                            muteB = RoundBtn("", md, false, act(() =>
+                            {
+                                var ps = PlayerSessions(s); if (ps.Count == 0) return;
+                                bool mute = ps.Any(x => !x.Muted); foreach (var x in ps) x.SetMute(mute);
+                                playerMuted = mute; ((TextBlock)muteB.Child).Text = mute ? "" : "";
+                            }), "Без звука — только плеер");
+                            muteB.Base = Fa(0x16); muteB.Background = new SolidColorBrush(muteB.Base);
+                            body.Children.Add(Mg(muteB, 2, 0, 0, 0));
+                        }
                         // расширенный вид: полоса прогресса по нижнему краю модуля, во всю ширину — как на образце
                         FrameworkElement mediaContent = body;
                         if (v >= 2)
@@ -1709,6 +1723,12 @@ namespace FlowBar
                             if (shownTrack != null && track != shownTrack) Soft(texts); shownTrack = track;
                             playG.Text = s.Playing ? "\uE769" : "\uE768";
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
+                            if (muteB != null)
+                            {
+                                // раз в 3 с: заглушили ли плеер в микшере или в нём самом; кнопка есть, только пока у плеера есть звук
+                                if (muteCheck++ % 3 == 0) { var ps = s.HasMedia ? PlayerSessions(s) : new List<Audio.MixerSession>(); muteB.Visibility = ps.Count > 0 ? Visibility.Visible : Visibility.Collapsed; playerMuted = ps.Count > 0 && ps.All(x => x.Muted); }
+                                ((TextBlock)muteB.Child).Text = playerMuted ? "" : ""; muteB.ToolTip = playerMuted ? "Включить звук плеера" : "Без звука — только плеер";
+                            }
                             title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
                             artist.Text = s.HasMedia ? (s.Remote ? "На другом устройстве" : string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
                             prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN); prog.Squeeze(s.HasMedia && !s.Playing);
