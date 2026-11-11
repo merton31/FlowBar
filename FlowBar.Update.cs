@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.6.1.0")]
+[assembly: AssemblyFileVersion("1.6.1.0")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
@@ -74,9 +74,13 @@ namespace FlowBar
         static void StopRunning()
         {
             var me = Process.GetCurrentProcess();
+            // у панели есть окна; у серверов MCP для агентов (--mcp) их нет, команду «выйти» они не получают — закрываем сразу, без 4 с ожидания.
+            // Окна считаем до команды: выходящая панель закрывает их раньше, чем вернёт панель Windows
+            var withWindows = new System.Collections.Generic.HashSet<uint>();
+            N.EnumWindows((h, x) => { uint pid; N.GetWindowThreadProcessId(h, out pid); withWindows.Add(pid); return true; }, IntPtr.Zero);
             Program.PostToBar(N.RegisterWindowMessage("FlowBarOpen"), (IntPtr)Array.IndexOf(Bar.OpenNames, "quit"), IntPtr.Zero);
             foreach (var p in Process.GetProcessesByName("FlowBar").Where(p => p.Id != me.Id))
-                try { if (!p.WaitForExit(4000)) { p.Kill(); p.WaitForExit(3000); } } catch { }
+                try { if (!p.WaitForExit(withWindows.Contains((uint)p.Id) ? 4000 : 0)) { p.Kill(); p.WaitForExit(3000); } } catch { }
             // сторож уходит сам, когда панель закрылась; ждём, иначе его файл занят
             foreach (var p in Process.GetProcessesByName("flowbar-watch")) try { if (!p.WaitForExit(3000)) p.Kill(); } catch { }
         }
