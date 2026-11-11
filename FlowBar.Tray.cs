@@ -49,6 +49,8 @@ namespace FlowBar
         [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr h);
         [DllImport("user32.dll")] static extern IntPtr DefWindowProc(IntPtr h, uint m, IntPtr w, IntPtr l);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string name);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetProp(IntPtr h, string name);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SetProp(IntPtr h, string name, IntPtr value);
         [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] static extern bool SendNotifyMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
@@ -61,10 +63,18 @@ namespace FlowBar
         [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
         [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint pid);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
         [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string m);
 
         const uint WM_COPYDATA = 0x4A, WM_COMMAND = 0x111;
+        const int SetProgressValue = 0x440, SetProgressState = 0x441;
+        const string TaskbandProperty = "TaskbandHWND";
         static WndProcD proc; static IntPtr wnd; static DispatcherTimer top;
+        static HwndSource progressReceiver;
+        internal enum ProgressState { None = 0, Indeterminate = 1, Normal = 2, Error = 4, Paused = 8 }
+        internal sealed class TaskProgress { public uint Pid; public ProgressState State; public double Value; }
+        static readonly Dictionary<IntPtr, TaskProgress> taskProgress = new Dictionary<IntPtr, TaskProgress>();
+        internal static int ProgressVersion { get; private set; }
         public static readonly List<TrayIcon> Icons = new List<TrayIcon>();
         public static int Version; // растёт при каждом изменении — открытая карточка перерисовывается
         public static DateTime Broadcast = DateTime.MinValue; // когда мы сами разослали TaskbarCreated
@@ -82,6 +92,7 @@ namespace FlowBar
                 if (wnd == IntPtr.Zero) { Bar.Log(new Exception("Свой трей: окно не создано, код " + Marshal.GetLastWin32Error())); return false; }
                 ChangeWindowMessageFilterEx(wnd, WM_COPYDATA, 1, IntPtr.Zero); // значки от программ с меньшими правами тоже доходят
                 KeepOnTop();
+                if (Bar.C("apps.progress", "0") == "1") EnableTaskbarProgress();
                 // Проводник поднимает свою панель при показе — возвращаемся выше, иначе новые сообщения уйдут только ему
                 top = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) }; top.Tick += (s, e) => KeepOnTop(); top.Start();
                 Broadcast = DateTime.Now;
@@ -95,6 +106,8 @@ namespace FlowBar
         {
             if (top != null) top.Stop();
             if (wnd != IntPtr.Zero) { DestroyWindow(wnd); wnd = IntPtr.Zero; }
+            if (progressReceiver != null) { progressReceiver.Dispose(); progressReceiver = null; }
+            taskProgress.Clear(); ProgressVersion++;
             foreach (var t in Icons) if (t.Icon != IntPtr.Zero) DestroyIcon(t.Icon);
             Icons.Clear();
         }
@@ -107,6 +120,98 @@ namespace FlowBar
             for (var h = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null); h != IntPtr.Zero; h = FindWindowEx(IntPtr.Zero, h, "Shell_TrayWnd", null))
                 if (h != wnd) return h;
             return IntPtr.Zero;
+        }
+
+        static IntPtr ExplorerTaskband()
+        {
+            uint shellPid;
+            if (GetWindowThreadProcessId(GetShellWindow(), out shellPid) == 0) return IntPtr.Zero;
+            for (var tray = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null); tray != IntPtr.Zero;
+                 tray = FindWindowEx(IntPtr.Zero, tray, "Shell_TrayWnd", null))
+            {
+                uint pid;
+                if (tray == wnd || GetWindowThreadProcessId(tray, out pid) == 0 || pid != shellPid) continue;
+                var band = GetProp(tray, TaskbandProperty);
+                if (band != IntPtr.Zero) return band;
+            }
+            return IntPtr.Zero;
+        }
+
+        internal static void EnableTaskbarProgress()
+        {
+            if (wnd == IntPtr.Zero || progressReceiver != null || ExplorerTaskband() == IntPtr.Zero) return;
+            HwndSource receiver = null;
+            try
+            {
+                receiver = new HwndSource(new HwndSourceParameters("FlowBar taskband")
+                {
+                    WindowStyle = unchecked((int)0x80000000), ExtendedWindowStyle = 0x08000080, Width = 1, Height = 1
+                });
+                receiver.AddHook(TaskbandProc);
+                ChangeWindowMessageFilterEx(receiver.Handle, SetProgressValue, 1, IntPtr.Zero);
+                ChangeWindowMessageFilterEx(receiver.Handle, SetProgressState, 1, IntPtr.Zero);
+                // Advertise the receiver only on our own tray. Explorer keeps its original property and still receives the messages.
+                if (SetProp(wnd, TaskbandProperty, receiver.Handle)) { progressReceiver = receiver; receiver = null; }
+            }
+            catch (Exception ex) { Bar.Log(ex); }
+            finally { if (receiver != null) receiver.Dispose(); }
+        }
+
+        static IntPtr TaskbandProc(IntPtr h, int message, IntPtr w, IntPtr l, ref bool handled)
+        {
+            if (message < 0x400 || message >= 0xC000) return IntPtr.Zero;
+            handled = true;
+            var band = ExplorerTaskband();
+            if (message == SetProgressValue || message == SetProgressState)
+            {
+                if (band != IntPtr.Zero && band != h) PostMessage(band, (uint)message, w, l);
+                RecordTaskProgress(w, message, l.ToInt64());
+                return IntPtr.Zero;
+            }
+            IntPtr result;
+            return band != IntPtr.Zero && band != h && SendMessageTimeout(band, (uint)message, w, l, 0x2, 200, out result) != IntPtr.Zero
+                ? result : IntPtr.Zero;
+        }
+
+        static void RecordTaskProgress(IntPtr window, int message, long data)
+        {
+            if (window == IntPtr.Zero || data < 0 || data > ushort.MaxValue) return;
+            uint pid;
+            if (GetWindowThreadProcessId(window, out pid) == 0) return;
+            var state = (ProgressState)data;
+            if (message == SetProgressState && state == ProgressState.None)
+            {
+                if (taskProgress.Remove(window)) ProgressVersion++;
+                return;
+            }
+            if (message == SetProgressState && state != ProgressState.Normal && state != ProgressState.Paused &&
+                state != ProgressState.Error && state != ProgressState.Indeterminate) return;
+            TaskProgress previous;
+            if (!taskProgress.TryGetValue(window, out previous) || previous.Pid != pid)
+                previous = new TaskProgress { Pid = pid, State = ProgressState.None, Value = 1 };
+            // ITaskbarList3 sends a normalized 16-bit value to the taskband on Windows.
+            double value = message == SetProgressValue ? data / (double)ushort.MaxValue : previous.Value;
+            if (message == SetProgressValue)
+                state = previous.State == ProgressState.Error || previous.State == ProgressState.Paused ? previous.State : ProgressState.Normal;
+            if (state == previous.State && value == previous.Value) return;
+            taskProgress[window] = new TaskProgress { Pid = pid, State = state, Value = value };
+            ProgressVersion++;
+        }
+
+        internal static TaskProgress ProgressFor(IntPtr window, uint pid)
+        {
+            TaskProgress progress;
+            return taskProgress.TryGetValue(window, out progress) && progress.Pid == pid ? progress : null;
+        }
+
+        internal static void PruneTaskProgress()
+        {
+            foreach (var window in taskProgress.Keys.ToList())
+            {
+                uint pid;
+                if (GetWindowThreadProcessId(window, out pid) != 0 && taskProgress[window].Pid == pid) continue;
+                taskProgress.Remove(window); ProgressVersion++;
+            }
         }
 
         static IntPtr Forward(uint m, IntPtr w, IntPtr l, out bool ok)

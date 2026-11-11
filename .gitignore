@@ -8,6 +8,9 @@ watch/target/
 *.png
 *.jpg
 *.mp4
+!assets/preview/light.jpg
+!assets/preview/dark.jpg
+!assets/preview/color.jpg
 shots-*/
 
 # внутренние отчёты и планы (локальные пути, черновики)

@@ -6,12 +6,89 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
+using Windows.Graphics.Effects;
 using WUC = Windows.UI.Composition;
 
 namespace FlowBar
 {
     [ComImport, Guid("29E691FA-4567-4DCA-B319-D0F207EB6807"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface ICompositorDesktopInterop { void CreateDesktopWindowTarget(IntPtr hwnd, [MarshalAs(UnmanagedType.Bool)] bool isTopmost, [MarshalAs(UnmanagedType.IUnknown)] out object target); }
+
+    [ComImport, Guid("2FC57384-A068-44D7-A331-30982FCF7177"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IGraphicsEffectD2D1Interop
+    {
+        void GetEffectId(out Guid id);
+        [PreserveSig] int GetNamedPropertyMapping([MarshalAs(UnmanagedType.LPWStr)] string name, out uint index, out uint mapping);
+        void GetPropertyCount(out uint count);
+        [PreserveSig] int GetProperty(uint index, out IntPtr value);
+        [PreserveSig] int GetSource(uint index, out IntPtr source);
+        void GetSourceCount(out uint count);
+    }
+
+    [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+    public sealed class GlassBlurEffect : IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop
+    {
+        const int InvalidArgument = unchecked((int)0x80070057);
+        static readonly Guid BlurId = new Guid("1FEB6D69-2FE6-4AC9-8C58-1D7F93E7A6A5");
+        static readonly Guid PropertyValueId = new Guid("4BD682DD-7554-40E9-9A9B-82654EDE7E62");
+        static readonly Guid PropertyValueStaticsId = new Guid("629BDBC8-D932-4FF4-96B9-8D96C5C1E858");
+        [DllImport("combase.dll", CharSet = CharSet.Unicode)] static extern int WindowsCreateString(string text, int length, out IntPtr value);
+        [DllImport("combase.dll")] static extern int WindowsDeleteString(IntPtr value);
+        [DllImport("combase.dll")] static extern int RoGetActivationFactory(IntPtr name, ref Guid id, out IntPtr factory);
+        delegate int BoxSingle(IntPtr factory, float value, out IntPtr boxed);
+        delegate int BoxUInt32(IntPtr factory, uint value, out IntPtr boxed);
+        readonly WUC.CompositionEffectSourceParameter input = new WUC.CompositionEffectSourceParameter("Backdrop");
+        public string Name { get; set; }
+        public void GetEffectId(out Guid id) { id = BlurId; }
+        public void GetPropertyCount(out uint count) { count = 3; }
+        public void GetSourceCount(out uint count) { count = 1; }
+        public int GetNamedPropertyMapping(string name, out uint index, out uint mapping)
+        {
+            index = 0; mapping = 1; // GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT
+            return name == "StandardDeviation" ? 0 : InvalidArgument;
+        }
+        public int GetProperty(uint index, out IntPtr value)
+        {
+            value = IntPtr.Zero;
+            if (index > 2) return InvalidArgument;
+            // .NET Framework converts WinRT PropertyValue boxes to CLR primitives. Keep the native boxes for the effect ABI.
+            const string runtimeClass = "Windows.Foundation.PropertyValue";
+            IntPtr name, factory = IntPtr.Zero, boxed = IntPtr.Zero;
+            int hr = WindowsCreateString(runtimeClass, runtimeClass.Length, out name);
+            if (hr < 0) return hr;
+            try
+            {
+                var factoryId = PropertyValueStaticsId;
+                hr = RoGetActivationFactory(name, ref factoryId, out factory);
+                if (hr < 0) return hr;
+                var vtable = Marshal.ReadIntPtr(factory);
+                if (index == 0)
+                {
+                    var create = (BoxSingle)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(vtable, 14 * IntPtr.Size), typeof(BoxSingle));
+                    hr = create(factory, 8f, out boxed);
+                }
+                else
+                {
+                    var create = (BoxUInt32)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(vtable, 11 * IntPtr.Size), typeof(BoxUInt32));
+                    hr = create(factory, 1, out boxed); // balanced optimization and hard border
+                }
+                if (hr < 0) return hr;
+                var iid = PropertyValueId;
+                return Marshal.QueryInterface(boxed, ref iid, out value);
+            }
+            finally
+            {
+                if (boxed != IntPtr.Zero) Marshal.Release(boxed);
+                if (factory != IntPtr.Zero) Marshal.Release(factory);
+                WindowsDeleteString(name);
+            }
+        }
+        public int GetSource(uint index, out IntPtr source)
+        {
+            source = index == 0 ? Marshal.GetComInterfaceForObject(input, typeof(IGraphicsEffectSource)) : IntPtr.Zero;
+            return index == 0 ? 0 : InvalidArgument;
+        }
+    }
 
     class Backdrop
     {
@@ -22,9 +99,14 @@ namespace FlowBar
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int c);
 
         static IntPtr dq; static WUC.Compositor comp; static DateTime failedAt = DateTime.MinValue;
+        static WUC.CompositionEffectFactory blurFactory;
+        static bool blurUnavailable;
         // сбой не выключает стекло навсегда: через минуту — новая попытка (сменилась среда, перезапустился DWM)
         static bool Failed { get { return (DateTime.Now - failedAt).TotalSeconds < 60; } }
         HwndSource host; WUC.Desktop.DesktopWindowTarget target; WUC.SpriteVisual vis; WUC.CompositionRoundedRectangleGeometry geo;
+        WUC.CompositionBackdropBrush systemBrush, desktopBrush;
+        WUC.CompositionEffectBrush customBrush;
+        float lastBlur = float.NaN;
         bool shown;
 
         // «Эффекты прозрачности» Windows выключены или композиция недоступна — стекла нет, темы рисуются сплошной поверхностью
@@ -57,29 +139,57 @@ namespace FlowBar
                 if (ar != 0) throw new Exception("DWMWA_USE_HOSTBACKDROPBRUSH: код 0x" + ar.ToString("X8")); // без него подложка была бы пустой — честнее сплошная поверхность
                 object t; ((ICompositorDesktopInterop)(object)comp).CreateDesktopWindowTarget(b.host.Handle, false, out t);
                 b.target = (WUC.Desktop.DesktopWindowTarget)t;
-                b.vis = comp.CreateSpriteVisual(); b.vis.Brush = comp.CreateHostBackdropBrush();
+                b.vis = comp.CreateSpriteVisual(); b.vis.Brush = b.systemBrush = comp.CreateHostBackdropBrush();
                 b.geo = comp.CreateRoundedRectangleGeometry(); b.vis.Clip = comp.CreateGeometricClip(b.geo);
                 b.target.Root = b.vis;
                 return b;
             }
             catch (Exception ex)
             {
-                b.Dispose(); comp = null; failedAt = DateTime.Now; // частично созданное — освобождаем; компоновщик пересоздадим при следующей попытке
+                b.Dispose(); if (blurFactory != null) { blurFactory.Dispose(); blurFactory = null; }
+                comp = null; blurUnavailable = false; failedAt = DateTime.Now;
                 Bar.Log(new Exception("Стеклянный материал недоступен — темы рисуются сплошной поверхностью, новая попытка через минуту", ex)); return null;
             }
         }
 
         // x, y, w, h — физические пиксели экрана; r — радиус углов в пикселях; подложка встаёт сразу под окно owner
-        public void Set(IntPtr owner, int x, int y, int w, int h, double r, bool show)
+        public void Set(IntPtr owner, int x, int y, int w, int h, double r, bool show, float blur = -1)
         {
             if (host == null) return;
             if (!show || w < 1 || h < 1) { if (shown) { ShowWindow(host.Handle, 0); shown = false; } return; }
+            SetBlur(blur);
             var size = new Vector2(w, h);
             if (vis.Size != size) { vis.Size = size; geo.Size = size; }
             float rr = (float)Math.Min(r, Math.Min(w, h) / 2.0); geo.CornerRadius = new Vector2(rr, rr);
             SetWindowPos(host.Handle, owner == IntPtr.Zero ? new IntPtr(-1) : owner, x, y, w, h, 0x10 | 0x40); // NOACTIVATE | SHOWWINDOW
             if (!shown) Animate(0, 1, 150); // проявляется вместе с содержимым, а не раньше него
             shown = true;
+        }
+        void SetBlur(float blur)
+        {
+            if (blur == lastBlur) return;
+            lastBlur = blur;
+            if (blur < 0 || blurUnavailable) { vis.Brush = systemBrush; return; }
+            try
+            {
+                if (desktopBrush == null) desktopBrush = comp.CreateBackdropBrush();
+                if (blur == 0) { vis.Brush = desktopBrush; return; }
+                if (customBrush == null)
+                {
+                    if (blurFactory == null)
+                        blurFactory = comp.CreateEffectFactory(new GlassBlurEffect { Name = "Blur" }, new[] { "Blur.StandardDeviation" });
+                    customBrush = blurFactory.CreateBrush();
+                    customBrush.SetSourceParameter("Backdrop", desktopBrush);
+                }
+                customBrush.Properties.InsertScalar("Blur.StandardDeviation", blur);
+                vis.Brush = customBrush;
+            }
+            catch (Exception ex)
+            {
+                blurUnavailable = true;
+                vis.Brush = systemBrush;
+                Bar.Log(new Exception("Регулируемое размытие недоступно. Используется системное стекло.", ex));
+            }
         }
         // уход вместе с карточкой
         public void Fade() { if (host != null && shown) Animate(1, 0, 120); }
@@ -92,7 +202,17 @@ namespace FlowBar
         public void Dispose()
         {
             if (host == null) return;
-            try { if (target != null) { target.Root = null; target.Dispose(); } if (vis != null) vis.Dispose(); if (geo != null) geo.Dispose(); host.Dispose(); } catch (Exception ex) { Bar.Log(ex); }
+            try
+            {
+                if (target != null) { target.Root = null; target.Dispose(); }
+                if (vis != null) vis.Dispose();
+                if (geo != null) geo.Dispose();
+                if (customBrush != null) customBrush.Dispose();
+                if (desktopBrush != null) desktopBrush.Dispose();
+                if (systemBrush != null) systemBrush.Dispose();
+                host.Dispose();
+            }
+            catch (Exception ex) { Bar.Log(ex); }
             host = null;
         }
     }

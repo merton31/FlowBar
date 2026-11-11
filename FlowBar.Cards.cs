@@ -117,7 +117,8 @@ namespace FlowBar
             var artist = Txt("", 12, false); artist.Opacity = 0.75; artist.TextWrapping = TextWrapping.Wrap;
             var app = Txt("", 10, false); app.Opacity = 0.55; app.Margin = new Thickness(0, 6, 0, 0);
             var top = new DockPanel(); DockPanel.SetDock(cover, Dock.Left); top.Children.Add(cover); top.Children.Add(VS(title, artist, app));
-            body.Children.Add(top);
+            var trackHeader = new Grid { ClipToBounds = true }; trackHeader.Children.Add(top);
+            body.Children.Add(trackHeader);
             // источники: при нескольких плеерах — выбор, кнопки управляют выбранным
             var srcHost = new StackPanel { Margin = new Thickness(0, 12, 0, 0) }; body.Children.Add(srcHost); string srcKey = null;
             var prog = new FillBar(348, 4); var hit = new Border { Height = 16, Background = Brushes.Transparent, Child = prog, Margin = new Thickness(0, 8, 0, 0) }; body.Children.Add(hit);
@@ -139,7 +140,8 @@ namespace FlowBar
             Action tick = () =>
             {
                 var track = s.HasMedia ? s.Title + "\n" + s.Artist : "";
-                if (shownTrack != null && track != shownTrack) Soft(top);
+                bool transitioning = shownTrack != null && track != shownTrack && Motion;
+                if (transitioning) CrossfadeTrackHeader(trackHeader, top, tint.Background);
                 shownTrack = track;
                 title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
                 artist.Text = s.HasMedia ? s.Artist ?? "" : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Включите музыку в любом плеере — FlowBar подхватит её через Windows.";
@@ -163,7 +165,7 @@ namespace FlowBar
                 }
                 if (first || shown != s.Cover)
                 {
-                    if (!first) Soft(cover);
+                    if (!first && !transitioning) Soft(cover);
                     first = false; shown = s.Cover; var ac = AccentColor;
                     tint.Background = MusicTint(s.Cover);
                     cover.Background = s.Cover != null ? (Brush)new ImageBrush(s.Cover) { Stretch = Stretch.UniformToFill } : new LinearGradientBrush(Color.FromArgb(0x90, ac.R, ac.G, ac.B), Color.FromArgb(0x20, ac.R, ac.G, ac.B), 45);
@@ -173,6 +175,31 @@ namespace FlowBar
             };
             tick();
             ShowPanel("Музыка", tint, 394, null, tick);
+        }
+
+        static void CrossfadeTrackHeader(Grid host, FrameworkElement current, Brush oldTint)
+        {
+            if (!current.IsLoaded || current.ActualWidth <= 0 || current.ActualHeight <= 0) return;
+            while (host.Children.Count > 1) host.Children.RemoveAt(host.Children.Count - 1);
+            current.BeginAnimation(OpacityProperty, null);
+            var dpi = VisualTreeHelper.GetDpi(current);
+            int w = (int)Math.Ceiling(current.ActualWidth * dpi.DpiScaleX), h = (int)Math.Ceiling(current.ActualHeight * dpi.DpiScaleY);
+            var visual = new DrawingVisual();
+            using (var dc = visual.RenderOpen())
+            {
+                var area = new Rect(0, 0, current.ActualWidth, current.ActualHeight);
+                dc.DrawRectangle(oldTint, null, area);
+                dc.DrawRectangle(new VisualBrush(current), null, area);
+            }
+            var bitmap = new RenderTargetBitmap(w, h, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+            bitmap.Render(visual); bitmap.Freeze();
+            var previous = new Image { Source = bitmap, Stretch = Stretch.None, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left };
+            host.Children.Add(previous);
+            int duration = ExpressiveMotion ? 300 : 190;
+            var fade = SettingsMotion(1, 0, duration);
+            fade.Completed += (s, e) => host.Children.Remove(previous);
+            previous.BeginAnimation(OpacityProperty, fade);
+            current.BeginAnimation(OpacityProperty, SettingsMotion(0, 1, duration));
         }
 
         static void ClosePanels() { foreach (var b in bars) if (b.panel != null) b.panel.Close(); }
@@ -649,14 +676,7 @@ namespace FlowBar
         Border GroupTile(string name, Dictionary<string, List<Win>> wins, IntPtr fg)
         {
             var members = appGroups.ContainsKey(name) ? appGroups[name] : new List<string>();
-            var grid = new UniformGrid { Rows = 2, Columns = 2, Width = IconPx, Height = IconPx };
-            foreach (var m in members.Take(4))
-            {
-                var ic = IconFor(m) ?? IconFor(Target(m));
-                grid.Children.Add(ic != null ? (UIElement)new Image { Source = ic, Margin = new Thickness(1) } : G("", IconPx * 0.3));
-            }
-            var box = new Border { Padding = new Thickness(3), CornerRadius = new CornerRadius(IconPx / 4), Background = new SolidColorBrush(Fa(0x1A)), Child = grid, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            var holder = new Grid(); holder.Children.Add(box);
+            var holder = new Grid(); holder.Children.Add(GroupIcon(members));
             int running = members.Count(m => wins.ContainsKey(Key(Target(m))));
             bool active = members.Any(m => { List<Win> ws; return wins.TryGetValue(Key(Target(m)), out ws) && ws.Any(w => w.H == fg); });
             if (running > 0) holder.Children.Add(Indicator(active, running > 1));
@@ -667,6 +687,18 @@ namespace FlowBar
             });
             if (active) { t.Base = Fa(0x1E); t.Background = new SolidColorBrush(t.Base); }
             return t;
+        }
+
+        FrameworkElement GroupIcon(IEnumerable<string> members)
+        {
+            var grid = new UniformGrid { Rows = 2, Columns = 2, Width = IconPx, Height = IconPx };
+            foreach (var member in members.Take(4))
+            {
+                var icon = IconFor(member) ?? IconFor(Target(member));
+                grid.Children.Add(icon != null ? (UIElement)new Image { Source = icon, Margin = new Thickness(1) } : G("\uE737", IconPx * 0.3));
+            }
+            return new Border { Padding = new Thickness(3), CornerRadius = new CornerRadius(IconPx / 4), Background = new SolidColorBrush(Fa(0x1A)), Child = grid,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         }
         void ShowGroup(string name)
         {
@@ -720,7 +752,7 @@ namespace FlowBar
             ShowPanel(name, body, 340, null);
         }
         // отметка под значком: одно окно — одна черта; несколько окон — две равные черты рядом; hollow — окна на другом мониторе (полые)
-        public static FrameworkElement Indicator(bool active, bool many, bool hollow = false)
+        FrameworkElement Indicator(bool active, bool many, bool hollow = false)
         {
             Func<Rectangle> bar = () =>
             {
@@ -742,7 +774,8 @@ namespace FlowBar
             var win = new Window
             {
                 Title = "FlowBar — " + title, Width = w, Height = h, MinWidth = 620, MinHeight = 440, WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                Background = Frozen(CardBg, 255), Foreground = Frozen(CardFg, 255), FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI"), ShowInTaskbar = true
+                Background = Frozen(CardBg, 255), Foreground = Frozen(CardFg, 255), FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI"), ShowInTaskbar = true,
+                UseLayoutRounding = true, SnapsToDevicePixels = true
             };
             System.Windows.Documents.Typography.SetNumeralAlignment(win, FontNumeralAlignment.Tabular); UseCardScroll(win);
             win.SourceInitialized += (s, e) => { var hw = new WindowInteropHelper(win).Handle; int dark = Sty.Lum(CardBg) < 128 ? 1 : 0; N.DwmSetWindowAttribute(hw, 20, ref dark, 4); };
@@ -956,15 +989,34 @@ namespace FlowBar
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
             var box = new Border { CornerRadius = new CornerRadius(10), Background = Frozen(CardFg, 0x0E), Padding = new Thickness(3), Child = sp, HorizontalAlignment = HorizontalAlignment.Left };
+            var selectedBackground = Frozen(AccentColor, 255);
+            var selectedForeground = Frozen(OnAccent, 255);
+            Action<int, bool> paint = (index, selected) =>
+            {
+                var button = (Press)sp.Children[index];
+                var text = (TextBlock)button.Child;
+                button.Background = selected ? selectedBackground : Brushes.Transparent;
+                if (selected) text.Foreground = selectedForeground;
+                else text.ClearValue(TextBlock.ForegroundProperty);
+                text.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
+                System.Windows.Automation.AutomationProperties.SetName(button, labels[index] + (selected ? ", выбрано" : ""));
+            };
             for (int i = 0; i < labels.Length; i++)
             {
-                int k = i; bool on = i == sel;
-                var t = Txt(labels[i], small ? 11 : 12, on); t.HorizontalAlignment = HorizontalAlignment.Center;
-                var b = new Press { Child = t, Padding = new Thickness(small ? 9 : 14, small ? 4 : 6, small ? 9 : 14, small ? 4 : 6), CornerRadius = new CornerRadius(8), Cursor = Cursors.Hand, Invoke = () => pick(k) };
-                if (on) { b.Background = new SolidColorBrush(AccentColor); t.Foreground = Frozen(OnAccent, 255); } else b.Background = Brushes.Transparent;
-                System.Windows.Automation.AutomationProperties.SetName(b, labels[i] + (on ? ", выбрано" : ""));
-                b.MouseLeftButtonUp += (s, e) => { e.Handled = true; pick(k); };
+                int k = i;
+                var t = Txt(labels[i], small ? 11 : 12, false); t.HorizontalAlignment = HorizontalAlignment.Center;
+                Action select = () =>
+                {
+                    pick(k);
+                    if (sel == k) return;
+                    if (sel >= 0 && sel < sp.Children.Count) paint(sel, false);
+                    sel = k;
+                    paint(sel, true);
+                };
+                var b = new Press { Child = t, Padding = new Thickness(small ? 9 : 14, small ? 4 : 6, small ? 9 : 14, small ? 4 : 6), CornerRadius = new CornerRadius(8), Cursor = Cursors.Hand, Invoke = select };
+                b.MouseLeftButtonUp += (s, e) => { e.Handled = true; select(); };
                 sp.Children.Add(b);
+                paint(i, i == sel);
             }
             var outer = new StackPanel(); outer.Children.Add(box); return outer;
         }
@@ -1250,70 +1302,202 @@ namespace FlowBar
             };
             var otherScene = new Border { Height = scene.Height, CornerRadius = scene.CornerRadius, ClipToBounds = true };
             var otherTitle = SSub("После");
+            otherTitle.Margin = title.Margin;
             var stages = new Grid();
             var beforeColumn = new ColumnDefinition(); var afterColumn = new ColumnDefinition();
             stages.ColumnDefinitions.Add(beforeColumn); stages.ColumnDefinitions.Add(afterColumn);
             var after = VS(otherTitle, otherScene); after.Margin = new Thickness(7, 0, 0, 0);
-            var before = VS(title, scene); // заголовок сразу в колонке «Сейчас»: добавленный ещё и в parent, он ронял открытие настроек
+            var before = VS(title, scene);
             Grid.SetColumn(after, 1); stages.Children.Add(before); stages.Children.Add(after);
             parent.Children.Add(stages);
             var apply = Btn("Применить тему", () => ChangeTheme(candidateTheme), true);
             parent.Children.Add(apply);
+            var restore = CardActions(Btn("Восстановить вариант", RestorePreviewAppearance, true),
+                Btn("Закрыть примерку", () => { candidateAppearance = null; if (refreshPreview != null) refreshPreview(null); }));
+            parent.Children.Add(restore);
             Action<string> render = key =>
             {
-                bool compare = CompareThemes;
+                var saved = key == null ? candidateAppearance : null;
+                bool compare = CompareThemes || saved != null;
                 after.Visibility = compare ? Visibility.Visible : Visibility.Collapsed;
                 afterColumn.Width = compare ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-                apply.Visibility = compare && candidateTheme != null ? Visibility.Visible : Visibility.Collapsed;
+                apply.Visibility = saved == null && compare && candidateTheme != null ? Visibility.Visible : Visibility.Collapsed;
+                restore.Visibility = saved != null ? Visibility.Visible : Visibility.Collapsed;
                 scene.Background = otherScene.Background = PreviewScene();
                 string next = key ?? candidateTheme;
                 var featured = FeaturedThemes.FirstOrDefault(item => item[0] == next);
                 string name = next == null ? "" : featured == null ? ThemeName(next) : featured[1];
                 title.Text = compare ? "Сейчас" : next == null ? "Предпросмотр панели" : "Примерка · " + name;
-                otherTitle.Text = next == null ? "После" : "После · " + name;
+                otherTitle.Text = saved != null ? "Сохранено " + candidateAppearanceDate : next == null ? "После" : "После · " + name;
                 DrawSettingsBar(scene, compare ? null : next);
-                if (compare) DrawSettingsBar(otherScene, next);
+                if (compare) DrawSettingsBar(otherScene, saved != null ? null : next, saved);
             };
             render(null);
             return render;
         }
 
-        void DrawSettingsBar(Border scene, string key)
+        void DrawSettingsBar(Border scene, string key, Dictionary<string, string> saved = null)
         {
-                var st = key == null ? Cur : Styles[key];
-                var accent = C("accent", "") == "" ? st.Ac : AccentColor;
-                var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-                var start = new StartLogo { Margin = new Thickness(8, 0, 8, 0) }; start.SetColor(Frozen(accent, 255));
-                row.Children.Add(start);
-                var target = settingsPreviewMonitor != null && bars.Contains(settingsPreviewMonitor) ? settingsPreviewMonitor : Primary ?? this;
-                var order = target.HasWidgets ? target.Layout().Where(item => target.CompactMonitor ? target.LayoutShows(item.Key) : item.Value).Select(item => item.Key).ToList() : new List<string>();
-                foreach (var id in order.Concat(new[] { "clock" }).Distinct())
+            var target = settingsPreviewMonitor != null && bars.Contains(settingsPreviewMonitor) ? settingsPreviewMonitor : Primary ?? this;
+            var view = new Dictionary<string, string>(cfg);
+            if (saved != null)
+            {
+                foreach (var setting in view.Keys.Where(IsAppearanceKey).ToList()) view.Remove(setting);
+                foreach (var pair in saved) view[pair.Key] = pair.Value;
+            }
+            if (key != null) view["style"] = key;
+            view["motion"] = "off";
+            var previous = previewCfg;
+            previewCfg = view;
+            try { target.DrawPanelSample(scene, saved != null); }
+            finally { previewCfg = previous; }
+        }
+
+        void DrawPanelSample(Border scene, bool saved)
+        {
+            bool vertical = VerticalBar, split = Sections && !vertical && !Flush, glass = GlassOn;
+            var size = VerticalBar ? new Thickness(Gap, 0, Gap, 0) : new Thickness(0, Gap, 0, Gap);
+            var row = new StackPanel { Orientation = vertical ? Orientation.Vertical : Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            System.Windows.Documents.TextElement.SetForeground(row, Frozen(Cur.Fg, 255));
+            var widgets = HasWidgets ? Layout().Where(item => CompactMonitor ? LayoutShows(item.Key) : item.Value)
+                .Select(item => "w:" + item.Key).ToList() : new List<string>();
+            var apps = appEls == null ? new List<string>() : appEls.Keys.OrderBy(t =>
+            {
+                int i = appOrder.IndexOf(t); return i < 0 ? int.MaxValue : i;
+            }).ToList();
+            var order = saved || shownTokens == null || shownTokens.Count == 0
+                ? MergeSeq(C(SeqKey, "").Split('\t').ToList(), apps, widgets, C("search", "1") == "1", true, true)
+                : shownTokens.Where(t => t != "__drop" && ElOf(t) != null && ElOf(t).Visibility == Visibility.Visible).ToList();
+            if (!saved && overflowTile != null) order.Add("preview:overflow");
+            order.Add("preview:tray");
+            if (C("edgeBtns", "1") == "1") { order.Add("preview:fold"); order.Add("preview:desktop"); }
+            if (split) order = order.OrderBy(PreviewSection).ToList();
+
+            var updates = new List<Action>();
+            var surfaces = new List<PanelSampleSurface>();
+            StackPanel section = null;
+            int lastSection = -1;
+            foreach (var token in order)
+            {
+                var tile = PreviewTile(token, updates);
+                if (tile == null) continue;
+                if (split && (section == null || lastSection != PreviewSection(token)))
                 {
-                    var def = WidgetDefs.FirstOrDefault(d => d[0] == id);
-                    string value = id == "clock" ? "11:46" : id == "weather" ? "13°" : id == "media" ? "Музыка" : def == null ? id : def[1];
-                    var text = Txt(value, 12, true);
-                    text.Foreground = Frozen(st.Fg, 255);
-                    var tile = new Border
-                    {
-                        Background = Frozen(st.Fg, Sections ? (byte)0x30 : (byte)0x18),
-                        MinWidth = id == "clock" ? 0 : 24 + target.View(id) * 28, Padding = new Thickness(8, 5, 8, 5),
-                        Margin = new Thickness(0, 0, 4, 0), CornerRadius = new CornerRadius(7), Child = text
-                    };
-                    if (id != "clock" && !target.CompactMonitor) SetupPreviewWidget(tile, target, id);
-                    row.Children.Add(tile);
+                    lastSection = PreviewSection(token);
+                    section = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                    var cap = PreviewCapsule(scene, section, glass);
+                    surfaces.Add(cap);
+                    cap.Margin = new Thickness(row.Children.Count == 0 ? 0 : 7, 0, 0, 0);
+                    row.Children.Add(cap);
                 }
-                scene.Child = new Border
+                tile.IsHitTestVisible = false;
+                var id = token.StartsWith("w:") ? token.Substring(2) : null;
+                if (id != null && !saved && !CompactMonitor)
                 {
-                    Height = Math.Round(BarH * 0.8), Padding = new Thickness(4),
-                    Margin = new Thickness(10, 5 + Gap * 0.45, 10, 5 + Gap * 0.45),
-                    HorizontalAlignment = FullWidth ? HorizontalAlignment.Stretch : HorizontalAlignment.Center,
-                    VerticalAlignment = IsTop ? VerticalAlignment.Top : VerticalAlignment.Bottom,
-                    CornerRadius = new CornerRadius(Flush ? 0 : 14),
-                    Background = MaterialFill(st, WantsGlass(st)),
-                    BorderBrush = MaterialEdge(st, WantsGlass(st), false),
-                    BorderThickness = new Thickness(1),
-                    Child = new Viewbox { StretchDirection = StretchDirection.DownOnly, HorizontalAlignment = HorizontalAlignment.Left, Child = row }
-                };
+                    var grip = new Border { Child = tile, Background = Brushes.Transparent };
+                    SetupPreviewWidget(grip, this, id);
+                    tile = grip;
+                }
+                (section ?? row).Children.Add(tile);
+            }
+            foreach (var update in updates) try { update(); } catch (Exception ex) { Log(ex); }
+
+            if (!split) surfaces.Add(PreviewCapsule(scene, row, glass));
+            var content = split ? (FrameworkElement)row : surfaces[0];
+            var scroll = new ScrollViewer
+            {
+                Content = content, Focusable = false,
+                HorizontalScrollBarVisibility = vertical ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = vertical ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch
+            };
+            scroll.HorizontalAlignment = vertical ? (LeftBar ? HorizontalAlignment.Left : HorizontalAlignment.Right) : FullWidth ? HorizontalAlignment.Stretch : HorizontalAlignment.Center;
+            scroll.VerticalAlignment = vertical ? VerticalAlignment.Stretch : IsTop ? VerticalAlignment.Top : VerticalAlignment.Bottom;
+            scroll.Margin = size;
+            scroll.ScrollChanged += (s, e) => { foreach (var surface in surfaces) surface.InvalidateVisual(); };
+            if (!vertical) scroll.PreviewMouseWheel += (s, e) =>
+            {
+                if (scroll.ScrollableWidth <= 0) return;
+                scroll.ScrollToHorizontalOffset(scroll.HorizontalOffset - e.Delta / 2.0); e.Handled = true;
+            };
+            scene.Child = scroll;
+        }
+
+        static int PreviewSection(string token) { return token.StartsWith("preview:") ? 2 : SectionFor(token); }
+
+        PanelSampleSurface PreviewCapsule(Border scene, FrameworkElement child, bool glass)
+        {
+            var capsule = new PanelSampleSurface(scene, glass ? PreviewScene(true) : null)
+            {
+                Child = child, Background = MaterialFill(Cur, glass), BorderBrush = MaterialEdge(Cur, glass, false),
+                BorderThickness = new Thickness(1), Padding = new Thickness(SizeKey == "XL" ? 4 : 6),
+                CornerRadius = new CornerRadius(Flush ? 0 : BarH / 2), Height = VerticalBar ? double.NaN : BarH,
+                Width = VerticalBar ? SideWidth : double.NaN
+            };
+            if (VerticalBar && !FullWidth) capsule.VerticalAlignment = VerticalAlignment.Center;
+            return capsule;
+        }
+
+        FrameworkElement PreviewTile(string token, List<Action> updates)
+        {
+            if (token == "clock" || token.StartsWith("w:"))
+            {
+                string id = token == "clock" ? token : token.Substring(2);
+                try { return MakeWidget(id, live, false, updates) as FrameworkElement; }
+                catch (Exception ex) { Log(ex); return null; }
+            }
+            if (IsApp(token))
+            {
+                string path = token.Substring(2);
+                List<Win> wins = null;
+                if (appWins != null) appWins.TryGetValue(token, out wins);
+                if (token.StartsWith("r|") && wins != null && wins.Count != 0)
+                    path = wins[0].Path;
+                List<string> members;
+                var cell = new Grid();
+                if (!string.IsNullOrEmpty(path) && path.StartsWith("group:") && appGroups.TryGetValue(path.Substring(6), out members)) cell.Children.Add(GroupIcon(members));
+                else
+                {
+                    var icon = string.IsNullOrEmpty(path) ? null : IconFor(path) ?? IconFor(Target(path));
+                    cell.Children.Add(icon == null ? (UIElement)G("\uE737", 15 * Fs) : new Image { Source = icon, Width = IconPx, Height = IconPx });
+                }
+                var foreground = N.GetForegroundWindow();
+                bool active = wins != null && wins.Any(w => w.H == foreground);
+                if (wins != null && wins.Count > 0) cell.Children.Add(Indicator(active, wins.Count > 1));
+                var tile = Tile(cell, null, null, null);
+                if (active) tile.Background = Frozen(Cur.Fg, 0x1E);
+                return tile;
+            }
+            if (token == "start")
+            {
+                var start = new StartLogo(); start.SetColor(Accent);
+                return Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = start }, null, null, null);
+            }
+            if (token == "preview:desktop")
+            {
+                var tile = Tile(FgShape(new Rectangle { Width = 2, Height = TileH * 0.45, RadiusX = 1, RadiusY = 1 }, 0.45), null, null, null);
+                tile.Width = 14; return tile;
+            }
+            string glyph = token == "search" ? "\uE721" : token == "preview:tray" ? (IsTop ? "\uE70D" : "\uE70E") : token == "preview:fold" ? "\uE921" : "\uE712";
+            return Tile(G(glyph, 14 * Fs), null, null, null);
+        }
+
+        sealed class PanelSampleSurface : Border
+        {
+            readonly Border scene;
+            readonly Brush softWallpaper;
+            public PanelSampleSurface(Border backdrop, Brush soft) { scene = backdrop; softWallpaper = soft; }
+            protected override void OnRender(DrawingContext dc)
+            {
+                if (softWallpaper != null && scene.ActualWidth > 0 && scene.ActualHeight > 0 && IsDescendantOf(scene))
+                {
+                    var start = scene.TranslatePoint(new Point(), this);
+                    dc.PushClip(new RectangleGeometry(new Rect(RenderSize), CornerRadius.TopLeft, CornerRadius.TopLeft));
+                    dc.DrawRectangle(softWallpaper, null, new Rect(start, scene.RenderSize));
+                    dc.Pop();
+                }
+                base.OnRender(dc);
+            }
         }
 
         // образец темы: маленькая капсула в её цветах
@@ -1372,6 +1556,7 @@ namespace FlowBar
             right.Children.Add(scroll);
             dock.Children.Add(right);
             var preview = AddSettingsPreview(previewBody);
+            refreshPreview = preview;
             string cur = section ?? "look";
             Action<string> go = null;
             go = key =>
@@ -1424,7 +1609,7 @@ namespace FlowBar
             settingsGo = go; go(cur);
             w.Content = dock;
             w.Activated += (s, e) => preview(null);
-            w.Closed += (s, e) => { settings = null; settingsGo = null; settingsPreviewMonitor = null; candidateTheme = null; };
+            w.Closed += (s, e) => { settings = null; settingsGo = null; refreshPreview = null; settingsPreviewMonitor = null; candidateTheme = null; candidateAppearance = null; };
             settings = w; w.Show(); w.Activate();
         }
         static void RestyleWindows() { if (settingsGo != null) settingsGo(settingsCur()); if (catalog != null) { catalog.Background = Frozen(CardBg, 255); catalog.Foreground = Frozen(CardFg, 255); if (catalogRender != null) catalogRender(); } }
@@ -1480,10 +1665,16 @@ namespace FlowBar
         {
             lastSection = "bar";
             c.Children.Add(SH("Панель"));
-            c.Children.Add(SetRow("Секции", "Приложения, виджеты и системные кнопки получают отдельные подложки в плавающем режиме.",
-                Seg(new[] { "Сплошная", "Раздельная" }, Sections ? 1 : 0, i => { cfg["bar.sections"] = i.ToString(); SaveCfg(); RebuildAll(); again(); })));
-            c.Children.Add(SetRow("Размер", "Высота в логических пикселях (DIP): S — 48, M — 60, L — 72, XL — 88; на экране с масштабом 125 % это в 1,25 раза больше физических пикселей. Вид модулей «Авто» следует размеру.",
-                Seg(new[] { "S", "M", "L", "XL" }, Array.IndexOf(new[] { "S", "M", "L", "XL" }, SizeKey), i => { cfg["size"] = new[] { "S", "M", "L", "XL" }[i]; SaveCfg(); RebuildAll(); again(); })));
+            var sections = Seg(new[] { "Сплошная", "Раздельная" }, Sections ? 1 : 0, i => { cfg["bar.sections"] = i.ToString(); SaveCfg(); RebuildAll(); again(); });
+            sections.IsEnabled = !Flush && bars.Any(b => !b.VerticalBar);
+            c.Children.Add(SetRow("Секции", "Приложения, виджеты и системные кнопки получают отдельные подложки на плавающей горизонтальной панели.", sections));
+            c.Children.Add(CheckRow("Стопка миниатюр", "На значке программы видно, что открыто несколько окон.", C("apps.stack", "0") == "1",
+                v => { cfg["apps.stack"] = v ? "1" : "0"; SaveCfg(); RebuildAll(); }));
+            c.Children.Add(CheckRow("Прогресс под значками приложений", "Показывает прогресс из системной панели задач и доступные индикаторы в окнах.", C("apps.progress", "0") == "1",
+                v => { cfg["apps.progress"] = v ? "1" : "0"; if (v) Tray.EnableTaskbarProgress(); SaveCfg(); RebuildAll(); }));
+            var sizes = new[] { "S", "M", "L", "XL" };
+            c.Children.Add(SetRow("Общий размер", "S — 48, M — 60, L — 72, XL — 88 логических пикселей. Размер отдельного экрана можно задать в разделе «Мониторы».",
+                Seg(sizes, Math.Max(0, Array.IndexOf(sizes, C("size", "M"))), i => { cfg["size"] = sizes[i]; SaveCfg(); RebuildAll(); again(); })));
             c.Children.Add(SetRow("Компоновка", PresetHints[PresetIndex] + " Набор — только начало: потом всё можно переставить, а «Своя» вернёт прежнюю раскладку.",
                 Seg(PresetNames, PresetIndex, i => { ApplyPreset(i); again(); })));
             var budgets = new[] { 0, 6, 8, 10, 14 }; int bi = Math.Max(0, Array.IndexOf(budgets, AppMax));
@@ -1491,12 +1682,12 @@ namespace FlowBar
                 Seg(new[] { "Все", "6", "8", "10", "14" }, bi, i => { cfg[MK("appMax")] = budgets[i].ToString(); MarkCustom(); SaveCfg(); All(b => { b.ResetFit(false); b.Compose(); }); again(); })));
             c.Children.Add(SetRow("Отступ от края экрана", null, SliderRow(0, 32, Gap, 1, v => Math.Round(v) + " px", v => { cfg["gap"] = Math.Round(v).ToString(); SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); preview(null); }, "Отступ от края экрана")));
             var edges = new[] { "bottom", "top", "left", "right" };
-            c.Children.Add(SetRow("Расположение", "Боковая панель прокручивается вертикально, карточки открываются в сторону центра экрана.",
+            c.Children.Add(SetRow("Общее расположение", "В разделе «Мониторы» можно выбрать свой край для каждого экрана.",
                 Seg(new[] { "Снизу", "Сверху", "Слева", "Справа" }, Math.Max(0, Array.IndexOf(edges, C("pos", "bottom"))),
                     i => { cfg["pos"] = edges[i]; SaveCfg(); ClosePanels(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); again(); })));
             var widths = new[] { "fit", "wide", "full" }; int wi = Math.Max(0, Array.IndexOf(widths, C("width", "fit")));
-            c.Children.Add(SetRow("Ширина", "«По содержимому» — капсула по центру. «Широкая плавающая» — на всю ширину с отступом и скруглением. «Во всю ширину вплотную» — у самого края, как панель Windows; отступ тогда не используется.",
-                Seg(new[] { "По содержимому", "Широкая плавающая", "Во всю ширину вплотную" }, wi, i => { cfg["width"] = widths[i]; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); again(); })));
+            c.Children.Add(SetRow("Размер вдоль края", "В режиме «Вплотную» отступ не используется.",
+                Seg(new[] { "По содержимому", "Вдоль края", "Вплотную" }, wi, i => { cfg["width"] = widths[i]; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); again(); })));
             var fold = Btn("Свернуть панель в значок", () => All(b => b.SetCollapsed(true))); fold.HorizontalAlignment = HorizontalAlignment.Left; fold.Margin = new Thickness(0, 6, 0, 4);
             c.Children.Add(SetRow("Свёртка", "Панель сжимается до одного значка; нажатие на него раскрывает её с прежним составом. Таймеры и музыка продолжают работать. Это не автоскрытие.", fold));
             c.Children.Add(SetRow("Автоскрытие", "«Когда не используется» — панель исчезает и появляется, когда курсор у края экрана. Тогда она накладывается поверх окон, место не резервируется.",
@@ -1524,7 +1715,9 @@ namespace FlowBar
             foreach (var sc in System.Windows.Forms.Screen.AllScreens.OrderByDescending(x => x.Primary))
             {
                 var dev = sc.DeviceName;
+                var monitorBar = bars.FirstOrDefault(x => x.scr.DeviceName == dev);
                 c.Children.Add(SSub("Монитор " + n++ + (sc.Primary ? " · основной" : "") + " · " + sc.Bounds.Width + "×" + sc.Bounds.Height));
+                if (monitorBar != null) MonitorGeometrySettings(c, monitorBar, again);
                 if (sc.Primary) { c.Children.Add(SHint("Основная раскладка — её меняют каталог и перетаскивание на панели.")); continue; }
                 var mode = C("mon." + dev, "none"); int sel = mode == "same" ? 1 : mode == "own" ? 2 : mode == "compact" ? 3 : 0;
                 c.Children.Add(Mg(Seg(new[] { "Без виджетов", "Как на основном", "Своя раскладка", "Компактная" }, sel, i =>
@@ -1549,6 +1742,11 @@ namespace FlowBar
             c.Children.Add(SHint("Состав и порядок задаются в каталоге и перетаскиванием прямо на панели. Здесь — вид модулей."));
             var open = Btn("Открыть каталог виджетов", () => ShowCatalog(Primary), true); open.HorizontalAlignment = HorizontalAlignment.Left; open.Margin = new Thickness(0, 12, 0, 4);
             c.Children.Add(open);
+            c.Children.Add(CheckRow("Микшер по нажатию на громкость", "Громкость и отключение звука для приложений на текущем устройстве.", C("widget.mixer", "1") == "1",
+                v => { cfg["widget.mixer"] = v ? "1" : "0"; SaveCfg(); }));
+            c.Children.Add(CheckRow("Дуга светового дня", "Рассвет и закат для города из виджета погоды. Дуга заменяет строку даты в панели.", C("clock.daylight", "0") == "1",
+                v => { cfg["clock.daylight"] = v ? "1" : "0"; SaveCfg(); RebuildAll(); again(); }));
+            AddWidgetStateGallery(c, again);
             c.Children.Add(SSub("Вид модулей"));
             foreach (var id in new[] { "clock", "media", "weather", "cpu", "ram", "temp", "net", "disk", "bat" })
             {
@@ -1826,8 +2024,8 @@ namespace FlowBar
             if (id == null || collapsed || folding || !IsVisible || autoHidden || fsHidden || strip == null || !widgetEls.TryGetValue(id, out el)) return null;
             if (!tokenOf.ContainsKey(el) || !el.IsVisible || el.ActualWidth < 1 || PresentationSource.FromVisual(el) == null || !el.IsDescendantOf(strip)) return null;
             var r = el.TransformToAncestor(stripScroll).TransformBounds(new Rect(0, 0, el.ActualWidth, el.ActualHeight));
-            double seen = Math.Min(r.Right, stripScroll.ViewportWidth) - Math.Max(r.Left, 0);
-            if (seen < r.Width * 0.6) return null; // обрезан прокруткой ряда
+            double seen = VerticalBar ? Math.Min(r.Bottom, stripScroll.ViewportHeight) - Math.Max(r.Top, 0) : Math.Min(r.Right, stripScroll.ViewportWidth) - Math.Max(r.Left, 0);
+            if (seen < (VerticalBar ? r.Height : r.Width) * 0.6) return null;
             var pr = new Rect(el.PointToScreen(new Point(0, 0)), el.PointToScreen(new Point(el.ActualWidth, el.ActualHeight)));
             var mb = scr.Bounds;
             return pr.IntersectsWith(new Rect(mb.Left, mb.Top, mb.Width, mb.Height)) ? (Rect?)pr : null;
@@ -1893,7 +2091,8 @@ namespace FlowBar
                 var hw = new WindowInteropHelper(w).Handle; if (hw == IntPtr.Zero) return;
                 double ts = VisualTreeHelper.GetDpi(w).DpiScaleX, cw = w.ActualWidth * ts, ch = w.ActualHeight * ts, mg = Shadow * ts;
                 var an = item.Widget != null ? ResolveWidgetAnchor(item.Widget) : null; var wa = scr.WorkingArea; var mb = scr.Bounds; double x, y;
-                if (an != null) { var r = an.Value; x = (r.Left + r.Right) / 2 - cw / 2; y = IsTop ? r.Bottom + 8 * ts - mg : r.Top - 8 * ts - ch + mg; } // над модулем у нижней панели, под ним — у верхней
+                if (an != null && VerticalBar) { var r = an.Value; x = LeftBar ? r.Right + 8 * ts - mg : r.Left - cw - 8 * ts + mg; y = (r.Top + r.Bottom - ch) / 2; }
+                else if (an != null) { var r = an.Value; x = (r.Left + r.Right) / 2 - cw / 2; y = IsTop ? r.Bottom + 8 * ts - mg : r.Top - 8 * ts - ch + mg; }
                 else { x = wa.Right - 12 * ts - cw + mg; y = wa.Bottom - 12 * ts - ch + mg; } // обычное место: правый нижний угол рабочей области
                 x = Math.Max(mb.Left + 4 * ts - mg, Math.Min(mb.Right - 4 * ts + mg - cw, x)); y = Math.Max(mb.Top + 4 * ts - mg, Math.Min(mb.Bottom - 4 * ts + mg - ch, y)); // у края — внутрь экрана
                 N.SetWindowPos(hw, IntPtr.Zero, (int)Math.Round(x), (int)Math.Round(y), 0, 0, 0x1 | 0x4 | 0x10);
@@ -1905,7 +2104,8 @@ namespace FlowBar
                 place();
                 if (!Motion) return;
                 var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-                card.RenderTransform.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(IsTop ? -10 : 10, 0, TimeSpan.FromMilliseconds(170)) { EasingFunction = ease, FillBehavior = FillBehavior.Stop });
+                card.RenderTransform.BeginAnimation(VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty,
+                    new DoubleAnimation((VerticalBar ? LeftBar : IsTop) ? -10 : 10, 0, TimeSpan.FromMilliseconds(ExpressiveMotion ? 275 : 170)) { EasingFunction = ease, FillBehavior = FillBehavior.Stop });
                 card.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150)) { FillBehavior = FillBehavior.Stop });
             };
             w.Closed += (s, e) => { if (toast == w) toast = null; if (toast == null) ShowToast(); };
