@@ -336,7 +336,7 @@ namespace FlowBar
             Add(app, when.Hour);
             int second = (int)when.TimeOfDay.TotalSeconds;
             var last = Intervals.LastOrDefault();
-            if (last != null && last.App == app && second >= last.Start && second <= last.End)
+            if (last != null && last.App == app && second >= last.Start && second <= last.End + 1) // +1: опрос раз в секунду иногда пропускает секунду — это не перерыв
                 last.End = second + 1;
             else Intervals.Add(new Interval { Start = second, End = second + 1, App = app });
         }
@@ -3933,6 +3933,8 @@ namespace FlowBar
             var trackedBack = ScreenTime.Parse(tracked.Day, tracked.Lines());
             fails += check(trackedBack.Total == 4 && trackedBack.Intervals.Count == 3 && trackedBack.Intervals[0].End == 32402 &&
                 trackedBack.Intervals[1].Start == 32408 && trackedBack.Intervals[0].App == "Browser | test", "ScreenTime keeps idle gaps and app transitions");
+            { var sk = new ScreenTime { Day = "2026-01-01" }; sk.Track("A", from); sk.Track("A", from.AddSeconds(2)); sk.Track("A", from.AddSeconds(5));
+              fails += check(sk.Intervals.Count == 2 && sk.Intervals[0].End == 32403, "ScreenTime: пропущенная секунда опроса не рвёт интервал, пауза 3 с — рвёт"); }
             fails += check(ScreenTime.Fmt(3725) == "1ч 2м" && ScreenTime.Fmt(59) == "0м", "ScreenTime.Fmt");
             fails += check(Weather.Deg(-0.4) == "0°" && Weather.Deg(-2.6) == "-3°" && Weather.Deg(12.5) == "13°", "Weather.Deg");
             fails += check(Weather.Wmo(0, true).Item2 == "Ясно" && Weather.Wmo(95, true).Item2 == "Гроза" && Weather.Wmo(73, true).Item1 == "snow" && Weather.Wmo(1, false).Item1 == "partly-night", "Weather.Wmo");

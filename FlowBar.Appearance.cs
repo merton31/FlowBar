@@ -449,6 +449,7 @@ namespace FlowBar
             return SafeFile.ReadLines(F("appearance-history.txt")).Take(8);
         }
 
+        static DateTime lastAppearanceRecord;
         static void RecordAppearance()
         {
             var next = SnapshotAppearance();
@@ -456,6 +457,9 @@ namespace FlowBar
             string old = rememberedAppearance;
             rememberedAppearance = next;
             if (old == null) return;
+            // ползунок сохраняет на каждом шаге: одно перетаскивание — одна запись (вид до него), а не 8 промежуточных
+            var now = DateTime.Now; bool burst = (now - lastAppearanceRecord).TotalSeconds < 3; lastAppearanceRecord = now;
+            if (burst) return;
             var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(old));
             var entry = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\t" + encoded;
             var history = AppearanceHistory().Where(line => !line.EndsWith("\t" + encoded, StringComparison.Ordinal));

@@ -989,7 +989,7 @@ namespace FlowBar
                 var ss = PickSession(); var s = live; bool wasPlaying = s.Playing, wasRemote = s.Remote;
                 if (ss != null && !ReferenceEquals(ss, hooked)) { hooked = ss; ss.PlaybackInfoChanged += (a, b) => KickMedia(); ss.MediaPropertiesChanged += (a, b) => { lastMedia = null; KickMedia(); }; } // пауза, перемотка и смена трека — сразу, а не при следующем опросе
                 s.Sessions = mediaMgr.GetSessions().Where(x => !SpotifyOnly || IsSpotify(x.SourceAppUserModelId)).Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
-                spotifyUp = System.Diagnostics.Process.GetProcessesByName("Spotify").Length > 0;
+                { var sp = System.Diagnostics.Process.GetProcessesByName("Spotify"); spotifyUp = sp.Length > 0; foreach (var x in sp) x.Dispose(); }
                 if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
                 var info = ss.GetPlaybackInfo();
                 s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; bool smtcPlaying = s.Playing;
@@ -1001,7 +1001,7 @@ namespace FlowBar
                 if (DateTime.Now < wantUntil) { if (byTitle == wantPlaying) wantUntil = DateTime.MinValue; else s.Playing = wantPlaying; } // нажали ▶/⏸ в FlowBar — сразу, пока плеер не подтвердил
                 s.CanPrev = info.Controls.IsPreviousEnabled; s.CanNext = info.Controls.IsNextEnabled; s.CanToggle = info.Controls.IsPlayPauseToggleEnabled || info.Controls.IsPlayEnabled || info.Controls.IsPauseEnabled;
                 s.CanSeek = info.Controls.IsPlaybackPositionEnabled; s.MediaError = null;
-                bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => (uint)pr.Id))) : null;
+                bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => { var id = (uint)pr.Id; pr.Dispose(); return id; }))) : null;
                 if (here == false) { if (silentSince == DateTime.MinValue) silentSince = DateTime.Now; } else silentSince = DateTime.MinValue;
                 s.Remote = here == false && (DateTime.Now - silentSince).TotalSeconds > 3;
                 s.App = ss.SourceAppUserModelId;
@@ -1979,7 +1979,7 @@ namespace FlowBar
         {
             var files = e.Data.GetData(DataFormats.FileDrop) as string[]; if (files == null || files.Length == 0) return;
             e.Handled = true; // не закреплять на панели
-            var op = new SHFILEOPSTRUCT { wFunc = 3 /* FO_DELETE */, pFrom = string.Join("\0", files) + "\0\0", fFlags = (ushort)(0x40 /* FOF_ALLOWUNDO */ | (C("binConfirm", "1") == "1" ? 0 : 0x10 /* FOF_NOCONFIRMATION */)) };
+            var op = new SHFILEOPSTRUCT { wFunc = 3 /* FO_DELETE */, pFrom = string.Join("\0", files) + "\0\0", fFlags = (ushort)(0x40 /* FOF_ALLOWUNDO */ | (C("binConfirm", "1") == "1" ? 0 : 0x10 /* FOF_NOCONFIRMATION */ | 0x4000 /* FOF_WANTNUKEWARNING: мимо Корзины (сеть, флешка) — всё же спросить */)) };
             int rc = SHFileOperation(ref op);
             if (rc != 0 && rc != 1223 && !op.fAnyOperationsAborted) Notify("Корзина", "Не удалось удалить (код " + rc + ")", true);
             else if (rc == 0 && !op.fAnyOperationsAborted)
