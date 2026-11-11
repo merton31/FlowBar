@@ -151,8 +151,8 @@ namespace FlowBar
                 return;
             }
             var view = new Rect(stripScroll.TranslatePoint(new Point(0, 0), root), stripScroll.RenderSize);
-            var bounds = new List<Rect>();
-            foreach (var group in tokenOf.Where(kv => kv.Key.IsVisible && kv.Key.IsMeasureValid).GroupBy(kv => SectionFor(kv.Value)).OrderBy(g => g.Key))
+            var bounds = new List<Rect>(); int lastSecKey = -1; // кнопки края (трей, свернуть) сливаются с правой секцией, только если справа системная
+            foreach (var group in tokenOf.Where(kv => kv.Key.IsVisible && kv.Key.IsMeasureValid).GroupBy(kv => SectionOf(kv.Value)).OrderBy(g => SecRank(g.Key)))
             {
                 var span = Rect.Empty;
                 foreach (var item in group)
@@ -161,7 +161,7 @@ namespace FlowBar
                     cell.Intersect(view);
                     if (!cell.IsEmpty) span.Union(cell);
                 }
-                if (!span.IsEmpty) bounds.Add(span);
+                if (!span.IsEmpty) { bounds.Add(span); lastSecKey = group.Key; }
             }
             var buttons = Rect.Empty;
             foreach (var item in rowPanel.Children.OfType<FrameworkElement>().Where(el => el.IsVisible && el != stripScroll))
@@ -174,7 +174,7 @@ namespace FlowBar
             }
             if (!buttons.IsEmpty)
             {
-                if (bounds.Count > 0 && tokenOf.Any(kv => SectionFor(kv.Value) == 2)) bounds[bounds.Count - 1] = Rect.Union(bounds.Last(), buttons);
+                if (bounds.Count > 0 && lastSecKey == 2) bounds[bounds.Count - 1] = Rect.Union(bounds.Last(), buttons);
                 else bounds.Add(buttons);
             }
             var rects = bounds.Where(r => r.Width > 4).Select(r =>

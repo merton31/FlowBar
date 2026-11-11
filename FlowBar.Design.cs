@@ -2328,7 +2328,7 @@ namespace FlowBar
                 var apps = appEls.Keys.OrderBy(k => { int i = appOrder.IndexOf(k); return i < 0 ? int.MaxValue : i; }).ToList();
                 var widgets = HasWidgets ? Layout().Where(x => (CompactMonitor ? LayoutShows(x.Key) : x.Value) && widgetEls.ContainsKey(x.Key)).Select(x => "w:" + x.Key).ToList() : new List<string>();
                 toks = MergeSeq(seq, apps, widgets, searchEl != null, clockEl != null, startEl != null);
-                if (UseSections) toks = toks.OrderBy(SectionFor).ToList();
+                if (UseSections) toks = BySection(toks);
                 fullToks = toks.ToList();
                 // не хватает места — в «…» уходят модули без «Оставлять видимым» (самые правые),
                 // затем значки сверх бюджета (настройка или набор) и, если есть закреплённые модули, ещё значки — не меньше четырёх
@@ -2368,7 +2368,7 @@ namespace FlowBar
                 else if (t.StartsWith("w:")) { if (!widgetEls.TryGetValue(t.Substring(2), out el)) continue; }
                 else if (!appEls.TryGetValue(t, out el)) continue;
                 if (el == null) continue;
-                int nextSection = t == "__drop" ? previousSection : SectionFor(t);
+                int nextSection = t == "__drop" ? previousSection : SectionOf(t);
                 if (UseSections && previousSection >= 0 && nextSection != previousSection)
                 { var gapEl = new Border { Width = 12 + SecExtra(nextSection), IsHitTestVisible = false }; secSpacers[nextSection] = gapEl; strip.Children.Add(gapEl); }
                 Detach(el); strip.Children.Add(el); tokenOf[el] = t; shownTokens.Add(t); previousSection = nextSection;
@@ -2393,6 +2393,7 @@ namespace FlowBar
         // новый порядок ряда: сохраняем его, порядок закреплённых в pinned.txt и порядок модулей в раскладке
         void CommitOrder(List<string> order)
         {
+            if (UseSections) order = BySection(order); PersistSecTemp();
             seq = order.Where(t => t != "__drop").ToList(); SaveSeq();
             var appsNow = seq.Where(IsApp).ToList();
             appOrder = appsNow.Concat(appOrder.Where(t => !appsNow.Contains(t))).ToList();
@@ -2527,10 +2528,29 @@ namespace FlowBar
                 if (over != null) { PaintInsertion(null); return; }
                 int from = dragOrder.IndexOf(dragTok);
                 int to = dragOrder.Count(t => { if (t == dragTok) return false; var el = ElOf(t); return el != null && at > Mid(el); });
-                if (from >= 0 && to != from)
+                // раздельный режим: значок, пронесённый через границу секции, переходит в ту секцию, к значку которой курсор ближе
+                bool secMoved = false;
+                if (UseSections && from >= 0)
+                {
+                    var others = dragOrder.Where(t => t != dragTok && t != "__drop" && ElOf(t) != null).ToList();
+                    int k = others.Count(t => at > Mid(ElOf(t)));
+                    int cur = SectionOf(dragTok), ns = cur;
+                    if (others.Count > 0)
+                    {
+                        string lt = k > 0 ? others[k - 1] : null, rt = k < others.Count ? others[k] : null;
+                        if (lt != null && rt != null && SectionOf(lt) != SectionOf(rt))
+                        {
+                            double dl = Math.Abs(at - Mid(ElOf(lt))), dr = Math.Abs(at - Mid(ElOf(rt))); int sl = SectionOf(lt), sr = SectionOf(rt);
+                            ns = cur == sl ? (dr + 10 < dl ? sr : sl) : cur == sr ? (dl + 10 < dr ? sl : sr) : (dl <= dr ? sl : sr); // запас 10 px: у границы не дребезжит
+                        }
+                        else ns = SectionOf(lt ?? rt);
+                    }
+                    if (ns != cur) { secTemp[dragTok] = ns; secMoved = true; }
+                }
+                if (from >= 0 && (to != from || secMoved))
                 {
                     var old = strip.Children.OfType<FrameworkElement>().ToDictionary(c => c, SlotStart);
-                    dragOrder.RemoveAt(from); dragOrder.Insert(to, dragTok); Compose(dragOrder); strip.UpdateLayout();
+                    dragOrder.RemoveAt(from); dragOrder.Insert(to, dragTok); if (UseSections) dragOrder = BySection(dragOrder); Compose(dragOrder); strip.UpdateLayout();
                     foreach (var c in strip.Children.OfType<FrameworkElement>())
                     {
                         double ox; if (c == dragEl || !old.TryGetValue(c, out ox) || !Motion) continue;
@@ -2544,15 +2564,72 @@ namespace FlowBar
             strip.PreviewMouseLeftButtonUp += (s, e) => { if (secHold != null) secHold.Stop(); if (secDragging) { e.Handled = true; EndSec(); } else if (sDragging) { e.Handled = true; FinishStripDrag(); } dragTok = null; };
             strip.LostMouseCapture += (s, e) => { if (secDragging && !strip.IsMouseCaptureWithin) EndSec(); else if (sDragging && !strip.IsMouseCaptureWithin) FinishStripDrag(); };
         }
-        // ---------- раздельный режим: секцию двигают, зажав любой её значок на 0,4 с, — как окно ----------
-        // Положение — добавочные промежутки перед второй и третьей секцией (DIP), своё для каждого монитора.
-        // Средняя секция едет за курсором, соседние стоят; крайняя отодвигается от остальных. Шире экрана панель не становится.
+        // ---------- раздельный режим: секции — блоки ----------
+        // Зажмите значок или виджет на 0,4 с и ведите: секция целиком меняется местами с соседней (порядок — secorder@монитор, «0,1,2» по умолчанию).
+        // Обычное перетаскивание значка или виджета через границу секции переносит его в соседнюю секцию (секция каждого — secmap@монитор).
+        // Всё своё для каждого монитора; сбросить — «Вернуть секции на место» в меню панели.
         readonly Dictionary<int, Border> secSpacers = new Dictionary<int, Border>();
-        DispatcherTimer secHold; bool secDragging; int secIdx; double secStartX, secX1, secX2, secRoom, secCur1, secCur2;
+        readonly Dictionary<string, int> secTemp = new Dictionary<string, int>(); // перенос значка, пока его тянут
+        Dictionary<string, int> secMap = new Dictionary<string, int>(); string secMapRaw = "";
+        int[] secPermTemp, secPermCache = { 0, 1, 2 }; string secPermRaw = "";
+        DispatcherTimer secHold; bool secDragging; int secIdx;
         string SecKey(int k) { return "sec" + k + "@" + scr.DeviceName; }
         double SecExtra(int k)
         {
             double v; return k > 0 && double.TryParse(C(SecKey(k), "0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v) ? Math.Max(0, v) : 0;
+        }
+        int[] SecPerm
+        {
+            get
+            {
+                if (secPermTemp != null) return secPermTemp;
+                var raw = C("secorder@" + scr.DeviceName, "0,1,2");
+                if (raw != secPermRaw)
+                {
+                    secPermRaw = raw; var p = new List<int>();
+                    foreach (var s0 in raw.Split(',')) { int v; if (int.TryParse(s0, out v) && v >= 0 && v <= 2 && !p.Contains(v)) p.Add(v); }
+                    secPermCache = p.Count == 3 ? p.ToArray() : new[] { 0, 1, 2 };
+                }
+                return secPermCache;
+            }
+        }
+        int SecRank(int s) { return Array.IndexOf(SecPerm, s); }
+        void ParseSecMap()
+        {
+            var raw = C("secmap@" + scr.DeviceName, "");
+            if (raw == secMapRaw) return;
+            secMapRaw = raw; secMap = new Dictionary<string, int>();
+            foreach (var p in raw.Split('\u001F')) { var kv = p.Split('\u001E'); int v; if (kv.Length == 2 && int.TryParse(kv[1], out v) && v >= 0 && v <= 2) secMap[kv[0]] = v; }
+        }
+        // секция значка или виджета: выбранная пользователем, иначе по умолчанию (виджеты слева, программы посередине, системные кнопки и часы справа)
+        int SectionOf(string token)
+        {
+            int s; if (secTemp.TryGetValue(token, out s)) return s;
+            ParseSecMap();
+            return secMap.TryGetValue(token, out s) ? s : SectionFor(token);
+        }
+        List<string> BySection(IEnumerable<string> toks) { return toks.OrderBy(t => SecRank(SectionOf(t))).ToList(); } // OrderBy устойчив: порядок внутри секции сохраняется
+        void PersistSecTemp()
+        {
+            if (secTemp.Count == 0) return;
+            ParseSecMap(); var d = new Dictionary<string, int>(secMap);
+            foreach (var kv in secTemp) { if (kv.Value == SectionFor(kv.Key)) d.Remove(kv.Key); else d[kv.Key] = kv.Value; }
+            foreach (var k in d.Keys.Where(k => k.StartsWith("r|") && !tokenOf.Values.Contains(k)).ToList()) d.Remove(k); // закрытые запущенные не копим
+            secTemp.Clear();
+            var key = "secmap@" + scr.DeviceName;
+            if (d.Count == 0) cfg.Remove(key); else cfg[key] = string.Join("\u001F", d.Select(kv => kv.Key + "\u001E" + kv.Value));
+            secMap = d; secMapRaw = C(key, "");
+        }
+        Dictionary<int, Rect> SectionRects() // секции в экранных пикселях
+        {
+            var res = new Dictionary<int, Rect>();
+            foreach (var g in tokenOf.Where(kv => kv.Key.IsVisible && kv.Key.ActualWidth > 0).GroupBy(kv => SectionOf(kv.Value)))
+            {
+                var span = Rect.Empty;
+                foreach (var it in g) { var a = it.Key.PointToScreen(new Point(0, 0)); var z = it.Key.PointToScreen(new Point(it.Key.ActualWidth, it.Key.ActualHeight)); span.Union(new Rect(a, z)); }
+                res[g.Key] = span;
+            }
+            return res;
         }
         void StartSecHold()
         {
@@ -2563,39 +2640,34 @@ namespace FlowBar
         {
             if (dragTok == null || sDragging || Mouse.LeftButton != MouseButtonState.Pressed || !UseSections)
             { Info("секция: зажатие не начало перетаскивание (значок " + (dragTok != null) + ", перенос значка " + sDragging + ", кнопка " + Mouse.LeftButton + ", секции " + UseSections + ")"); return; }
-            N.POINT p; N.GetCursorPos(out p);
-            secDragging = true; dragging = true; secIdx = SectionFor(dragTok); secStartX = p.X / MonScale;
-            secCur1 = secX1 = SecExtra(1); secCur2 = secX2 = SecExtra(2); secRoom = Math.Max(0, FreeWidth - 4);
-            Info("секция " + secIdx + ": перетаскивание, свободно " + Math.Round(secRoom) + " px, промежутки " + Math.Round(secX1) + "/" + Math.Round(secX2));
-            if (secRoom < 16 && secX1 + secX2 < 1)
-            {
-                // двигать некуда: панель шире не станет, а промежутков между секциями ещё нет
-                secDragging = false; dragging = false; dragTok = null;
-                Notify("Секциям некуда двигаться", "Панель занимает почти всю ширину экрана. Освободите место: меньше значков программ («Настройки» → «Панель» → «Значков программ на панели»), размер поменьше или выравнивание к краю.", true, "");
-                return;
-            }
-            ClosePreview(); Mouse.Capture(strip, CaptureMode.SubTree); Mouse.OverrideCursor = Cursors.SizeWE;
+            secIdx = SectionOf(dragTok); secDragging = true; dragging = true; secPermTemp = SecPerm.ToArray();
+            ClosePreview(); Mouse.Capture(strip, CaptureMode.SubTree); Mouse.OverrideCursor = Cursors.SizeAll;
+            Info("секция " + secIdx + ": начато перетаскивание, порядок " + string.Join(",", secPermTemp));
         }
         void MoveSec()
         {
-            N.POINT p; N.GetCursorPos(out p); double dx = p.X / MonScale - secStartX, x1 = secX1, x2 = secX2;
-            if (secIdx == 1) { x1 += dx; x2 -= dx; } else if (secIdx == 2) x2 += dx; else x1 -= dx;
-            x1 = Math.Max(0, x1); x2 = Math.Max(0, x2);
-            if (x1 + x2 - (secX1 + secX2) > secRoom) return; // дальше — панель не поместилась бы на экране
-            secCur1 = x1; secCur2 = x2; Border sp;
-            if (secSpacers.TryGetValue(1, out sp)) sp.Width = 12 + x1;
-            if (secSpacers.TryGetValue(2, out sp)) sp.Width = 12 + x2;
+            N.POINT p; N.GetCursorPos(out p);
+            var rects = SectionRects(); Rect me; if (!rects.TryGetValue(secIdx, out me)) return;
+            var perm = secPermTemp ?? SecPerm.ToArray(); int r = Array.IndexOf(perm, secIdx), other = -1;
+            for (int i = r - 1; i >= 0 && other < 0; i--) { Rect q; if (rects.TryGetValue(perm[i], out q) && p.X < (q.Left + q.Right) / 2) other = i; else if (rects.ContainsKey(perm[i])) break; } // курсор ушёл за середину левого соседа
+            for (int i = r + 1; i < perm.Length && other < 0; i++) { Rect q; if (rects.TryGetValue(perm[i], out q) && p.X > (q.Left + q.Right) / 2) other = i; else if (rects.ContainsKey(perm[i])) break; }
+            if (other < 0) return;
+            var t = perm[r]; perm[r] = perm[other]; perm[other] = t; secPermTemp = perm;
+            Compose();
         }
         void EndSec()
         {
             secDragging = false; dragging = false; dragTok = null; lastDragEnd = DateTime.Now; Mouse.OverrideCursor = null;
             if (strip.IsMouseCaptureWithin) Mouse.Capture(null);
-            Func<double, string> f = v => Math.Round(v).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (secCur1 > 0) cfg[SecKey(1)] = f(secCur1); else cfg.Remove(SecKey(1));
-            if (secCur2 > 0) cfg[SecKey(2)] = f(secCur2); else cfg.Remove(SecKey(2));
-            SaveCfg(); Info("секция " + secIdx + ": промежутки " + f(secCur1) + "/" + f(secCur2));
-        }
-        void FinishStripDrag()
+            var perm = secPermTemp; secPermTemp = null;
+            if (perm != null)
+            {
+                var raw = string.Join(",", perm);
+                if (raw == "0,1,2") cfg.Remove("secorder@" + scr.DeviceName); else cfg["secorder@" + scr.DeviceName] = raw;
+                SaveCfg(); Info("секции: порядок " + raw);
+            }
+            Compose();
+        }        void FinishStripDrag()
         {
             PaintInsertion(null);
             sDragging = false; lastDragEnd = DateTime.Now;
@@ -2603,10 +2675,10 @@ namespace FlowBar
             string groupTo = groupArmed ? hoverTok : null, groupPath = groupTo != null ? DragPath() : null; HoverGroup(null);
             var target = dropBar; dropBar = null; var tok = dragTok; dragTok = null; var el = dragEl; var order = dragOrder;
             Action shown = () => { CloseGhost(); dragging = false; if (el != null) { el.RenderTransform = null; el.Opacity = 1; Panel.SetZIndex(el, 0); } };
-            if (groupTo != null && groupPath != null) { shown(); GroupDrop(groupTo, groupPath); return; } // бросок на значок — одна операция: группа и порядок сохраняются вместе
+            if (groupTo != null && groupPath != null) { secTemp.Clear(); shown(); GroupDrop(groupTo, groupPath); return; } // бросок на значок — одна операция: группа и порядок сохраняются вместе
             if (target != null)
             {
-                shown(); target.MarkDrop(false);
+                secTemp.Clear(); shown(); target.MarkDrop(false);
                 List<Win> ws; if (tok != null && appWins.TryGetValue(tok, out ws)) foreach (var w in ws) MoveToMonitor(w.H, target);
                 Compose(); lastKey = null; return;
             }
@@ -2986,8 +3058,8 @@ namespace FlowBar
             var m = new ContextMenu();
             m.Items.Add(Item(collapsed ? "Развернуть панель" : "Свернуть в значок", () => SetCollapsed(!collapsed)));
             m.Items.Add(Item("Во всю ширину", () => { cfg["width"] = FullWidth ? "fit" : "full"; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows(); }, FullWidth));
-            if (UseSections && SecExtra(1) + SecExtra(2) > 0)
-                m.Items.Add(Item("Вернуть секции на место", () => { cfg.Remove(SecKey(1)); cfg.Remove(SecKey(2)); SaveCfg(); Compose(); }));
+            if (UseSections && (SecExtra(1) + SecExtra(2) > 0 || C("secorder@" + scr.DeviceName, "0,1,2") != "0,1,2" || C("secmap@" + scr.DeviceName, "") != ""))
+                m.Items.Add(Item("Вернуть секции на место", () => { cfg.Remove(SecKey(1)); cfg.Remove(SecKey(2)); cfg.Remove("secorder@" + scr.DeviceName); cfg.Remove("secmap@" + scr.DeviceName); SaveCfg(); Compose(); }));
             m.Items.Add(new Separator());
             m.Items.Add(Item("Диспетчер задач", () => Launch("taskmgr.exe")));
             m.Items.Add(Item("Настройки FlowBar…", () => ShowSettings(null)));
@@ -3130,19 +3202,20 @@ namespace FlowBar
             if (hide)
             {
                 if (Visibility != Visibility.Visible || sliding) return;
-                sliding = true; slideAt = DateTime.Now; if (glassBg != null) glassBg.Fade();
+                sliding = true; slideAt = DateTime.Now; if (glassBg != null) glassBg.Fade(); foreach (var sb in sectionBackdrops) sb.Fade();
                 var o = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200));
                 o.Completed += (s, e) => FinishSlide(); // успели вернуть мышь — sliding уже сброшен, ничего не делаем
-                tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
+                // со стеклом — только затухание: подложка размытия — отдельное окно, за движением панели она не едет и оставалась мутным пятном
+                if (!GlassOn) tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
                 frame.BeginAnimation(OpacityProperty, o);
             }
             else
             {
                 if (Visibility == Visibility.Visible && !sliding) return;
                 double from = sliding ? (double)tt.GetValue(axis) : away, op = sliding ? frame.Opacity : 0;
-                if (sliding && glassBg != null) glassBg.Unfade();
+                if (sliding) { if (glassBg != null) glassBg.Unfade(); foreach (var sb in sectionBackdrops) sb.Unfade(); }
                 sliding = false; Visibility = Visibility.Visible;
-                tt.BeginAnimation(axis, new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+                if (!GlassOn) tt.BeginAnimation(axis, new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } }); else tt.BeginAnimation(axis, null);
                 frame.BeginAnimation(OpacityProperty, new DoubleAnimation(op, 1, TimeSpan.FromMilliseconds(180)));
             }
         }
