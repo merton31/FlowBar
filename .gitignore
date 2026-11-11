@@ -11,6 +11,8 @@ watch/target/
 !assets/preview/light.jpg
 !assets/preview/dark.jpg
 !assets/preview/color.jpg
+!assets/FlowBar.ico
+!assets/logo.png
 shots-*/
 
 # внутренние отчёты и планы (локальные пути, черновики)
