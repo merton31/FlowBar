@@ -2816,6 +2816,7 @@ namespace FlowBar
             m.Items.Add(Item(collapsed ? "Развернуть панель" : "Свернуть в значок", () => SetCollapsed(!collapsed)));
             m.Items.Add(Item("Во всю ширину", () => { cfg["width"] = FullWidth ? "fit" : "full"; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows(); }, FullWidth));
             m.Items.Add(new Separator());
+            m.Items.Add(Item("Диспетчер задач", () => Launch("taskmgr.exe")));
             m.Items.Add(Item("Настройки FlowBar…", () => ShowSettings(null)));
             m.Items.Add(Item("Каталог виджетов…", () => ShowCatalog(this)));
             m.Items.Add(Item("Оформление…", () => ShowSettings("look")));
