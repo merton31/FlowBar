@@ -1303,6 +1303,7 @@ namespace FlowBar
                 var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 4) }; row.Children.Add(chk); row.Children.Add(inst);
                 c.Children.Add(row); c.Children.Add(upSt);
             }
+            c.Children.Add(CardActions(Btn("Что нового в этой версии", () => { if (Primary != null) Primary.ShowNews(); })));
             c.Children.Add(CheckRow("Запускать вместе с Windows", null, AutoStart, v => AutoStart = v));
             c.Children.Add(CheckRow("Работать с правами администратора", (Setup.Elevated ? "Сейчас с правами. " : "Сейчас без прав. ")
                 + "Нужно, только чтобы панель переключала окна программ, запущенных от администратора. Перетаскивать файлы из Проводника на панель Windows при этом не даёт. Действует после перезапуска FlowBar.",
@@ -1329,7 +1330,41 @@ namespace FlowBar
         static HashSet<string> notifyKeys = new HashSet<string>();
         // force — сигнал, который пользователь завёл сам (таймер): звучит и в тихие часы. key — одно событие = одно уведомление
         // после установки или обновления — одно уведомление «было → стало»
-        internal static void ShowUpdateNote() { var n = Setup.TakeUpdateNote(); if (n != null && Primary != null) Primary.Notify("FlowBar", n, true, ""); }
+        internal static void ShowUpdateNote() { var n = Setup.TakeUpdateNote(); if (n != null && Primary != null) Primary.Notify("FlowBar", n, true, "", "Что нового", () => Primary.ShowNews()); }
+        // «Что нового»: CHANGELOG.md встроен в exe при сборке. Разделы «## версия», пункты «- …», вложенные — с отступом
+        internal static List<Tuple<int, string>> ParseNews(string md)
+        {
+            var res = new List<Tuple<int, string>>(); bool started = false;
+            foreach (var raw in (md ?? "").Replace("\r", "").Split('\n'))
+            {
+                var l = raw.TrimEnd(); if (l.StartsWith("## ")) { started = true; res.Add(Tuple.Create(0, l.Substring(3).Trim())); continue; }
+                if (!started || l.Trim() == "") continue;
+                var s = l.TrimStart(); int lvl = l.Length - s.Length >= 2 ? 2 : 1;
+                if (s.StartsWith("- ")) s = s.Substring(2);
+                res.Add(Tuple.Create(lvl, s.Replace("**", "").Replace("`", "")));
+            }
+            return res;
+        }
+        internal void ShowNews()
+        {
+            var body = new StackPanel(); string md = null;
+            try { using (var st = Assembly.GetExecutingAssembly().GetManifestResourceStream("FlowBar.CHANGELOG.md")) if (st != null) using (var rd = new StreamReader(st, System.Text.Encoding.UTF8)) md = rd.ReadToEnd(); } catch (Exception ex) { Log(ex); }
+            var items = ParseNews(md); int vers = 0;
+            if (items.Count == 0) body.Children.Add(Txt("Список изменений в эту сборку не вложен.", 12, false));
+            foreach (var it in items)
+            {
+                if (it.Item1 == 0)
+                {
+                    if (++vers > 6) break; // последние шесть версий
+                    var h = Txt(it.Item2.Replace(" — не выпущена", ""), 13.5, true); h.FontFamily = Display; h.Margin = new Thickness(0, vers == 1 ? 0 : 16, 0, 6); body.Children.Add(h); continue;
+                }
+                var dot = Txt(it.Item1 == 1 ? "•" : "–", 12, false); dot.Opacity = 0.6; dot.Width = 14; dot.VerticalAlignment = VerticalAlignment.Top;
+                var tx = Txt(it.Item2, 12, false); tx.TextWrapping = TextWrapping.Wrap; tx.Opacity = it.Item1 == 1 ? 0.92 : 0.78; tx.LineHeight = 17;
+                var row = new DockPanel { Margin = new Thickness(it.Item1 == 1 ? 0 : 14, 0, 0, 5) }; DockPanel.SetDock(dot, Dock.Left); row.Children.Add(dot); row.Children.Add(tx);
+                body.Children.Add(row);
+            }
+            ShowPanel("Что нового", body, 420, null);
+        }
         void Notify(string title, string text, bool force = false, string glyph = null, string actLabel = null, Action act = null, string widget = null, string key = null)
         {
             if (key != null && !notifyKeys.Add(key)) return;
@@ -1461,7 +1496,7 @@ namespace FlowBar
 
         // ---------- команды извне: --open и снимки для приёмки ----------
         static readonly uint ShotMsg = N.RegisterWindowMessage("FlowBarShot"), OpenMsg = N.RegisterWindowMessage("FlowBarOpen");
-        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump", "report" };
+        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump", "report", "news" };
         void OpenByCode(int code, int barIndex)
         {
             var b = barIndex > 0 && barIndex <= bars.Count ? bars.OrderByDescending(x => x.primary).ElementAt(barIndex - 1) : this;
@@ -1472,6 +1507,7 @@ namespace FlowBar
                 case "quit": Application.Current.Shutdown(); break;
                 case "currency": b.ShowFx(); break;
                 case "report": SaveReport(); break;
+                case "news": b.ShowNews(); break;
                 case "traydump": try { File.WriteAllLines(F("tray-list.txt"), Tray.Dump()); } catch (Exception ex) { Log(ex); } break; // обновление: новая версия бережно закрывает старую
                 case "look": case "bar": case "monitors": case "widgets": case "connect": b.ShowSettings(OpenNames[code]); break;
                 case "catalog": b.ShowCatalog(b); break;
