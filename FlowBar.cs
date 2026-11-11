@@ -2406,6 +2406,7 @@ namespace FlowBar
 
         void ShowTodos()
         {
+            var remList = new StackPanel { Margin = new Thickness(0, 4, -4, 0) };
             var list = new StackPanel { Margin = new Thickness(-8, 0, -4, 0) }; var count = Txt("", 11, false); count.Opacity = 0.6; count.Margin = new Thickness(0, -6, 0, 6);
             var input = new TextBox { Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 8, 0, 0), ToolTip = "Новая задача — Enter" };
             Action render = null;
@@ -2444,14 +2445,32 @@ namespace FlowBar
                     row.ContextMenu = new ContextMenu();
                     foreach (var choice in new[] { Tuple.Create("Сегодня", (DateTime?)DateTime.Today), Tuple.Create("Завтра", (DateTime?)DateTime.Today.AddDays(1)), Tuple.Create("Без срока", (DateTime?)null) })
                         row.ContextMenu.Items.Add(Item(choice.Item1, () => { t.Due = choice.Item2; SaveTodos(); render(); }));
+                    // напомнить об этой задаче уведомлением
+                    row.ContextMenu.Items.Add(new Separator());
+                    foreach (var rc in RemindChoices())
+                    { var at = rc.Item2; row.ContextMenu.Items.Add(Item("Напомнить " + rc.Item1, () => { AddReminder(at, t.Text); render(); })); }
                     row.MouseEnter += (s, e) => { Fade(row, Color.FromArgb(0x14, CardFg.R, CardFg.G, CardFg.B), 100); del.Opacity = 0.75; };
                     row.MouseLeave += (s, e) => { Fade(row, Colors.Transparent, 140); del.Opacity = 0; };
                     list.Children.Add(row);
                 }
                 int left = todos.Count(x => !x.Done);
                 count.Text = todos.Count == 0 ? "" : left == 0 ? "Всё сделано" : "Осталось " + left + " из " + todos.Count;
+                // ожидающие напоминания (свои и поставленные агентами): время, текст, крестик отмены
+                remList.Children.Clear();
+                if (reminders == null) LoadReminders();
+                if (reminders.Count > 0) remList.Children.Add(H("Напоминания"));
+                foreach (var r0 in reminders.OrderBy(x => x.At).ToList())
+                {
+                    var r = r0;
+                    var when = Txt(r.At.Date == DateTime.Today ? r.At.ToString("HH:mm") : r.At.ToString("d MMM HH:mm"), 11.5, true); when.Width = 86; when.Opacity = 0.85;
+                    var what = new TextBlock { Text = r.Text, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 12 };
+                    var x = Cross("Отменить напоминание «" + r.Text + "»", () => { reminders.Remove(r); SaveReminders(); render(); });
+                    var dp = new DockPanel { Margin = new Thickness(0, 1, 4, 1) }; DockPanel.SetDock(x, Dock.Right); DockPanel.SetDock(when, Dock.Left); dp.Children.Add(x); dp.Children.Add(when); dp.Children.Add(what);
+                    remList.Children.Add(dp);
+                }
             };
             var dueDate = new DatePicker { Margin = new Thickness(0, 5, 0, 0) };
+            // remList объявлен выше render
             System.Windows.Automation.AutomationProperties.SetName(dueDate, "Срок новой задачи");
             input.KeyDown += (s, e) =>
             {
@@ -2459,7 +2478,8 @@ namespace FlowBar
                 todos.Add(new Todo { Text = input.Text.Trim(), Due = dueDate.SelectedDate }); input.Text = ""; dueDate.SelectedDate = null; SaveTodos(); render();
             };
             render();
-            var body = new StackPanel(); body.Children.Add(count); body.Children.Add(list); body.Children.Add(input); body.Children.Add(dueDate);
+            var hint = Txt("Правый клик по задаче — срок и напоминание", 10.5, false); hint.Opacity = 0.55; hint.Margin = new Thickness(0, 6, 0, 0);
+            var body = new StackPanel(); body.Children.Add(count); body.Children.Add(list); body.Children.Add(input); body.Children.Add(dueDate); body.Children.Add(hint); body.Children.Add(remList);
             ShowPanel("Задачи", body, 320, input);
         }
 
@@ -3779,6 +3799,8 @@ namespace FlowBar
                         fails += check(Bar.AgentWhen(new Dictionary<string, object> { { "in_minutes", 30 } }, t0) == t0.AddMinutes(30) && Bar.AgentWhen(new Dictionary<string, object> { { "at", "2026-11-12T10:00" } }, t0) == new DateTime(2026, 11, 12, 10, 0, 0)
                             && Bar.AgentWhen(new Dictionary<string, object>(), t0) == null, "Агенты: время напоминания");
                     }
+                    { var rc0 = Bar.RemindChoices(new DateTime(2026, 11, 11, 12, 0, 0)); var rc1 = Bar.RemindChoices(new DateTime(2026, 11, 11, 18, 30, 0));
+                      fails += check(rc0.Count == 4 && rc0[2].Item2 == new DateTime(2026, 11, 11, 19, 0, 0) && rc0[3].Item2 == new DateTime(2026, 11, 12, 9, 0, 0) && rc1.Count == 3, "Напоминания: варианты времени"); }
                     fails += check(Bar.BadgeOf("(3) WhatsApp", "x.exe") == 3 && Bar.BadgeOf("Chat (5)", @"C:\Telegram.exe") == 5 && Bar.BadgeOf("Новая папка (2)", "explorer.exe") == 0 && Bar.BadgeOf("(7 426) Mail", null) == 7426 && Bar.BadgeOf("Doc", null) == 0, "Ярлык: счётчик из заголовка окна");
                     fails += check(Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Wintun Userspace Tunnel") && Bar.IsVpnAdapter(NetworkInterfaceType.Ppp, "x") && !Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Realtek PCIe 5GbE Family Controller") && Bar.IsVirtualAdapter("Hyper-V Virtual Ethernet Adapter"), "Сеть: адаптер VPN отличается от обычного");
                     fails += check(Setup.V3(new Version(1, 2)) == "1.2.0" && new Version("1.1.0.0") > new Version("1.0.0.0"), "Обновление: сравнение версий");

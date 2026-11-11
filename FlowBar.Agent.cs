@@ -143,6 +143,17 @@ namespace FlowBar
             foreach (var l in Lines("reminders.txt")) { int i = l.IndexOf('|'); DateTime at; if (i > 0 && DateTime.TryParseExact(l.Substring(0, i), "yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out at)) reminders.Add(new Reminder { At = at, Text = l.Substring(i + 1) }); }
         }
         static void SaveReminders() { SafeFile.WriteLines(F("reminders.txt"), reminders.OrderBy(r => r.At).Select(r => r.At.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) + "|" + r.Text.Replace("\r", " ").Replace("\n", " "))); }
+        static void AddReminder(DateTime at, string text) { if (reminders == null) LoadReminders(); reminders.Add(new Reminder { At = at, Text = text }); SaveReminders(); }
+        // варианты «напомнить»: подпись и время
+        public static List<Tuple<string, DateTime>> RemindChoices() { return RemindChoices(DateTime.Now); }
+        public static List<Tuple<string, DateTime>> RemindChoices(DateTime now)
+        {
+            var evening = now.Date.AddHours(19); var morning = now.Date.AddDays(1).AddHours(9);
+            var l = new List<Tuple<string, DateTime>> { Tuple.Create("через 30 минут", now.AddMinutes(30)), Tuple.Create("через час", now.AddHours(1)) };
+            if (evening > now.AddHours(1)) l.Add(Tuple.Create("сегодня в 19:00", evening));
+            l.Add(Tuple.Create("завтра в 9:00", morning));
+            return l;
+        }
         internal static void CheckReminders()
         {
             if (reminders == null) LoadReminders();

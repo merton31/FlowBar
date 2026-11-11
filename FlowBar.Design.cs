@@ -1945,7 +1945,41 @@ namespace FlowBar
             var op = new SHFILEOPSTRUCT { wFunc = 3 /* FO_DELETE */, pFrom = string.Join("\0", files) + "\0\0", fFlags = (ushort)(0x40 /* FOF_ALLOWUNDO */ | (C("binConfirm", "1") == "1" ? 0 : 0x10 /* FOF_NOCONFIRMATION */)) };
             int rc = SHFileOperation(ref op);
             if (rc != 0 && rc != 1223 && !op.fAnyOperationsAborted) Notify("Корзина", "Не удалось удалить (код " + rc + ")", true);
+            else if (rc == 0 && !op.fAnyOperationsAborted)
+            {
+                var gone = files.Where(f => !File.Exists(f) && !Directory.Exists(f)).ToArray();
+                if (gone.Length > 0) Notify("Корзина", "Удалено: " + (gone.Length == 1 ? System.IO.Path.GetFileName(gone[0]) : gone.Length + " объектов"), true, "\uE74D", "Отменить",
+                    () => { int n = RestoreFromBin(gone); UpdateBin(); All(b => b.Render()); if (n < gone.Length) Notify("Корзина", n == 0 ? "Не удалось вернуть — откройте Корзину и восстановите вручную" : "Возвращено " + n + " из " + gone.Length, true, "\uE74D"); }, "bin");
+            }
             UpdateBin(); All(b => b.Render());
+        }
+        // Вернуть из Корзины Windows объекты по их прежним путям (как «Восстановить» в Проводнике). Возвращает, сколько вернули.
+        // shortcut: если Проводник скрывает расширения, имя сверяется без расширения; два удалённых файла с одним именем в одной папке не различаются — тогда смотреть дату удаления
+        static int RestoreFromBin(string[] paths)
+        {
+            int n = 0; const System.Reflection.BindingFlags call = System.Reflection.BindingFlags.InvokeMethod, get = System.Reflection.BindingFlags.GetProperty;
+            try
+            {
+                var want = new List<string>(paths);
+                var sh = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+                var bin = sh.GetType().InvokeMember("NameSpace", call, null, sh, new object[] { 10 });
+                var items = bin.GetType().InvokeMember("Items", call, null, bin, null);
+                int count = (int)items.GetType().InvokeMember("Count", get, null, items, null);
+                for (int i = count - 1; i >= 0 && want.Count > 0; i--)
+                {
+                    var it = items.GetType().InvokeMember("Item", call, null, items, new object[] { i }); if (it == null) continue;
+                    var from = it.GetType().InvokeMember("ExtendedProperty", call, null, it, new object[] { "System.Recycle.DeletedFrom" }) as string;
+                    var name = it.GetType().InvokeMember("Name", get, null, it, null) as string;
+                    if (from == null || name == null) continue;
+                    int k = want.FindIndex(w => string.Equals(System.IO.Path.GetDirectoryName(w), from.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+                        && (string.Equals(System.IO.Path.GetFileName(w), name, StringComparison.OrdinalIgnoreCase) || string.Equals(System.IO.Path.GetFileNameWithoutExtension(w), name, StringComparison.OrdinalIgnoreCase)));
+                    if (k < 0) continue;
+                    it.GetType().InvokeMember("InvokeVerb", call, null, it, new object[] { "undelete" });
+                    want.RemoveAt(k); n++;
+                }
+            }
+            catch (Exception ex) { Log(ex); }
+            return n;
         }
         // значок сервиса ИИ: Claude — восьмилучевая звезда, Codex — символ кода в круге
         // значок модуля ИИ на цветной скруглённой плитке, как значок приложения
