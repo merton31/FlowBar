@@ -1536,7 +1536,9 @@ namespace FlowBar
             var gl = MenuGlyph(header);
             if (gl != null) it.Icon = new TextBlock { Text = gl, FontFamily = Icons, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
             if (header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
-            it.Click += (s, e) => a();
+            // сначала снять перехват мыши: действие может надолго занять панель (запуск программы с правами администратора, например
+            // Диспетчера задач), а с включённым перехватом каждое движение мыши во всей системе ждало бы панель
+            it.Click += (s, e) => { CloseGuarded(); a(); };
             return it;
         }
 
