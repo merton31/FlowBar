@@ -441,7 +441,7 @@ namespace FlowBar
 
         Action<string> refreshPreview;
 
-        static readonly HashSet<string> LookKeys = new HashSet<string> { "style", "material", "material.edge", "material.tint", "material.diffusion", "material.blur", "accent", "opacity", "size", "pos", "width", "gap", "widgets", "seq", "bar.sections", "appMax", "search", "edgeBtns" };
+        static readonly HashSet<string> LookKeys = new HashSet<string> { "style", "material", "material.edge", "material.tint", "material.diffusion", "material.blur", "accent", "opacity", "size", "pos", "width", "gap", "align", "widgets", "seq", "bar.sections", "appMax", "search", "edgeBtns" };
         static bool IsAppearanceKey(string key)
         {
             var name = key.Split('@')[0];

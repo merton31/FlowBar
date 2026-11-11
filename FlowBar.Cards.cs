@@ -1710,6 +1710,9 @@ namespace FlowBar
             c.Children.Add(SetRow("Значков программ на панели", "Остальные — в «…» (активная программа всегда на панели). «Все» — значки не прячутся; если места нет, ряд листается колесом.",
                 Seg(new[] { "Все", "6", "8", "10", "14" }, bi, i => { cfg[MK("appMax")] = budgets[i].ToString(); MarkCustom(); SaveCfg(); All(b => { b.ResetFit(false); b.Compose(); }); again(); })));
             c.Children.Add(SetRow("Отступ от края экрана", null, SliderRow(0, 32, Gap, 1, v => Math.Round(v) + " px", v => { cfg["gap"] = Math.Round(v).ToString(); SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); preview(null); }, "Отступ от края экрана")));
+            var aligns = new[] { "left", "center", "right" };
+            c.Children.Add(SetRow("Выравнивание", "Где стоит панель вдоль края экрана. При ширине «во всю ширину» — где стоят значки внутри неё. Для боковой панели не действует.",
+                Seg(new[] { "Слева", "По центру", "Справа" }, Math.Max(0, Array.IndexOf(aligns, BarAlign)), i => { cfg["align"] = aligns[i]; SaveCfg(); RebuildAll(); All(b => b.Place()); preview(null); })));
             var edges = new[] { "bottom", "top", "left", "right" };
             c.Children.Add(SetRow("Общее расположение", "В разделе «Мониторы» можно выбрать свой край для каждого экрана.",
                 Seg(new[] { "Снизу", "Сверху", "Слева", "Справа" }, Math.Max(0, Array.IndexOf(edges, C("pos", "bottom"))),
