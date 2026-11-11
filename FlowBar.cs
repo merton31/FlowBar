@@ -1702,12 +1702,13 @@ namespace FlowBar
         // При скрытой панели Windows её полоса и так зарезервирована, FlowBar стоит в ней.
         static readonly uint AppBarMsg = N.RegisterWindowMessage("FlowBarAppBar"), TaskbarCreatedMsg = N.RegisterWindowMessage("TaskbarCreated");
         bool appBar; N.RECT reserved; string reserveKey;
+        // место под панель: её высота и отступ от края экрана; со стороны окон отступа нет — развёрнутое окно заканчивается у самой панели
         void Reserve()
         {
             if (hwnd == IntPtr.Zero) return;
             bool want = !DemoMode && C("reserve", "1") == "1" && !AutoHide;
-            int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
-            if (VerticalBar) h = (int)Math.Ceiling((SideWidth + 2 * Gap) * MonScale);
+            int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
+            if (VerticalBar) h = (int)Math.Ceiling((SideWidth + Gap) * MonScale);
             var key = want + "|" + PositionKey + "|" + h + "|" + scr.Bounds;
             if (key == reserveKey) return;
             reserveKey = key;
@@ -1742,10 +1743,10 @@ namespace FlowBar
             var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
             var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
             if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); } return; }
-            int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
+            int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
             if (VerticalBar)
             {
-                h = (int)Math.Ceiling((SideWidth + 2 * Gap) * MonScale);
+                h = (int)Math.Ceiling((SideWidth + Gap) * MonScale);
                 if (LeftBar) w.L = m.L + h; else w.R = m.R - h;
             }
             else if (IsTop) w.T = m.T + h; else w.B = m.B - h;
