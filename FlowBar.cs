@@ -1199,8 +1199,34 @@ namespace FlowBar
 
         // ---------- системное ----------
         public static void SetTaskbar(bool show) { Taskbar.Set(show); }
+        // Windows не пускает нажатия от обычной программы в окно с правами администратора (UIPI): пока впереди Диспетчер задач, «Пуск», поиск, громкость
+        // не срабатывали. Тогда сначала выводим вперёд своё окно, потом шлём клавиши.
+        [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+        static bool HigherIntegrity(uint pid)
+        {
+            // обычному процессу токен процесса с правами администратора не открыть (отказ в доступе) — значит, окно «выше» нас
+            var ph = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid); if (ph == IntPtr.Zero) return true;
+            try { IntPtr th; if (!OpenProcessToken(ph, 0x8 /* TOKEN_QUERY */, out th)) return true; CloseHandle(th); return false; }
+            finally { CloseHandle(ph); }
+        }
+        static void FrontForKeys()
+        {
+            try
+            {
+                var fg = N.GetForegroundWindow(); if (fg == IntPtr.Zero) return;
+                uint pid; N.GetWindowThreadProcessId(fg, out pid);
+                if (pid == (uint)Process.GetCurrentProcess().Id || !HigherIntegrity(pid)) return;
+                var p = Primary; if (p == null || p.hwnd == IntPtr.Zero) return;
+                N.SetForegroundWindow(p.hwnd);
+                for (int i = 0; i < 10 && N.GetForegroundWindow() != p.hwnd; i++) System.Threading.Thread.Sleep(10);
+            }
+            catch (Exception ex) { Log(ex); }
+        }
         static void Keys(params byte[] vks)
         {
+            FrontForKeys();
             foreach (var k in vks) N.keybd_event(k, 0, 0, UIntPtr.Zero);
             for (int i = vks.Length - 1; i >= 0; i--) N.keybd_event(vks[i], 0, 2, UIntPtr.Zero);
         }
