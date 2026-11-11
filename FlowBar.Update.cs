@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.5.3.0")]
-[assembly: AssemblyFileVersion("1.5.3.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
@@ -133,6 +133,67 @@ namespace FlowBar
                     var v = k == null ? null : k.GetValue("FlowBar") as string;
                     if (v != null && !string.Equals(v.Trim('"'), exe, StringComparison.OrdinalIgnoreCase)) k.SetValue("FlowBar", "\"" + exe + "\"");
                 }
+            }
+            catch (Exception ex) { Bar.Log(ex); }
+        }
+
+        // Права администратора — только по желанию (settings.txt: admin=1; по умолчанию без них: с правами Windows не пускает перетаскивание
+        // из Проводника и автоматизацию в окно панели). Первый раз — запрос UAC; копия с правами создаёт задачу планировщика «FlowBar»
+        // с наивысшими правами, дальше автозапуск и ярлык запускают панель через неё, без запроса.
+        // true — запущена копия с правами, этот процесс завершается.
+        public static bool Elevate(string[] args)
+        {
+            try
+            {
+                if (!File.ReadAllLines(Path.Combine(Bar.Dir, "settings.txt")).Contains("admin=1")) return false;
+            }
+            catch { return false; }
+            if (Elevated) { if (IsInstalledCopy) System.Threading.Tasks.Task.Run(() => MakeTask()); return false; }
+            if (ElevationType() != 3 || args.Contains("--fromtask")) return false; // не администратор (или задача не дала прав) — без прав, не зацикливаемся
+            try
+            {
+                if (IsInstalledCopy && Schtasks("/Run /TN FlowBar") == 0) return true;
+                Process.Start(new ProcessStartInfo(Self) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(Self) });
+                return true;
+            }
+            catch (Exception ex) { Bar.Log(new Exception("Без прав администратора", ex)); return false; } // отказ в окне UAC — работаем без прав
+        }
+
+        public static readonly bool Elevated = IsAdmin();
+        static bool IsAdmin()
+        {
+            using (var id = System.Security.Principal.WindowsIdentity.GetCurrent()) return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        [System.Runtime.InteropServices.DllImport("advapi32.dll")] static extern bool GetTokenInformation(IntPtr token, int cls, out int info, int len, out int ret);
+        // 3 — администратор с UAC, сейчас без прав
+        static int ElevationType()
+        {
+            using (var id = System.Security.Principal.WindowsIdentity.GetCurrent()) { int t, n; return GetTokenInformation(id.Token, 18, out t, 4, out n) ? t : 0; }
+        }
+
+        static int Schtasks(string a)
+        {
+            using (var p = Process.Start(new ProcessStartInfo("schtasks.exe", a) { UseShellExecute = false, CreateNoWindow = true })) { p.WaitForExit(15000); return p.HasExited ? p.ExitCode : -1; }
+        }
+
+        // без триггеров (запускают автозапуск и ярлык), без ограничения времени и без остановки от батареи — иначе планировщик снимет панель через 3 дня
+        static void MakeTask()
+        {
+            try
+            {
+                string sid; using (var id = System.Security.Principal.WindowsIdentity.GetCurrent()) sid = id.User.Value;
+                Func<string, string> x = System.Security.SecurityElement.Escape;
+                var xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
+                    + "<RegistrationInfo><Description>FlowBar с правами администратора</Description></RegistrationInfo>\r\n"
+                    + "<Principals><Principal id=\"Author\"><UserId>" + sid + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n"
+                    + "<Settings><MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
+                    + "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>4</Priority></Settings>\r\n"
+                    + "<Actions Context=\"Author\"><Exec><Command>\"" + x(InstalledExe) + "\"</Command><Arguments>--fromtask</Arguments><WorkingDirectory>" + x(InstallDir) + "</WorkingDirectory></Exec></Actions>\r\n</Task>\r\n";
+                var f = Path.Combine(Path.GetTempPath(), "flowbar-task.xml");
+                File.WriteAllText(f, xml, System.Text.Encoding.Unicode);
+                int rc = Schtasks("/Create /F /TN FlowBar /XML \"" + f + "\"");
+                try { File.Delete(f); } catch { }
+                if (rc != 0) Bar.Log(new Exception("schtasks /Create: код " + rc));
             }
             catch (Exception ex) { Bar.Log(ex); }
         }

@@ -3,7 +3,7 @@ $fw  = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
 $wpf = "$fw\WPF"
 $wm  = "$env:WINDIR\System32\WinMetadata"   # WinRT: медиа, радиомодули
 # FlowBar.manifest — масштаб по мониторам; рядом с exe должен лежать FlowBar.exe.config (включает пересчёт WPF при смене масштаба)
-& "$fw\csc.exe" /nologo /target:winexe /optimize /out:"$PSScriptRoot\FlowBar.exe" /win32manifest:"$PSScriptRoot\FlowBar.manifest" `
+& "$fw\csc.exe" /nologo /target:winexe /optimize /out:"$PSScriptRoot\FlowBar.exe" /resource:"$PSScriptRoot\CHANGELOG.md",FlowBar.CHANGELOG.md /win32manifest:"$PSScriptRoot\FlowBar.manifest" `
   /r:"$wpf\PresentationFramework.dll" /r:"$wpf\PresentationCore.dll" /r:"$wpf\WindowsBase.dll" /r:"$wpf\UIAutomationProvider.dll" /r:"$wpf\UIAutomationTypes.dll" `
   /r:System.Xaml.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:Microsoft.VisualBasic.dll /r:System.Management.dll /r:"$fw\System.Runtime.dll" /r:"$fw\System.Runtime.InteropServices.WindowsRuntime.dll" `
   /r:"$wm\Windows.Foundation.winmd" /r:"$wm\Windows.Media.winmd" /r:"$wm\Windows.Devices.winmd" /r:"$wm\Windows.Storage.winmd" /r:"$wm\Windows.Networking.winmd" /r:"$wm\Windows.UI.winmd" /r:System.Numerics.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:"$fw\System.Numerics.Vectors.dll" `

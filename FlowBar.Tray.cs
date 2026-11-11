@@ -116,6 +116,43 @@ namespace FlowBar
             return res;
         }
 
+        [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll")] static extern bool DuplicateHandle(IntPtr srcProc, IntPtr src, IntPtr dstProc, out IntPtr dst, uint access, bool inherit, uint options);
+
+        // SHAppBarMessage (резерв места панелями, положение панели задач для всплывающих окон программ) шлёт WM_COPYDATA первому Shell_TrayWnd — нашему.
+        // Общая память для ответа (APPBARMSGDATA: abd 40 байт, dwMessage, hSharedMemory @44, dwSourceProcessId @48) открыта для нашего процесса,
+        // Проводник её не прочтёт — передаём ему свою копию описателя на время вызова. Без этого рабочая область не уменьшалась и окна уходили под панель.
+        static IntPtr ForwardAppBar(uint m, IntPtr w, COPYDATA cd)
+        {
+            var ex = Explorer(); if (ex == IntPtr.Zero) return IntPtr.Zero;
+            var buf = new byte[cd.cbData]; Marshal.Copy(cd.lpData, buf, 0, cd.cbData);
+            uint shared = BitConverter.ToUInt32(buf, 44);
+            IntPtr proc = IntPtr.Zero, dup = IntPtr.Zero, mem = Marshal.AllocHGlobal(cd.cbData), pcd = IntPtr.Zero;
+            try
+            {
+                if (shared != 0)
+                {
+                    uint pid; GetWindowThreadProcessId(ex, out pid);
+                    proc = OpenProcess(0x40 /* PROCESS_DUP_HANDLE */, false, pid);
+                    if (proc == IntPtr.Zero || !DuplicateHandle(GetCurrentProcess(), new IntPtr((long)shared), proc, out dup, 0, false, 2 /* SAME_ACCESS */)) return IntPtr.Zero;
+                    BitConverter.GetBytes((uint)dup.ToInt64()).CopyTo(buf, 44);
+                }
+                Marshal.Copy(buf, 0, mem, buf.Length);
+                pcd = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(COPYDATA)));
+                Marshal.StructureToPtr(new COPYDATA { dwData = IntPtr.Zero, cbData = cd.cbData, lpData = mem }, pcd, false);
+                IntPtr res; SendMessageTimeout(ex, m, w, pcd, 0x2 /* ABORTIFHUNG */, 3000, out res);
+                return res;
+            }
+            finally
+            {
+                if (dup != IntPtr.Zero) { IntPtr x; DuplicateHandle(proc, dup, IntPtr.Zero, out x, 0, false, 1 /* CLOSE_SOURCE */); }
+                if (proc != IntPtr.Zero) CloseHandle(proc);
+                Marshal.FreeHGlobal(mem); if (pcd != IntPtr.Zero) Marshal.FreeHGlobal(pcd);
+            }
+        }
+
         static IntPtr Proc(IntPtr h, uint m, IntPtr w, IntPtr l)
         {
             try
@@ -123,6 +160,7 @@ namespace FlowBar
                 if (m == WM_COPYDATA)
                 {
                     var cd = (COPYDATA)Marshal.PtrToStructure(l, typeof(COPYDATA));
+                    if (cd.dwData == IntPtr.Zero && cd.cbData >= 52) return ForwardAppBar(m, w, cd);
                     bool ok; var res = Forward(m, w, l, out ok); // Проводнику — всё без изменений (полосы, значки, их положение)
                     if (cd.dwData.ToInt64() == 1 && cd.cbData >= 8 + 24) { bool mine = Handle(cd.lpData, cd.cbData); return ok ? res : (IntPtr)(mine ? 1 : 0); }
                     return res;

@@ -104,9 +104,11 @@ namespace FlowBar
     {
         [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class Enumerator { }
         [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        interface IMMDeviceEnumerator { [PreserveSig] int EnumAudioEndpoints(int flow, int mask, out IntPtr devs); [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
+        interface IMMDeviceEnumerator { [PreserveSig] int EnumAudioEndpoints(int flow, int mask, out IMMDeviceCollection devs); [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
         [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        interface IMMDevice { [PreserveSig] int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); [PreserveSig] int OpenPropertyStore(int access, out IPropertyStore ps); }
+        interface IMMDevice { [PreserveSig] int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); [PreserveSig] int OpenPropertyStore(int access, out IPropertyStore ps); [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id); }
+        [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IMMDeviceCollection { [PreserveSig] int GetCount(out int n); [PreserveSig] int Item(int i, out IMMDevice dev); }
         [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         interface IPropertyStore { [PreserveSig] int GetCount(out int n); [PreserveSig] int GetAt(int i, out PKey k); [PreserveSig] int GetValue(ref PKey k, out PropVar v); }
         [StructLayout(LayoutKind.Sequential)] struct PKey { public Guid Fmt; public int Pid; }
@@ -186,6 +188,54 @@ namespace FlowBar
             }
             catch { return null; }
         }
+        // ---------- устройства вывода ----------
+        // Сменить устройство по умолчанию официально нельзя: недокументированный IPolicyConfig (тот же, что у EarTrumpet и SoundSwitch); может перестать работать в новой Windows
+        [ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")] class PolicyConfigClient { }
+        [ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IPolicyConfig
+        {
+            [PreserveSig] int GetMixFormat(); [PreserveSig] int GetDeviceFormat(); [PreserveSig] int ResetDeviceFormat(); [PreserveSig] int SetDeviceFormat(); [PreserveSig] int GetProcessingPeriod();
+            [PreserveSig] int SetProcessingPeriod(); [PreserveSig] int GetShareMode(); [PreserveSig] int SetShareMode(); [PreserveSig] int GetPropertyValue(); [PreserveSig] int SetPropertyValue();
+            [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, int role);
+        }
+        static string NameOf(IMMDevice dev)
+        {
+            IPropertyStore ps; string n = null;
+            if (dev.OpenPropertyStore(0, out ps) == 0 && ps != null)
+            {
+                var k = new PKey { Fmt = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), Pid = 14 }; PropVar v;
+                if (ps.GetValue(ref k, out v) == 0) { if (v.Vt == 31) n = Marshal.PtrToStringUni(v.P); PropVariantClear(ref v); }
+            }
+            return n;
+        }
+        // включённые устройства вывода: id, имя, по умолчанию ли
+        public static List<Tuple<string, string, bool>> Devices()
+        {
+            var res = new List<Tuple<string, string, bool>>();
+            try
+            {
+                var en = (IMMDeviceEnumerator)new Enumerator(); IMMDevice def; string defId = null;
+                if (en.GetDefaultAudioEndpoint(0, 1, out def) == 0 && def != null) def.GetId(out defId);
+                IMMDeviceCollection col; if (en.EnumAudioEndpoints(0, 1 /* DEVICE_STATE_ACTIVE */, out col) != 0 || col == null) return res;
+                int n; col.GetCount(out n);
+                for (int i = 0; i < n; i++) { IMMDevice dv; string id; if (col.Item(i, out dv) != 0 || dv == null || dv.GetId(out id) != 0) continue; res.Add(Tuple.Create(id, NameOf(dv) ?? "Устройство " + (i + 1), id == defId)); }
+            }
+            catch (Exception ex) { Bar.Log(ex); }
+            return res;
+        }
+        public static string SetDefault(string id)
+        {
+            try
+            {
+                var pc = (IPolicyConfig)new PolicyConfigClient();
+                for (int role = 0; role < 3; role++) { int hr = pc.SetDefaultEndpoint(id, role); if (hr != 0) return "Windows не переключила устройство (0x" + hr.ToString("X8") + ")"; } // консоль, мультимедиа, связь
+                ep = null; return null;
+            }
+            catch (Exception ex) { Bar.Log(ex); return "Эта версия Windows не даёт переключить устройство: " + ex.Message; }
+        }
+        // сигнал при смене громкости, как в Windows: стандартный звук схемы на новом уровне; не чаще раза в 150 мс
+        static DateTime beepAt;
+        public static void Beep() { if ((DateTime.Now - beepAt).TotalMilliseconds < 150) return; beepAt = DateTime.Now; try { SystemSounds.Beep.Play(); } catch { } }
         public static void SetVolume(float v) { try { var e = Ep(); if (e == null) return; var g = Guid.Empty; e.SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(1, v)), ref g); if (v > 0) e.SetMute(false, ref g); } catch { ep = null; } }
         public static void SetMute(bool on) { try { var e = Ep(); if (e == null) return; var g = Guid.Empty; e.SetMute(on, ref g); } catch { ep = null; } }
     }
@@ -408,10 +458,11 @@ namespace FlowBar
     class Press : Border
     {
         public static Brush Ring = Brushes.DodgerBlue;
-        public Action Invoke; public Action<Press> Menu;
+        public Action Invoke; public Action<Press> Menu; public bool ShellKey; // кнопка сама открывает и закрывает окно Windows (Пуск, поиск, уведомления)
         public Color Base; // подложка в покое — к ней возвращается подсветка наведения
         Brush savedBrush; Thickness savedThick;
         public Press() { Focusable = true; FocusVisualStyle = null; }
+        public Press Shell() { ShellKey = true; return this; }
         protected override void OnKeyDown(KeyEventArgs e)
         {
             if ((e.Key == System.Windows.Input.Key.Enter || e.Key == System.Windows.Input.Key.Space) && Invoke != null) { Invoke(); e.Handled = true; }
@@ -959,6 +1010,7 @@ namespace FlowBar
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
+            LogHideSource();
             pinned = Lines("pinned.txt");
             // первый запуск (список пуст или только «Проводник» по умолчанию из прошлых версий): берём закрепления панели Windows в её порядке
             var explorer = Environment.ExpandEnvironmentVariables(@"%WINDIR%\explorer.exe");
@@ -973,7 +1025,7 @@ namespace FlowBar
             LoadGroups(); ApplyAppTheme();
             screen = ScreenTime.Load(Today);
         }
-        public static void Shutdown() { Tray.Stop(); Taskbar.Restore(false, true); foreach (var b in bars.ToList()) b.Unreserve(); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
+        public static void Shutdown() { foreach (var b in bars.ToList()) b.Unreserve(); Tray.Stop(); Taskbar.Restore(false, true); try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); } }
 
         public Bar(System.Windows.Forms.Screen s)
         {
@@ -998,7 +1050,23 @@ namespace FlowBar
         // ---------- хранение ----------
         static string F(string name) { return System.IO.Path.Combine(Dir, name); }
         static List<string> Lines(string name) { return SafeFile.ReadLines(F(name)).ToList(); }
-        static void SaveCfg() { SafeFile.WriteLines(F("settings.txt"), cfg.Select(kv => kv.Key + "=" + kv.Value)); }
+        static void SaveCfg() { CheckHide("сохранение"); SafeFile.WriteLines(F("settings.txt"), cfg.Select(kv => kv.Key + "=" + kv.Value)); }
+
+        // Диагностика: при входе в Windows панель дважды считала скрытие панели Windows выключенным, хотя в файле включено.
+        // Пишем в журнал, что прочитано из settings.txt и .bak, и каждое изменение значения в памяти — с местом в коде.
+        static string hideSeen;
+        static void LogHideSource()
+        {
+            hideSeen = C("hideTaskbar", "1");
+            if (hideSeen == "1") return;
+            Func<string, string> raw = f => { try { var l = File.Exists(f) ? File.ReadAllLines(f).FirstOrDefault(x => x.StartsWith("hideTaskbar=")) : "нет файла"; return (l ?? "нет строки") + " (" + (File.Exists(f) ? File.GetLastWriteTime(f).ToString("dd.MM HH:mm:ss") : "—") + ")"; } catch (Exception ex) { return ex.GetType().Name; } };
+            Info("при запуске скрытие панели Windows выключено: в памяти hideTaskbar=" + hideSeen + "; settings.txt: " + raw(F("settings.txt")) + "; .bak: " + raw(F("settings.txt.bak")));
+        }
+        internal static void CheckHide(string where)
+        {
+            var v = C("hideTaskbar", "1"); if (hideSeen == null || v == hideSeen) return;
+            Info("hideTaskbar изменилось: " + hideSeen + " → " + v + " (" + where + ")\r\n" + Environment.StackTrace); hideSeen = v;
+        }
         static void SavePinned()
         {
             pinned = pinned.OrderBy(p => { int i = appOrder.IndexOf("p|" + p); return i < 0 ? int.MaxValue : i; }).ToList(); // на диск — в порядке панели
@@ -1012,7 +1080,60 @@ namespace FlowBar
         void SaveTodos() { SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine)); UpdateTodoTile(); }
         public static Todo ParseTodo(string l) { int i = l.IndexOf('|'); return i < 0 ? new Todo { Text = l } : new Todo { Done = l.Substring(0, i) == "1", Text = l.Substring(i + 1) }; }
         public static string TodoLine(Todo t) { return (t.Done ? "1|" : "0|") + t.Text; }
-        public static void Log(Exception ex) { try { File.AppendAllText(F("error.log"), DateTime.Now + " " + ex + "\r\n"); } catch { } }
+        // журнал error.log: ошибки и важные события (запуск, смена мониторов); больше 1 МБ — прежний уходит в error.old.log
+        public static void Log(Exception ex) { WriteLog(ex.ToString()); }
+        public static void Info(string s) { WriteLog("· " + s); }
+        static readonly object logLock = new object();
+        static void WriteLog(string s)
+        {
+            try
+            {
+                lock (logLock)
+                {
+                    var f = F("error.log"); var fi = new FileInfo(f);
+                    if (fi.Exists && fi.Length > 1048576) { File.Copy(f, F("error.old.log"), true); File.Delete(f); }
+                    File.AppendAllText(f, DateTime.Now + " " + s + "\r\n");
+                }
+            }
+            catch { }
+        }
+
+        // версия, Windows, права, мониторы и панели — в журнал при запуске и в отчёт
+        internal static string SysInfo()
+        {
+            var sb = new StringBuilder();
+            string win = "";
+            try { using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion")) { int bn; int.TryParse(k.GetValue("CurrentBuild") as string, out bn); win = ((k.GetValue("ProductName") as string) ?? "").Replace("Windows 10", bn >= 22000 ? "Windows 11" : "Windows 10") + " " + k.GetValue("DisplayVersion") + ", сборка " + bn + "." + k.GetValue("UBR"); } } catch { }
+            sb.Append("FlowBar " + Setup.VersionText + (Setup.IsInstalledCopy ? "" : " (запущен не из папки установки)") + "; " + win + "; права администратора: " + (Setup.Elevated ? "да" : "нет")
+                + "; панель Windows скрывается: " + (HideTb ? "да" : C("hideTaskbar", "1") == "1" ? "нет — сторож не запустился" : "нет — выключено") + "; свой трей: " + (Bar.C("ownTray", "1") == "1" ? Tray.Icons.Count + " значков" : "выключен") + "\r\n");
+            foreach (var b in bars.ToList())
+                try { sb.Append("монитор " + b.scr.DeviceName + (b.scr.Primary ? " (основной)" : "") + ": " + b.scr.Bounds.Width + "×" + b.scr.Bounds.Height + " в " + b.scr.Bounds.X + "," + b.scr.Bounds.Y + ", масштаб " + Math.Round(b.MonScale * 100) + "%; панель " + Math.Round(b.Left) + "," + Math.Round(b.Top) + " " + Math.Round(b.ActualWidth) + "×" + Math.Round(b.ActualHeight) + (b.IsVisible ? "" : " скрыта") + "\r\n"); }
+                catch { }
+            return sb.ToString();
+        }
+
+        // Отчёт для разработчика: файл на рабочем столе — сведения о системе, настройки (место и ссылки скрыты), трей и конец журнала; путь к профилю заменён на %USERPROFILE%
+        static void SaveReport()
+        {
+            try
+            {
+                var sb = new StringBuilder("Отчёт FlowBar от " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\r\n\r\n" + SysInfo());
+                sb.Append("\r\n— настройки —\r\n");
+                foreach (var kv in cfg) sb.Append(kv.Key + "=" + (Regex.IsMatch(kv.Key, "wx|url|token|key|secret|feed|ical|mail|pass", RegexOptions.IgnoreCase) ? "(скрыто)" : kv.Value) + "\r\n");
+                sb.Append("\r\n— значки трея (без подсказок) —\r\n");
+                try { foreach (var l in Tray.Dump()) { var p = l.Split('\t'); sb.Append(string.Join("\t", p.Take(Math.Max(1, p.Length - 1))) + "\r\n"); } } catch { }
+                sb.Append("\r\n— журнал, последние 400 строк —\r\n");
+                var lines = new List<string>();
+                lock (logLock) foreach (var f in new[] { F("error.old.log"), F("error.log") }) try { if (File.Exists(f)) lines.AddRange(File.ReadAllLines(f)); } catch { }
+                foreach (var l in lines.Skip(Math.Max(0, lines.Count - 400))) sb.Append(l + "\r\n");
+                var text = sb.ToString().Replace(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "%USERPROFILE%");
+                if (Environment.UserName.Length >= 3) text = text.Replace(Environment.UserName, "%USERNAME%");
+                var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "FlowBar-отчёт-" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm") + ".txt");
+                File.WriteAllText(path, text, Encoding.UTF8);
+                Start("explorer.exe", "/select,\"" + path + "\"");
+            }
+            catch (Exception ex) { Log(ex); MessageBox.Show("Не удалось сохранить отчёт:\n" + ex.Message, "FlowBar"); }
+        }
 
         // ---------- системное ----------
         public static void SetTaskbar(bool show) { Taskbar.Set(show); }
@@ -1022,6 +1143,18 @@ namespace FlowBar
             for (int i = vks.Length - 1; i >= 0; i--) N.keybd_event(vks[i], 0, 2, UIntPtr.Zero);
         }
         static string Cls(IntPtr h) { var sb = new StringBuilder(64); N.GetClassName(h, sb, 64); return sb.ToString(); }
+        // ---------- отметки на ярлыках: счётчик непрочитанного и «требует внимания» ----------
+        // Значок-наложение программы отдают только панели Windows. Число берём из заголовка окна: «(3) WhatsApp», «(12) Discord», у Telegram — «… (5)» в конце.
+        [DllImport("user32.dll")] static extern bool RegisterShellHookWindow(IntPtr h);
+        static readonly uint ShellHookMsg = N.RegisterWindowMessage("SHELLHOOK");
+        static readonly HashSet<IntPtr> flashing = new HashSet<IntPtr>();
+        public static int BadgeOf(string title, string exe)
+        {
+            if (string.IsNullOrEmpty(title)) return 0;
+            var mt = Regex.Match(title, @"^\((\d[\d\s\u00A0]{0,8})\)");
+            if (!mt.Success && exe != null && System.IO.Path.GetFileNameWithoutExtension(exe).ToLowerInvariant().Contains("telegram")) mt = Regex.Match(title, @"\((\d[\d\s\u00A0]{0,8})\)$");
+            int n; return mt.Success && int.TryParse(Regex.Replace(mt.Groups[1].Value, @"[^\d]", ""), out n) ? n : 0;
+        }
         static string TitleOf(IntPtr h) { var sb = new StringBuilder(256); N.GetWindowText(h, sb, 256); return sb.ToString(); }
         internal static string ExePathOf(uint pid) { return ExePath(pid); }
         static string ExePath(uint pid)
@@ -1166,6 +1299,18 @@ namespace FlowBar
         }
         public static int IconPxFor(double dip, double scale) { int need = (int)Math.Ceiling(dip * scale); foreach (var p in new[] { 32, 40, 48, 64, 96, 128, 256 }) if (p >= need) return p; return 256; }
         static int NeedIconPx { get { return IconPxFor(IconPx, bars.Count == 0 ? 1 : bars.Max(b => b.MonScale)); } }
+        // Окно показывает вспомогательный процесс, а программа и ярлык — другой exe: Steam рисует окна в steamwebhelper.exe.
+        // Берём основной exe программы, иначе у закреплённого ярлыка нет отметки, а рядом появляется второй значок.
+        static readonly Dictionary<string, string> hostCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public static string HostExe(string path)
+        {
+            if (path == null || !path.EndsWith("steamwebhelper.exe", StringComparison.OrdinalIgnoreCase)) return path;
+            string res;
+            if (hostCache.TryGetValue(path, out res)) return res;
+            res = path;
+            try { for (var d = System.IO.Path.GetDirectoryName(path); !string.IsNullOrEmpty(d); d = System.IO.Path.GetDirectoryName(d)) { var s = System.IO.Path.Combine(d, "steam.exe"); if (File.Exists(s)) { res = s; break; } } } catch { }
+            hostCache[path] = res; return res;
+        }
         List<Win> GetWindows()
         {
             var list = new List<Win>();
@@ -1180,14 +1325,18 @@ namespace FlowBar
                 var c = Cls(h); if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return true;
                 uint pid; N.GetWindowThreadProcessId(h, out pid); if (pid == selfPid) return true;
                 // shortcut: UWP-приложения группируются под ApplicationFrameHost; для раздельных иконок нужен AppUserModelID
-                list.Add(new Win { H = h, Pid = pid, Path = ExePath(pid), Mon = MonOf(h) });
+                list.Add(new Win { H = h, Pid = pid, Path = HostExe(ExePath(pid)), Mon = MonOf(h) });
                 return true;
             }, IntPtr.Zero);
             // какие окна на какой панели — настройка «Мониторы»: all — все окна везде; main — основная всё, остальные свои; own — каждая свои
             var mode = WinMode;
             bool all = bars.Count < 2 || mode == "all" || (mode == "main" && primary);
+            allWins = list;
             return all ? list : list.Where(w => w.Mon == mon).ToList();
         }
+        // окна на всех мониторах (панель со «своими окнами» показывает только свои): клик по ярлыку выводит уже открытое окно с другого экрана, а не запускает программу заново
+        List<Win> allWins = new List<Win>();
+        List<Win> Elsewhere(string path) { if (path == null) return new List<Win>(); var k = Key(Target(path)); return allWins.Where(w => w.Mon != mon && Key(w.Path) == k).OrderBy(w => w.H.ToInt64()).ToList(); }
         static string WinMode { get { var m = C("winMode", "own"); return m == "all" || m == "main" ? m : "own"; } }
         // монитор окна; у свёрнутого — монитор его обычного положения (свёрнутое стоит за пределами экранов)
         [StructLayout(LayoutKind.Sequential)] struct WinPlace { public int length, flags, showCmd; public N.POINT minPos, maxPos; public N.RECT normal; }
@@ -1204,8 +1353,26 @@ namespace FlowBar
         }
         static void Launch(string path, string args = null)
         {
-            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Arguments = args ?? "" }); }
+            try { Start(path, args); }
             catch (Exception ex) { MessageBox.Show("Не удалось запустить:\n" + path + "\n\n" + ex.Message, "FlowBar"); }
+        }
+        // Панель с правами администратора запускает программы через Проводник (рабочий стол — IShellDispatch2.ShellExecute), то есть без своих прав;
+        // иначе всё открытое из панели работало бы от администратора.
+        internal static void Start(string file, string args = null, string dir = null, bool viaShell = false)
+        {
+            if (Setup.Elevated || viaShell)
+                try
+                {
+                    var wins = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39")));
+                    var a = new object[] { 0, null, 8, 0, 1 }; var pm = new ParameterModifier(5); pm[0] = true; pm[1] = true; pm[3] = true; // SWC_DESKTOP, SWFO_NEEDDISPATCH
+                    var desk = wins.GetType().InvokeMember("FindWindowSW", BindingFlags.InvokeMethod, null, wins, a, new[] { pm }, null, null);
+                    var doc = desk.GetType().InvokeMember("Document", BindingFlags.GetProperty, null, desk, null);
+                    var app = doc.GetType().InvokeMember("Application", BindingFlags.GetProperty, null, doc, null);
+                    app.GetType().InvokeMember("ShellExecute", BindingFlags.InvokeMethod, null, app, new object[] { file, args ?? "", dir ?? "", "open", 1 });
+                    return;
+                }
+                catch (Exception ex) { Log(new Exception("Запуск через Проводник не удался: " + file, ex)); }
+            Process.Start(new ProcessStartInfo(file) { UseShellExecute = true, Arguments = args ?? "", WorkingDirectory = dir ?? "" });
         }
         public static string Rate(double b)
         {
@@ -1284,10 +1451,30 @@ namespace FlowBar
             br.BeginAnimation(SolidColorBrush.ColorProperty, new System.Windows.Media.Animation.ColorAnimation(to, TimeSpan.FromMilliseconds(ms)));
         }
 
+        // значок пункта меню — по началу подписи (Segoe Fluent Icons); нет подходящего — пункт без значка
+        static readonly string[][] MenuGlyphs = {
+            new[] { "Открыть новое окно", "\uE8A7" }, new[] { "Открепить", "\uE77A" }, new[] { "Закрепить", "\uE718" }, new[] { "Добавить в группу", "\uE8F4" }, new[] { "Убрать из группы", "\uE8F6" },
+            new[] { "Новая группа", "\uE8F4" }, new[] { "Закрыть", "\uE8BB" }, new[] { "Завершить", "\uE7E8" }, new[] { "Очистить", "\uE74D" }, new[] { "Открыть корзину", "\uE74D" }, new[] { "Открыть диск", "\uEDA2" },
+            new[] { "Открыть Spotify", "\uE8D6" }, new[] { "Открыть", "\uE8E5" }, new[] { "Показать в папке", "\uE838" }, new[] { "Параметры", "\uE713" }, new[] { "Настройки", "\uE713" }, new[] { "Каталог", "\uE71D" },
+            new[] { "Убрать с панели", "\uE738" }, new[] { "Размер", "\uE740" }, new[] { "Оставлять видимым", "\uE7B3" }, new[] { "Микшер", "\uE9E9" }, new[] { "Обновить", "\uE72C" }, new[] { "Диспетчер задач", "\uE9D9" },
+            new[] { "Устройство вывода", "\uE7F5" }, new[] { "Без звука", "\uE74F" }, new[] { "Список сетей", "\uE701" }, new[] { "Состояние сети", "\uE774" }, new[] { "Сети Wi-Fi", "\uE701" }, new[] { "Устройства Bluetooth", "\uE702" },
+            new[] { "Быстрые настройки", "\uE9E9" }, new[] { "Перенести на этот экран", "\uE7F4" }, new[] { "Свернуть панель", "\uE73F" }, new[] { "Заблокировать", "\uE72E" } };
+        static string MenuGlyph(string header) { foreach (var g in MenuGlyphs) if (header.StartsWith(g[0])) return g[1]; return null; }
+        // шапка меню программы: её значок и название
+        static FrameworkElement MenuHead(ImageSource icon, string name)
+        {
+            var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(9, 6, 12, 6), IsHitTestVisible = false };
+            if (icon != null) { var img = new Image { Source = icon, Width = 20, Height = 20, Margin = new Thickness(0, 0, 9, 0) }; RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality); sp.Children.Add(img); }
+            sp.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.SemiBold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 240, TextTrimming = TextTrimming.CharacterEllipsis });
+            return sp;
+        }
         static MenuItem Item(string header, Action a, bool? check = null)
         {
             var it = new MenuItem { Header = header };
             if (check.HasValue) { it.IsCheckable = true; it.IsChecked = check.Value; }
+            var gl = MenuGlyph(header);
+            if (gl != null) it.Icon = new TextBlock { Text = gl, FontFamily = Icons, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
+            if (header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
             it.Click += (s, e) => a();
             return it;
         }
@@ -1399,6 +1586,7 @@ namespace FlowBar
             long ex = N.GetWindowLongPtr(hwnd, -20).ToInt64();
             N.SetWindowLongPtr(hwnd, -20, new IntPtr(ex | 0x08000000 | 0x80)); // не забирать фокус, не показываться в Alt+Tab
             HwndSource.FromHwnd(hwnd).AddHook(WndProc);
+            if (primary) RegisterShellHookWindow(hwnd); // мигание окон «требует внимания»
             if (primary) N.RegisterHotKey(hwnd, 1, 0x1 | 0x4000, 0x54); // Alt+T
             if (primary) N.RegisterHotKey(hwnd, 2, 0x1 | 0x2 | 0x4000, 0x42); // Ctrl+Alt+B — перейти на панель с клавиатуры
             // стрелки и Tab ходят по плиткам по кругу, Esc возвращает в прежнее окно
@@ -1412,6 +1600,12 @@ namespace FlowBar
         {
             if (msg == 0x312 && w.ToInt32() == 1) { ShowTodos(); handled = true; }
             if (msg == 0x312 && w.ToInt32() == 2) { FocusBar(); handled = true; }
+            if (msg == ShellHookMsg && primary)
+            {
+                int code = w.ToInt32();
+                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); }
+                else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
+            }
             if (msg == AppBarMsg && w.ToInt32() == 1) { reserveKey = null; Place(); } // ABN_POSCHANGED: соседние панели сдвинулись
             if (msg == TaskbarCreatedMsg && (DateTime.Now - Tray.Broadcast).TotalSeconds > 5) { appBar = false; reserveKey = null; Place(); if (HideTb) SetTaskbar(false); } // перезапуск Проводника: регистрация полосы потеряна
             if (msg == 0x02E0) Dispatcher.BeginInvoke(new Action(() => { reserveKey = null; Place(); })); // WM_DPICHANGED: монитор с другим масштабом
@@ -1453,8 +1647,26 @@ namespace FlowBar
             N.SHAppBarMessage(3 /* SETPOS */, ref d);
             reserved = d.rc;
         }
+        // Проводник на новых сборках Windows 11 принимает положение полосы (AppBar), но при скрытой панели Windows не всегда уменьшает рабочую
+        // область — развёрнутые окна уходили под FlowBar. Пока панель Windows скрыта, задаём рабочую область монитора сами и держим её (раз в секунду).
+        [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint p, ref N.RECT r, uint flags);
+        bool workSet;
+        void EnsureWorkArea()
+        {
+            if (hwnd == IntPtr.Zero) return;
+            var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
+            var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
+            if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 2); } return; }
+            int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
+            if (IsTop) w.T = m.T + h; else w.B = m.B - h;
+            if (cur.L == w.L && cur.T == w.T && cur.R == w.R && cur.B == w.B) { workSet = true; return; }
+            if (!workSet) Info("рабочая область " + scr.DeviceName + " была " + cur.L + "," + cur.T + "–" + cur.R + "," + cur.B + " — ставим " + w.L + "," + w.T + "–" + w.R + "," + w.B);
+            // без SPIF_SENDCHANGE: на рассылку WM_SETTINGCHANGE Проводник пересчитывает область по-своему и сразу затирает её — получалась перетяжка каждую секунду
+            workSet = true; SystemParametersInfo(0x2F, 0, ref w, 0);
+        }
         public void Unreserve()
         {
+            if (workSet) { workSet = false; var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (GetMonitorInfo(mon, ref mi)) SystemParametersInfo(0x2F, 0, ref mi.rcMonitor, 2); } // вернуть экран целиком; панель Windows затем займёт своё место сама
             if (!appBar || hwnd == IntPtr.Zero) return;
             var d = new N.APPBARDATA { cbSize = Marshal.SizeOf(typeof(N.APPBARDATA)), hWnd = hwnd };
             N.SHAppBarMessage(1 /* REMOVE */, ref d); appBar = false; reserveKey = null;
@@ -1475,6 +1687,7 @@ namespace FlowBar
                 screensKey = k;
                 foreach (var b in bars.ToList()) b.Close();
                 foreach (var scr in System.Windows.Forms.Screen.AllScreens) new Bar(scr).Show();
+                Info("мониторы изменились:\r\n" + SysInfo());
             };
             var disp = Dispatcher.CurrentDispatcher;
             SystemEvents.DisplaySettingsChanged += (o, e) => disp.BeginInvoke(new Action(() => { screensT.Stop(); screensT.Start(); }));
@@ -1492,6 +1705,7 @@ namespace FlowBar
             fsHidden = full; ApplyVis();
         }
 
+        double activeX = double.NaN; // где была подложка активного значка
         List<string> runOrder = new List<string>();
         void RefreshApps()
         {
@@ -1503,7 +1717,7 @@ namespace FlowBar
             var groups = wins.GroupBy(w => Key(w.Path)).ToDictionary(g => g.Key, g => g.OrderBy(w => w.H.ToInt64()).ToList());
             var fg = N.GetForegroundWindow();
 
-            var key = GroupsKey() + "#" + string.Join("|", pinned) + "#" + string.Join("|", runOrder.Select(k => k + ":" + string.Join(",", groups[k].Select(w => w.H)))) + "#" + fg;
+            var key = GroupsKey() + "#" + string.Join("|", pinned) + "#" + string.Join("|", runOrder.Select(k => k + ":" + string.Join(",", groups[k].Select(w => w.H)))) + "#" + fg + "#" + string.Join(",", allWins.Where(w => w.Mon != mon).Select(w => w.H)) + "#" + string.Join(",", wins.Select(w => BadgeOf(TitleOf(w.H), w.Path))) + "#" + flashing.Count;
             if (key == lastKey) return;
             lastKey = key;
 
@@ -1547,15 +1761,50 @@ namespace FlowBar
             else grid.Children.Add(G(path != null && Directory.Exists(path) ? "" : ""));
             bool active = ws.Any(w => w.H == fg);
             if (ws.Count > 0) grid.Children.Add(Indicator(active, ws.Count > 1));
+            else { int far = Elsewhere(path).Count; if (far > 0) grid.Children.Add(Indicator(false, far > 1, true)); } // открыта на другом мониторе: полая отметка, несколько окон — две
+            int badge = ws.Sum(w => BadgeOf(TitleOf(w.H), w.Path)); bool flash = ws.Any(w => flashing.Contains(w.H));
+            if (badge > 0 && C("badges", "1") == "1")
+            {
+                var bt = new TextBlock { Text = badge > 99 ? "99+" : badge.ToString(), FontSize = Math.Round(8.5 * Fs), FontWeight = FontWeights.SemiBold, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3.5, 0, 3.5, 0.5) };
+                double bh = Math.Round(13 * Fs);
+                grid.Children.Add(new Border { Child = bt, Background = Accent, CornerRadius = new CornerRadius(bh / 2), MinWidth = bh, Height = bh, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, -4, 0), IsHitTestVisible = false });
+            }
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
-            if (active) { tile.Base = Fa(0x1E); tile.Background = new SolidColorBrush(tile.Base); } // активное приложение — мягкая подложка
+            if (active)
+            {
+                // активное приложение — мягкая подложка; при смене окна она «переезжает» от прежнего значка к новому
+                var hl = new Border { Background = new SolidColorBrush(Fa(0x1E)), CornerRadius = tile.CornerRadius, Margin = new Thickness(-40, -40, -40, -40), Width = tile.Width, Height = tile.Height, IsHitTestVisible = false, RenderTransform = new TranslateTransform() };
+                grid.Children.Insert(0, hl);
+                tile.Loaded += (s, e) =>
+                {
+                    double x; try { x = tile.PointToScreen(new Point(tile.ActualWidth / 2, 0)).X / Scale; } catch { return; }
+                    double from = activeX; activeX = x;
+                    if (!Motion || double.IsNaN(from) || Math.Abs(from - x) < 2 || Math.Abs(from - x) > 1600) return;
+                    ((TranslateTransform)hl.RenderTransform).BeginAnimation(TranslateTransform.XProperty, new System.Windows.Media.Animation.DoubleAnimation(from - x, 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
+                };
+            }
+            else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
+            if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
             tile.AllowDrop = true;
+            // файл тянут над значком открытой программы — через полсекунды её окно выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
+            DispatcherTimer spring = null;
+            tile.DragEnter += (s, e) =>
+            {
+                if (!e.Data.GetDataPresent(DataFormats.FileDrop) || ws.Count == 0) return;
+                if (spring != null) spring.Stop();
+                spring = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                spring.Tick += (o2, e2) => { spring.Stop(); if (ws.Count == 1) ActivateWin(ws[0].H); else ShowPreview(tile, ws, true); };
+                spring.Start();
+            };
+            tile.DragOver += (s, e) => { if (preview != null && previewFor == tile) previewMiss = 0; };
+            tile.DragLeave += (s, e) => { if (spring != null) spring.Stop(); };
 
             tile.Drop += (s, e) =>
             {
+                if (spring != null) spring.Stop();
                 var files = e.Data.GetData(DataFormats.FileDrop) as string[];
                 // ярлык или программа, брошенные на значок, закрепляются на его месте
                 if (files != null && !Locked && files.All(IsProgram))
@@ -1586,24 +1835,50 @@ namespace FlowBar
         void Activate(string path, List<Win> ws)
         {
             if ((DateTime.Now - lastDragEnd).TotalMilliseconds < 400) return; // отпускание после перетаскивания — не клик
-            ClosePreview();
-            if (ws.Count == 0) { if (path != null) Launch(path); return; }
+            bool wasOpen = preview != null && previewFor == anchor; ClosePreview(); if (wasOpen && ws.Count > 1 && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0) return; // повторный клик закрывает миниатюры
+            bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0, ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            if (shift && path != null) { Launch(path); return; } // как в Windows: Shift+клик — новое окно
             var fg = N.GetForegroundWindow();
+            if (ws.Count == 0)
+            {
+                var other = Elsewhere(path);
+                if (other.Count > 0) { int j = other.FindIndex(w => w.H == fg); ActivateWin(other[(j + 1) % other.Count].H); }
+                else if (path != null) Launch(path);
+                return;
+            }
             int i = ws.FindIndex(w => w.H == fg);
-            if (ws.Count == 1 && i == 0) { N.ShowWindow(ws[0].H, 6); return; } // повторный клик — свернуть
-            ActivateWin(ws[(i + 1) % ws.Count].H); // несколько окон — переключаем по кругу
+            if (ws.Count == 1) { if (i == 0) N.ShowWindow(ws[0].H, 6); else ActivateWin(ws[0].H); return; } // повторный клик — свернуть
+            if (ctrl) { ActivateWin(ws[(i + 1) % ws.Count].H); return; } // Ctrl+клик — по кругу
+            // несколько окон — как в Windows: клик показывает миниатюры, выбор окна — по ним
+            Border tile = anchor as Border;
+            if (tile != null) ShowPreview(tile, ws, true); else ActivateWin(ws[(i + 1) % ws.Count].H);
         }
-        static void ActivateWin(IntPtr h) { if (N.IsIconic(h)) N.ShowWindow(h, 9); N.SetForegroundWindow(h); }
+        static void ActivateWin(IntPtr h)
+        {
+            if (N.IsIconic(h)) N.ShowWindow(h, 9);
+            if (N.SetForegroundWindow(h) && N.GetForegroundWindow() == h) return;
+            Keys(0x12); N.SetForegroundWindow(h); // Windows отказала (передний план у другой программы): нажатие Alt снимает запрет
+        }
 
         void AppMenu(ContextMenu m, string path, List<Win> ws, bool isPinned)
         {
             ClosePreview();
-            foreach (var w in ws)
+            var shown = ws.Count > 0 ? ws : Elsewhere(path);
+            var hp = path ?? (shown.Count > 0 ? shown[0].Path : null);
+            if (hp != null) { m.Items.Add(MenuHead(IconFor(hp) ?? IconFor(Target(hp)), PinName(hp))); m.Items.Add(new Separator()); }
+            foreach (var w in shown)
             {
-                var h = w.H; var title = TitleOf(h);
-                m.Items.Add(Item(title.Length > 60 ? title.Substring(0, 60) + "…" : title, () => ActivateWin(h)));
+                var h = w.H; var title = TitleOf(h); bool far = w.Mon != mon;
+                var tx = new TextBlock { Text = (title.Length > 48 ? title.Substring(0, 48) + "…" : title) + (far ? "  · другой экран" : ""), VerticalAlignment = VerticalAlignment.Center, MaxWidth = 300, TextTrimming = TextTrimming.CharacterEllipsis };
+                MenuItem wi = null;
+                var x = Cross("Закрыть окно «" + title + "»", () => { N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); if (wi != null) wi.Visibility = Visibility.Collapsed; });
+                x.Width = 20; x.Height = 20; x.Margin = new Thickness(10, -2, -4, -2); x.PreviewMouseLeftButtonUp += (s, e) => e.Handled = true; x.PreviewMouseLeftButtonDown += (s, e) => { e.Handled = true; x.Invoke(); };
+                var dp = new DockPanel(); DockPanel.SetDock(x, Dock.Right); dp.Children.Add(x); dp.Children.Add(tx);
+                wi = new MenuItem { Header = dp, Icon = new TextBlock { Text = "\uE737", FontFamily = Icons, FontSize = 13, VerticalAlignment = VerticalAlignment.Center } };
+                wi.Click += (s, e) => ActivateWin(h);
+                m.Items.Add(wi);
             }
-            if (ws.Count > 0) m.Items.Add(new Separator());
+            if (shown.Count > 0) m.Items.Add(new Separator());
             if (path != null) m.Items.Add(Item("Открыть новое окно", () => Launch(path)));
             // при закреплении/откреплении значок остаётся на своём месте
             if (isPinned) m.Items.Add(Item("Открепить", () => { Retag("p|" + path, "r|" + Key(Target(path))); pinned.Remove(path); SavePinned(); }));
@@ -1611,6 +1886,7 @@ namespace FlowBar
             else if (path != null) m.Items.Add(Item("Закрепить", () => { Retag("r|" + Key(path), "p|" + path); pinned.Add(path); SavePinned(); }));
             if (ws.Count > 0)
             {
+                m.Items.Add(new Separator());
                 m.Items.Add(Item(ws.Count > 1 ? "Закрыть все окна" : "Закрыть окно", () => { foreach (var w in ws) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
                 m.Items.Add(Item("Завершить процесс", () =>
                 {
@@ -1628,9 +1904,10 @@ namespace FlowBar
             t.Tick += (s, e) => { t.Stop(); if (!dragging && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
             t.Start();
         }
-        void ShowPreview(Border tile, List<Win> ws)
+        bool previewPinned;
+        void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
-            ClosePreview();
+            ClosePreview(); previewPinned = pinned; TipHide(true);
             const double BW = 220, BH = 130;
             var w = new Window
             {
@@ -1650,6 +1927,12 @@ namespace FlowBar
                 var cell = new StackPanel { Width = BW, Margin = new Thickness(6), Background = Brushes.Transparent, Cursor = Cursors.Hand };
                 cell.Children.Add(head); cell.Children.Add(slot);
                 cell.MouseLeftButtonUp += (s, e) => { ClosePreview(); ActivateWin(h); };
+                // файл над миниатюрой — это окно выходит вперёд
+                cell.AllowDrop = true; DispatcherTimer cs = null;
+                cell.DragEnter += (s, e) => { previewMiss = 0; if (cs != null) cs.Stop(); cs = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) }; cs.Tick += (o2, e2) => { cs.Stop(); ClosePreview(); ActivateWin(h); }; cs.Start(); };
+                cell.DragOver += (s, e) => { previewMiss = 0; e.Effects = DragDropEffects.None; e.Handled = true; }; cell.DragLeave += (s, e) => { if (cs != null) cs.Stop(); };
+                cell.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); ClosePreview(); } }; // средний клик — закрыть окно
+                cell.MouseEnter += (s, e) => cell.Background = Frozen(CardFg, 0x14); cell.MouseLeave += (s, e) => cell.Background = Brushes.Transparent;
                 row.Children.Add(cell); slots.Add(Tuple.Create(slot, h));
             }
             w.Content = row;
@@ -1685,7 +1968,7 @@ namespace FlowBar
         {
             if (preview == null) { hoverT.Stop(); return; }
             previewMiss = previewFor.IsMouseOver || preview.IsMouseOver ? 0 : previewMiss + 1;
-            if (previewMiss >= 3) ClosePreview(); // ¾ секунды на переход курсора со значка на миниатюру
+            if (previewMiss >= (previewPinned ? 12 : 3)) ClosePreview(); // ¾ секунды на переход курсора со значка на миниатюру; открытые кликом ждут дольше
         }
         void ClosePreview()
         {
@@ -1993,12 +2276,15 @@ namespace FlowBar
         static FrameworkElement anchor; static DateTime anchorAt; // плитка, по которой только что кликнули: карточка откроется у неё
         void ShowPanel(string title, UIElement body, double width, IInputElement focus, Action tick = null)
         {
-            ClosePreview();
+            ClosePreview(); TipHide(true);
+            double keepCx = cx0Back; cx0Back = double.NaN;
             var from = (DateTime.Now - anchorAt).TotalSeconds < 2 && anchor != null && anchor.IsVisible ? anchor : null; anchor = null;
             // Нажатие на панель сначала уводит фокус с карточки и закрывает её, а клик приходит уже после.
             // Если эта же карточка закрылась только что — это повторное нажатие: оставляем закрытой.
             if (panel == null && title == lastClosedTitle && (DateTime.Now - lastClosedAt).TotalMilliseconds < 400) { lastClosedTitle = null; return; }
             bool same = panel != null && panelTitle == title;
+            var back = panel != null && !same ? panelBuild : null; panelBuild = null; // карточка открыта из другой («Ещё») — стрелка назад к ней
+            if (back != null) { from = null; keepCx = panel.Left + panel.ActualWidth / 2; } // на месте прежней карточки, как переход внутри одного меню
             if (panel != null) panel.Close();
             if (same) return; // повторный клик по виджету закрывает карточку
             width = Math.Max(320, width); // обычная ширина карточки 320–420
@@ -2014,7 +2300,17 @@ namespace FlowBar
             // заголовок всегда виден, длинное содержимое прокручивается целиком (поле ввода и кнопки внизу тоже достижимы)
             var sp = new DockPanel();
             var head = new TextBlock { Text = title.Length > 0 ? char.ToUpper(title[0]) + title.Substring(1) : title, FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), Margin = new Thickness(0, 0, 0, 12) };
-            DockPanel.SetDock(head, Dock.Top); sp.Children.Add(head);
+            FrameworkElement top = head;
+            if (back != null)
+            {
+                head.Margin = new Thickness(0); head.VerticalAlignment = VerticalAlignment.Center;
+                var arrow = Act(new TextBlock { Text = "", FontFamily = Icons, FontSize = 13, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }, "Назад", () => { cx0Back = w.Left + w.ActualWidth / 2; back(); });
+                arrow.Width = 28; arrow.Height = 28; arrow.CornerRadius = new CornerRadius(8); arrow.Margin = new Thickness(-6, 0, 4, 0); arrow.ToolTip = "Назад";
+                arrow.MouseEnter += (o, e) => Fade(arrow, Color.FromArgb(0x1C, fg.R, fg.G, fg.B), 100); arrow.MouseLeave += (o, e) => Fade(arrow, Colors.Transparent, 140);
+                var hp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, -4, 0, 8) }; hp.Children.Add(arrow); hp.Children.Add(head); top = hp;
+                w.PreviewKeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Back && !(Keyboard.FocusedElement is TextBox)) { e.Handled = true; back(); } };
+            }
+            DockPanel.SetDock(top, Dock.Top); sp.Children.Add(top);
             sp.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Padding = new Thickness(0, 0, 6, 0), Margin = new Thickness(0, 0, -6, 0) });
             StyleInputs(sp, fg);
             var face = new Border { Background = CardFill, CornerRadius = new CornerRadius(12), Padding = new Thickness(16), BorderThickness = new Thickness(1), BorderBrush = CardEdge, Child = sp };
@@ -2029,7 +2325,7 @@ namespace FlowBar
             {
                 // по центру над нажатой плиткой (без неё — у правого края панели), но в пределах экрана
                 double sc = Scale, sl = scr.Bounds.Left / sc, sr = scr.Bounds.Right / sc, st = scr.Bounds.Top / sc, sb = scr.Bounds.Bottom / sc;
-                if (double.IsNaN(cx0)) cx0 = from != null && from.IsVisible ? from.PointToScreen(new Point(from.ActualWidth / 2, 0)).X / sc : Left + ActualWidth - w.ActualWidth / 2 + Shadow;
+                if (double.IsNaN(cx0)) cx0 = !double.IsNaN(keepCx) ? keepCx : from != null && from.IsVisible ? from.PointToScreen(new Point(from.ActualWidth / 2, 0)).X / sc : Left + ActualWidth - w.ActualWidth / 2 + Shadow;
                 double nl = Math.Max(sl + 4 - Shadow, Math.Min(sr - 4 + Shadow - w.ActualWidth, cx0 - w.ActualWidth / 2));
                 double room = IsTop ? sb - (CapBottom + 8) : CapTop - 8 - st; // высота от панели до края экрана
                 double hh = Math.Min(w.ActualHeight, room + Shadow * 2); // MaxHeight уже ограничил карточку — лишнее прокручивается
@@ -2050,31 +2346,50 @@ namespace FlowBar
             w.Deactivated += (o, e) => w.Dispatcher.BeginInvoke(new Action(() => { if (!closed && !dragging) w.Close(); })); // из «…» модуль тянут на панель — карточка остаётся
             // Esc закрывает карточку и возвращает фокус на плитку, если на панель пришли с клавиатуры
             w.PreviewKeyDown += (o, e) => { if (e.Key != System.Windows.Input.Key.Escape) return; e.Handled = true; w.Close(); if (backTo != IntPtr.Zero && from != null) { N.SetForegroundWindow(hwnd); Keyboard.Focus(from); } };
-            w.Closed += (o, e) => { closed = true; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; } };
+            w.Closed += (o, e) => { closed = true; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
             panel = w; panelTitle = title; panelTick = tick;
             w.Show(); w.Activate();
         }
 
         void ShowTodos()
         {
-            var list = new StackPanel();
-            var input = new TextBox { Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 8, 0, 0), ToolTip = "Новая задача — Enter" };
+            var list = new StackPanel { Margin = new Thickness(-8, 0, -4, 0) }; var count = Txt("", 11, false); count.Opacity = 0.6; count.Margin = new Thickness(0, -6, 0, 6);
+            var input = new TextBox { Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 8, 0, 0), ToolTip = "Новая задача — Enter" };
             Action render = null;
             render = () =>
             {
                 list.Children.Clear();
-                if (todos.Count == 0) list.Children.Add(new TextBlock { Text = "Задач нет — введите ниже и нажмите Enter", Opacity = 0.6 });
-                foreach (var td in todos.ToList())
+                if (todos.Count == 0) list.Children.Add(new TextBlock { Text = "Задач нет — введите ниже и нажмите Enter", Opacity = 0.6, Margin = new Thickness(8, 0, 0, 0) });
+                // сначала несделанные; строка — круглая отметка, текст и крестик, который виден при наведении
+                foreach (var td in todos.OrderBy(x => x.Done).ToList())
                 {
                     var t = td;
-                    var cb = new CheckBox { Content = new TextBlock { Text = t.Text, TextWrapping = TextWrapping.Wrap }, IsChecked = t.Done, Margin = new Thickness(0, 3, 0, 3), VerticalContentAlignment = VerticalAlignment.Top };
-                    System.Windows.Automation.AutomationProperties.SetName(cb, t.Text);
-                    RoutedEventHandler onT = (s, e) => { t.Done = cb.IsChecked == true; SaveTodos(); }; cb.Checked += onT; cb.Unchecked += onT; // и мышью, и через специальные возможности
-                    var del = Cross("Удалить задачу «" + t.Text + "»", () => { todos.Remove(t); SaveTodos(); render(); });
-                    var dp = new DockPanel(); DockPanel.SetDock(del, Dock.Right);
-                    dp.Children.Add(del); dp.Children.Add(cb);
-                    list.Children.Add(dp);
+                    var mark = new TextBlock { Text = "\uE73E", FontFamily = Icons, FontSize = 10, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Opacity = t.Done ? 1 : 0 };
+                    var ring = new Border { Width = 18, Height = 18, CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1.5), Child = mark, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 1, 10, 0),
+                        BorderBrush = t.Done ? Accent : Frozen(CardFg, 0x70), Background = t.Done ? Accent : Brushes.Transparent };
+                    var tx = new TextBlock { Text = t.Text, TextWrapping = TextWrapping.Wrap, FontSize = 12.5, Opacity = t.Done ? 0.45 : 1, VerticalAlignment = VerticalAlignment.Center };
+                    if (t.Done) tx.TextDecorations = TextDecorations.Strikethrough;
+                    var del = Cross("Удалить задачу «" + t.Text + "»", () => { todos.Remove(t); SaveTodos(); render(); }); del.Opacity = 0;
+                    var dp = new DockPanel { Margin = new Thickness(8, 6, 4, 6) }; DockPanel.SetDock(del, Dock.Right); DockPanel.SetDock(ring, Dock.Left);
+                    dp.Children.Add(del); dp.Children.Add(ring); dp.Children.Add(tx);
+                    Press row = null;
+                    row = Act(dp, (t.Done ? "Сделано: " : "Задача: ") + t.Text, () =>
+                    {
+                        t.Done = !t.Done; SaveTodos();
+                        // отметка заполняется, текст гаснет — затем список перестраивается (сделанные уходят вниз)
+                        ring.Background = t.Done ? Accent : Brushes.Transparent; ring.BorderBrush = t.Done ? Accent : Frozen(CardFg, 0x70);
+                        mark.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(t.Done ? 1 : 0, TimeSpan.FromMilliseconds(120)));
+                        tx.TextDecorations = t.Done ? TextDecorations.Strikethrough : null;
+                        tx.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(t.Done ? 0.45 : 1, TimeSpan.FromMilliseconds(180)));
+                        var later = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Motion ? 420 : 0) }; later.Tick += (o2, e2) => { later.Stop(); render(); }; later.Start();
+                    });
+                    row.CornerRadius = new CornerRadius(8);
+                    row.MouseEnter += (s, e) => { Fade(row, Color.FromArgb(0x14, CardFg.R, CardFg.G, CardFg.B), 100); del.Opacity = 0.75; };
+                    row.MouseLeave += (s, e) => { Fade(row, Colors.Transparent, 140); del.Opacity = 0; };
+                    list.Children.Add(row);
                 }
+                int left = todos.Count(x => !x.Done);
+                count.Text = todos.Count == 0 ? "" : left == 0 ? "Всё сделано" : "Осталось " + left + " из " + todos.Count;
             };
             input.KeyDown += (s, e) =>
             {
@@ -2082,7 +2397,7 @@ namespace FlowBar
                 todos.Add(new Todo { Text = input.Text.Trim() }); input.Text = ""; SaveTodos(); render();
             };
             render();
-            var body = new StackPanel(); body.Children.Add(list); body.Children.Add(input);
+            var body = new StackPanel(); body.Children.Add(count); body.Children.Add(list); body.Children.Add(input);
             ShowPanel("Задачи", body, 320, input);
         }
 
@@ -2570,7 +2885,7 @@ namespace FlowBar
                 var name = Txt(System.IO.Path.GetFileName(path.TrimEnd('\\')), 12, false); name.Margin = new Thickness(0, 0, 8, 0); g.Children.Add(name);
                 System.Windows.Automation.AutomationProperties.SetName(g, name.Text);
                 g.MouseEnter += (s, e) => name.TextDecorations = TextDecorations.Underline; g.MouseLeave += (s, e) => name.TextDecorations = null;
-                var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Process.Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
+                var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
                 v.Children.Add(Act(g, name.Text, () => { if (panel != null) panel.Close(); Launch(path); }));
             };
 
@@ -2608,7 +2923,7 @@ namespace FlowBar
                         Background = new ImageBrush(bi) { Stretch = Stretch.UniformToFill } };
                     System.Windows.Automation.AutomationProperties.SetName(cell, "Скриншот " + System.IO.Path.GetFileName(path));
                     cell.Invoke = () => { if (panel != null) panel.Close(); Launch(path); }; cell.MouseLeftButtonUp += (s, e) => cell.Invoke();
-                    var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Process.Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
+                    var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
                     grid.Children.Add(cell);
                 }
                 catch { } // повреждённый файл пропускаем
@@ -3273,9 +3588,17 @@ namespace FlowBar
             }
             if (args.Contains("--selftest")) return SelfTest();
             // запуск нового exe откуда угодно обновляет установленную копию и передаёт работу ей; --here — запустить прямо отсюда (разработка)
-            if (!Bar.DemoMode && !args.Contains("--here") && Setup.HandOver()) return 0;
+            // Запущен из приложения Microsoft Store (Claude, Telegram из Store и т. п.): Windows тихо уводит записи в %APPDATA% в папку того приложения —
+            // настройки и заметки расходились с обычным запуском при входе в Windows (так панель Windows и переставала прятаться). Перезапуск через Проводник — вне изоляции.
+            if (!args.Contains("--fromshell") && InPackage())
+                try { Bar.Start(Assembly.GetExecutingAssembly().Location, string.Join(" ", args.Concat(new[] { "--fromshell" }).Select(a => "\"" + a + "\"")), null, true); return 0; }
+                catch (Exception ex) { Bar.Log(ex); }
+            if (!Bar.DemoMode && !args.Contains("--here") && (Setup.HandOver() || Setup.Elevate(args))) return 0;
             return RunBar(me);
         }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetCurrentPackageFullName(ref int len, StringBuilder name);
+        static bool InPackage() { try { int n = 0; return GetCurrentPackageFullName(ref n, null) != 15700 /* APPMODEL_ERROR_NO_PACKAGE */; } catch { return false; } }
 
         // команда — окнам уже работающего FlowBar (широковещательные сообщения до окон-инструментов доходят не всегда)
         internal static void PostToBar(uint msg, IntPtr w, IntPtr l)
@@ -3310,12 +3633,15 @@ namespace FlowBar
             Watch = null; return false;
         }
 
+        [DllImport("user32.dll")] static extern bool ChangeWindowMessageFilter(uint msg, uint flag);
         [MethodImpl(MethodImplOptions.NoInlining)]
         static int RunBar(Process me)
         {
             bool created;
             var mtx = new System.Threading.Mutex(true, "FlowBar_single_instance", out created);
             if (!created) return 0;
+            // с правами администратора сообщения от обычных процессов (Проводник, команды --open, установщик новой версии) иначе не доходят
+            foreach (var m in new[] { "FlowBarOpen", "FlowBarShot", "FlowBarAppBar", "TaskbarCreated" }) ChangeWindowMessageFilter(N.RegisterWindowMessage(m), 1);
             Taskbar.Remember(); // до любого скрытия
             Bar.WatchOk = StartWatch();
             System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; // TLS 1.2
@@ -3329,6 +3655,7 @@ namespace FlowBar
             if (Bar.C("ownTray", "1") == "1") Tray.Start(); // свой трей (до панелей: рассылка TaskbarCreated их не касается)
             foreach (var scr in System.Windows.Forms.Screen.AllScreens) new Bar(scr).Show();
             Bar.WatchScreens();
+            var started = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) }; started.Tick += (s, e) => { started.Stop(); Bar.Info("запуск:\r\n" + Bar.SysInfo()); Bar.PlaceStartNow(); }; started.Start(); // панели уже на местах
             var note = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) }; note.Tick += (s, e) => { note.Stop(); Bar.ShowUpdateNote(); }; note.Start();
             app.Run();
             GC.KeepAlive(mtx);
@@ -3350,6 +3677,10 @@ namespace FlowBar
                     var dst = Setup.Backup(tmp, System.IO.Path.Combine(tmp, "backups"), "1.0.0");
                     fails += check(File.ReadAllText(System.IO.Path.Combine(dst, "notes.txt")) == "заметка" && File.Exists(System.IO.Path.Combine(dst, "screentime", "d.txt"))
                         && !Directory.Exists(System.IO.Path.Combine(dst, "cache")) && !File.Exists(System.IO.Path.Combine(dst, "error.log")) && !Directory.Exists(System.IO.Path.Combine(dst, "backups")), "Обновление: резервная копия данных");
+                    { var nw = Bar.ParseNews("# t\n\nвступление\n\n## 1.1 — дата\n- Пункт **один**\n  - вложенный\n## 1.0\n- старый"); fails += check(nw.Count == 5 && nw[0].Item1 == 0 && nw[1].Item2 == "Пункт один" && nw[2].Item1 == 2 && nw[3].Item2 == "1.0", "Что нового: разбор списка изменений"); }
+                    fails += check(Bar.HostExe(@"C:\x\notepad.exe") == @"C:\x\notepad.exe" && Bar.HostExe(null) == null && Bar.HostExe(@"Z:\nowhere\bin\steamwebhelper.exe") == @"Z:\nowhere\bin\steamwebhelper.exe", "Окна: основной exe программы");
+                    fails += check(Bar.BadgeOf("(3) WhatsApp", "x.exe") == 3 && Bar.BadgeOf("Chat (5)", @"C:\Telegram.exe") == 5 && Bar.BadgeOf("Новая папка (2)", "explorer.exe") == 0 && Bar.BadgeOf("(7 426) Mail", null) == 7426 && Bar.BadgeOf("Doc", null) == 0, "Ярлык: счётчик из заголовка окна");
+                    fails += check(Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Wintun Userspace Tunnel") && Bar.IsVpnAdapter(NetworkInterfaceType.Ppp, "x") && !Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Realtek PCIe 5GbE Family Controller") && Bar.IsVirtualAdapter("Hyper-V Virtual Ethernet Adapter"), "Сеть: адаптер VPN отличается от обычного");
                     fails += check(Setup.V3(new Version(1, 2)) == "1.2.0" && new Version("1.1.0.0") > new Version("1.0.0.0"), "Обновление: сравнение версий");
                 }
                 finally { try { Directory.Delete(tmp, true); } catch { } }

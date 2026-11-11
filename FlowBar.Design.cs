@@ -376,6 +376,17 @@ namespace FlowBar
                 Children.Add(t); Children.Add(fill);
                 tw = new Tw(x => { last = x; fill.Width = x <= 0.001 ? 0 : Math.Max(h, this.w * x); });
             }
+            // пауза: полоса «сжимается» — становится тоньше и бледнее; воспроизведение — распрямляется
+            bool squeezed;
+            public void Squeeze(bool on)
+            {
+                if (on == squeezed) return; squeezed = on;
+                var st = RenderTransform as ScaleTransform; if (st == null) { st = new ScaleTransform(1, 1); RenderTransform = st; RenderTransformOrigin = new Point(0.5, 0.5); }
+                var dur = TimeSpan.FromMilliseconds(Motion ? 220 : 0); var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+                st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(on ? 0.45 : 1, dur) { EasingFunction = ease });
+                st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(on ? 0.97 : 1, dur) { EasingFunction = ease });
+                BeginAnimation(OpacityProperty, new DoubleAnimation(on ? 0.6 : 1, dur));
+            }
             // ширина по месту (полоса во всю ширину модуля)
             public void Resize(double nw) { if (nw <= h || Math.Abs(nw - w) < 0.5) return; w = nw; Width = nw; fill.Width = last <= 0.001 ? 0 : Math.Max(h, w * last); }
             public void Set(double frac, Brush b = null, bool now = false)
@@ -413,6 +424,33 @@ namespace FlowBar
             new[] { "Arabian Standard Time", "Дубай" }, new[] { "China Standard Time", "Пекин" }, new[] { "Tokyo Standard Time", "Токио" },
             new[] { "Eastern Standard Time", "Нью-Йорк" }, new[] { "Pacific Standard Time", "Лос-Анджелес" } };
         public static double NiceTop(double v) { return Spark.Nice(v); }
+        // Общий вид ползунков (громкость, яркость, отступы, прозрачность): тонкая дорожка, пройденная часть — акцент, круглая ручка с точкой акцента, как в Windows 11
+        static Style sliderSty; static string sliderKey;
+        internal static Style SliderSty()
+        {
+            Color a = AccentColor, f = CardFg; string acc = "#" + a.R.ToString("X2") + a.G.ToString("X2") + a.B.ToString("X2"), tr = "#38" + f.R.ToString("X2") + f.G.ToString("X2") + f.B.ToString("X2");
+            if (sliderSty != null && sliderKey == acc + tr) return sliderSty;
+            var x = "<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Slider'>" +
+                "<Setter Property='Height' Value='26'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/><Setter Property='Template'><Setter.Value><ControlTemplate TargetType='Slider'><Grid Background='Transparent'>" +
+                "<Border Height='4' CornerRadius='2' Background='" + tr + "' VerticalAlignment='Center' Margin='2,0'/>" +
+                "<Track x:Name='PART_Track'>" +
+                "<Track.DecreaseRepeatButton><RepeatButton Command='Slider.DecreaseLarge' Focusable='False' IsTabStop='False'><RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'><Border Height='4' CornerRadius='2' Background='" + acc + "' VerticalAlignment='Center' Margin='2,0,-9,0'/></Border></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>" +
+                "<Track.IncreaseRepeatButton><RepeatButton Command='Slider.IncreaseLarge' Focusable='False' IsTabStop='False'><RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton>" +
+                "<Track.Thumb><Thumb Width='20' Height='20' Cursor='Hand'><Thumb.Template><ControlTemplate TargetType='Thumb'><Grid>" +
+                "<Ellipse x:Name='o' Fill='White' Stroke='#33000000' StrokeThickness='1' Margin='1'><Ellipse.Effect><DropShadowEffect BlurRadius='5' ShadowDepth='1' Opacity='0.35'/></Ellipse.Effect></Ellipse>" +
+                "<Ellipse x:Name='i' Width='8' Height='8' Fill='" + acc + "'/></Grid>" +
+                "<ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='i' Property='Width' Value='11'/><Setter TargetName='i' Property='Height' Value='11'/></Trigger>" +
+                "<Trigger Property='IsDragging' Value='True'><Setter TargetName='i' Property='Width' Value='7'/><Setter TargetName='i' Property='Height' Value='7'/><Setter TargetName='o' Property='Margin' Value='0'/></Trigger></ControlTemplate.Triggers>" +
+                "</ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track></Grid>" +
+                "<ControlTemplate.Triggers><Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>";
+            sliderSty = (Style)System.Windows.Markup.XamlReader.Parse(x); sliderKey = acc + tr; return sliderSty;
+        }
+        static void VolBeep() { if (C("volBeep", "1") == "1" && !live.Muted && live.Vol > 0) Audio.Beep(); }
+        // пункты «Устройство вывода» — в меню модуля громкости
+        static void DeviceItems(ItemsControl m)
+        {
+            foreach (var dv in Audio.Devices()) { var x = dv; m.Items.Add(Item(ShortDev(x.Item2), () => { var err = Audio.SetDefault(x.Item1); if (err != null) MessageBox.Show(err, "FlowBar"); ReadVolume(); All(b => b.Render()); }, x.Item3)); }
+        }
         static void ReadVolume() { double vv; bool mu; string vn; Audio.Read(out vv, out mu, out vn); live.Vol = vv; live.Muted = mu; live.VolName = vn; }
         // «Динамики (Realtek(R) Audio)» → «Динамики»: полное имя — в подсказке и карточке
         public static string ShortDev(string n) { if (string.IsNullOrEmpty(n)) return "Устройство вывода"; int i = n.IndexOf(" ("); return i > 0 ? n.Substring(0, i) : n; }
@@ -580,7 +618,7 @@ namespace FlowBar
             public bool CanPrev, CanNext, CanToggle = true, CanSeek; public string MediaError; public List<Tuple<string, string>> Sessions = new List<Tuple<string, string>>();
             public string Lang = "…";
             // подключение: вид −1 — ещё не проверено, 0 — нет, 1 — кабель, 2 — Wi-Fi, 3 — сотовая; доступ 0 — нет, 1 — только локальная сеть, 2 — ограничен, 3 — интернет
-            public int NetKind = -1, NetLevel, NetBars = -1; public string NetName;
+            public int NetKind = -1, NetLevel, NetBars = -1; public string NetName; public bool NetVpn;
             public double Vol = double.NaN; public bool Muted; public string VolName;
             public List<double> TempHist = new List<double>(); public List<DateTime> TempTimes = new List<DateTime>(); public List<Tuple<string, double>> TempZones = new List<Tuple<string, double>>();
             public string ToolLabel, ToolTime;
@@ -704,6 +742,41 @@ namespace FlowBar
                     }
                 }
                 catch { }
+                // VPN (Happ, Cloudflare WARP, WireGuard…): профилем интернета становится адаптер VPN — Wi-Fi показывался как Ethernet, а доступ как «без интернета».
+                // Показываем настоящее подключение (кабель или Wi-Fi) и отдельно отметку VPN; доступ — лучший из всех профилей.
+                bool vpn = false;
+                try
+                {
+                    NetworkInterface phys = null;
+                    foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                        if (IsVpnAdapter(ni.NetworkInterfaceType, ni.Description + " " + ni.Name)) { vpn = true; continue; }
+                        if (IsVirtualAdapter(ni.Description)) continue;
+                        bool gw = false; try { gw = ni.GetIPProperties().GatewayAddresses.Any(g => g.Address != null && !g.Address.Equals(System.Net.IPAddress.Any)); } catch { }
+                        if (gw && phys == null) phys = ni;
+                    }
+                    if (vpn && phys != null)
+                    {
+                        kind = phys.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? 2 : 1; name = phys.Name; bars = -1;
+                        foreach (var q in NC.NetworkInformation.GetConnectionProfiles())
+                        {
+                            var ql = q.GetNetworkConnectivityLevel();
+                            level = Math.Max(level, ql == NC.NetworkConnectivityLevel.InternetAccess ? 3 : ql == NC.NetworkConnectivityLevel.ConstrainedInternetAccess ? 2 : ql == NC.NetworkConnectivityLevel.LocalAccess ? 1 : 0);
+                            if (kind == 2 && q.IsWlanConnectionProfile && ql != NC.NetworkConnectivityLevel.None) { try { name = q.WlanConnectionProfileDetails.GetConnectedSsid(); var sb = q.GetSignalBars(); if (sb.HasValue) bars = sb.Value; } catch { } }
+                        }
+                    }
+                }
+                catch { }
+                // проверка Windows (NCSI) иногда опаздывает: сеть есть, а «без интернета» — раз в 10 с спрашиваем сами, ждём не дольше 3 с
+                if (kind > 0 && level < 3)
+                    try
+                    {
+                        var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://www.msftconnecttest.com/connecttest.txt"); rq.Timeout = 3000; rq.ReadWriteTimeout = 3000; rq.AllowAutoRedirect = false;
+                        using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) if ((int)rs.StatusCode == 200) level = 3;
+                    }
+                    catch { }
+                live.NetVpn = vpn;
                 if (kind == 0 || level == 0)
                     foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
                     {
@@ -716,6 +789,14 @@ namespace FlowBar
                 live.NetKind = kind; live.NetLevel = kind == 0 ? 0 : level; live.NetBars = bars; live.NetName = name; connBusy = false;
             });
         }
+        // адаптер VPN: туннель, PPP или известные драйверы (Happ и sing-box — wintun; WARP; WireGuard; OpenVPN — TAP)
+        public static bool IsVpnAdapter(NetworkInterfaceType t, string text)
+        {
+            if (t == NetworkInterfaceType.Ppp) return true;
+            return System.Text.RegularExpressions.Regex.IsMatch(text ?? "", @"wintun|wireguard|\btap\b|tap-windows|\bvpn\b|openvpn|cloudflare|warp|sing-?box|happ|tailscale|zerotier|nordlynx|fortinet|anyconnect|outline|amnezia|v2ray|xray|tun2", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+        // виртуальные адаптеры, которые не подключение и не VPN: виртуальные машины, WSL
+        public static bool IsVirtualAdapter(string desc) { return System.Text.RegularExpressions.Regex.IsMatch(desc ?? "", @"hyper-v|vethernet|vmware|virtualbox|virtual switch|wsl|bluetooth", System.Text.RegularExpressions.RegexOptions.IgnoreCase); }
         public static string ConnKind(int kind) { return kind == 1 ? "Ethernet" : kind == 2 ? "Wi-Fi" : kind == 3 ? "Сотовая сеть" : kind == 0 ? "Нет подключения" : "Проверка сети…"; }
         public static string ConnAccess(int kind, int level) { return kind < 0 ? "проверка…" : kind == 0 ? "нет сети" : level >= 3 ? "есть интернет" : level == 2 ? "интернет ограничен" : "без интернета"; }
 
@@ -873,7 +954,15 @@ namespace FlowBar
         }
 
         static DateTime mediaBusySince, silentSince = DateTime.MinValue; static MC.GlobalSystemMediaTransportControlsSession hooked;
-        static bool mediaAgain;
+        static bool mediaAgain, wantPlaying; static bool? titleWas; static DateTime titleAt, wantUntil;
+        // null — окна Spotify нет (свёрнут в трей): остаётся состояние от Windows
+        static bool? SpotifyTitlePlaying()
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("Spotify"))
+                try { var t = p.MainWindowTitle; if (!string.IsNullOrEmpty(t)) return !t.StartsWith("Spotify", StringComparison.OrdinalIgnoreCase) || t.Contains(" - "); }
+                catch { } finally { p.Dispose(); }
+            return null;
+        }
         static void KickMedia() { var p = Primary; if (p != null) p.Dispatcher.BeginInvoke(new Action(() => { if (mediaBusy) mediaAgain = true; else p.UpdateMedia(); })); } // событие во время обновления — ещё одно сразу после него
         async void UpdateMedia()
         {
@@ -890,7 +979,13 @@ namespace FlowBar
                 spotifyUp = System.Diagnostics.Process.GetProcessesByName("Spotify").Length > 0;
                 if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
                 var info = ss.GetPlaybackInfo();
-                s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; bool smtcPlaying = s.Playing;
+                // Spotify сообщает Windows о паузе и воспроизведении через 5–10 с, а заголовок окна меняет сразу: «Spotify Premium» — пауза, «Исполнитель - трек» — играет
+                bool? byTitle = IsSpotify(ss.SourceAppUserModelId) ? SpotifyTitlePlaying() : null;
+                if (byTitle != titleWas) { titleWas = byTitle; titleAt = DateTime.Now; }
+                if (byTitle == true) s.Playing = true;
+                else if (byTitle == false && s.Playing && (DateTime.Now - titleAt).TotalSeconds < 15) s.Playing = false; // дольше — играет на другом устройстве (ниже)
+                if (DateTime.Now < wantUntil) { if (byTitle == wantPlaying) wantUntil = DateTime.MinValue; else s.Playing = wantPlaying; } // нажали ▶/⏸ в FlowBar — сразу, пока плеер не подтвердил
                 s.CanPrev = info.Controls.IsPreviousEnabled; s.CanNext = info.Controls.IsNextEnabled; s.CanToggle = info.Controls.IsPlayPauseToggleEnabled || info.Controls.IsPlayEnabled || info.Controls.IsPauseEnabled;
                 s.CanSeek = info.Controls.IsPlaybackPositionEnabled; s.MediaError = null;
                 bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => (uint)pr.Id))) : null;
@@ -901,7 +996,7 @@ namespace FlowBar
                 {
                     var tl = ss.GetTimelineProperties();
                     double dur = (tl.EndTime - tl.StartTime).TotalSeconds, pos = tl.Position.TotalSeconds;
-                    if (s.Playing) pos += (DateTimeOffset.Now - tl.LastUpdatedTime).TotalSeconds;
+                    if (smtcPlaying) pos += (DateTimeOffset.Now - tl.LastUpdatedTime).TotalSeconds;
                     s.Dur = dur > 1 ? dur : double.NaN; s.Pos = dur > 1 ? Math.Max(0, Math.Min(dur, pos)) : double.NaN;
                 }
                 catch { s.Pos = s.Dur = double.NaN; }
@@ -923,7 +1018,7 @@ namespace FlowBar
         static bool IsSpotify(string aumid) { return aumid != null && aumid.IndexOf("spotify", StringComparison.OrdinalIgnoreCase) >= 0; }
         static bool spotifyUp; // процесс Spotify запущен (сеанс в Windows появляется только после начала воспроизведения)
         static string SpotifyExe { get { var p = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Spotify", "Spotify.exe"); return File.Exists(p) ? p : null; } }
-        static void OpenSpotify() { try { if (SpotifyExe != null) System.Diagnostics.Process.Start(SpotifyExe); else System.Diagnostics.Process.Start("spotify:"); } catch (Exception ex) { Log(ex); } }
+        static void OpenSpotify() { try { Start(SpotifyExe ?? "spotify:"); } catch (Exception ex) { Log(ex); } }
         static MC.GlobalSystemMediaTransportControlsSession PickSession()
         {
             if (mediaMgr == null) return null;
@@ -948,7 +1043,9 @@ namespace FlowBar
             {
                 switch (cmd)
                 {
-                    case "toggle": await s.TryTogglePlayPauseAsync(); break;
+                    case "toggle":
+                        { var l = live; l.Playing = wantPlaying = !l.Playing; l.Remote = false; wantUntil = DateTime.Now.AddSeconds(3); All(b => { b.Render(); if (b.panelTick != null) b.panelTick(); }); }
+                        await s.TryTogglePlayPauseAsync(); break;
                     case "next": await s.TrySkipNextAsync(); break;
                     case "prev": await s.TrySkipPreviousAsync(); break;
                     case "seek": var tl = s.GetTimelineProperties(); await s.TryChangePlaybackPositionAsync((tl.StartTime + TimeSpan.FromTicks((long)((tl.EndTime - tl.StartTime).Ticks * Math.Max(0, Math.Min(1, frac))))).Ticks); break;
@@ -991,7 +1088,42 @@ namespace FlowBar
                 catch (Exception ex) { if (renderErrors.Add(ex.GetType().Name + ex.Message)) Log(ex); }
         }
         Action panelTick; // живое обновление открытой карточки
+        Action panelBuild; double cx0Back = double.NaN; // карточка, к которой ведёт стрелка «назад», и где её показать
         static bool watchRetry;
+        // Пуск и поиск Windows — окно SearchHost (StartMenuExperienceHost в прежних сборках) — по центру над нажатой кнопкой, а не у края экрана.
+        // Windows помнит место окна, поэтому ставим его до открытия и поправляем ещё несколько раз, пока оно появляется.
+        void ShellOver(FrameworkElement tile, params byte[] keys)
+        {
+            bool opening = !(shellAtDown && lastShellKeys == string.Join(",", keys)); // повторное нажатие закрывает — не двигаем
+            if (opening && tile != null) PlaceShell(tile);
+            ShellToggle(keys);
+            if (!opening || tile == null) return;
+            int n = 0; var t = new DispatcherTimer(DispatcherPriority.Send) { Interval = TimeSpan.FromMilliseconds(16) }; // Windows ставит окно на своё место в момент открытия — поправляем сразу, пока не видно скачка
+            t.Tick += (o, e) => { PlaceShell(tile); if (++n >= 50) t.Stop(); };
+            t.Start();
+        }
+        public static void PlaceStartNow() { var p = Primary; if (p != null && p.startEl != null) p.PlaceShell(p.startEl); } // и клавиша Win открывает Пуск над кнопкой
+        void PlaceShell(FrameworkElement tile)
+        {
+            try
+            {
+                if (!tile.IsVisible) return;
+                var a = tile.PointToScreen(new Point(0, 0)); var b2 = tile.PointToScreen(new Point(tile.ActualWidth, tile.ActualHeight)); // физические пиксели
+                double cx = (a.X + b2.X) / 2, gap = 8 * MonScale; var m = scr.Bounds;
+                for (var h = N.FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null); h != IntPtr.Zero; h = N.FindWindowEx(IntPtr.Zero, h, "Windows.UI.Core.CoreWindow", null))
+                {
+                    uint pid; N.GetWindowThreadProcessId(h, out pid); var exe = ExePath(pid);
+                    var name = exe == null ? "" : System.IO.Path.GetFileName(exe).ToLowerInvariant();
+                    if (name != "searchhost.exe" && name != "startmenuexperiencehost.exe") continue;
+                    N.RECT r; if (!N.GetWindowRect(h, out r)) continue;
+                    int w = r.R - r.L, hh = r.B - r.T; if (w < 200 || hh < 200) continue;
+                    int x = (int)Math.Round(Math.Max(m.Left + gap, Math.Min(m.Right - gap - w, cx - w / 2.0)));
+                    int y = (int)Math.Round(IsTop ? b2.Y + gap : a.Y - gap - hh); y = Math.Max(m.Top, Math.Min(m.Bottom - hh, y));
+                    if (x != r.L || y != r.T) N.SetWindowPos(h, IntPtr.Zero, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010); // без смены размера, порядка и фокуса
+                }
+            }
+            catch (Exception ex) { Log(ex); }
+        }
         void Tick()
         {
             try
@@ -999,7 +1131,7 @@ namespace FlowBar
                 if (Cur.Blur != 0) UpdateRegion(); // стеклянная тема: подложка снова сразу под панелью, смена доступности стекла видна сразу; подложка стекла — снова сразу под панелью, если другое окно встало между ними
                 if (primary)
                 {
-                    ticks++;
+                    ticks++; CheckHide("опрос");
                     if (DateTime.Now < peekUntil && TrayOpen()) peekUntil = DateTime.Now.AddSeconds(3); // пока открыты скрытые значки — панель Windows не прячем
                     bool peek = DateTime.Now < peekUntil;
                     if (HideTb && !peek) SetTaskbar(false);
@@ -1018,11 +1150,11 @@ namespace FlowBar
                     }                    if (ticks % 5 == 3 && WatchOk && (Program.Watch == null || Program.Watch.HasExited))
                     {
                         WatchOk = Program.StartWatch(); // сторож пропал — перезапускаем; не вышло — возвращаем панель Windows
-                        if (!WatchOk) { Taskbar.Restore(false, false); All(b => { b.reserveKey = null; b.Place(); }); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); }
+                        if (!WatchOk) { All(b => { b.reserveKey = null; b.Place(); }); Taskbar.Restore(false, false); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); }
                     }
                     if (ticks % 600 == 0) pathCache.Clear(); // id процессов переиспользуются
                 }
-                Fullscreen(); RefreshApps(); Render();
+                Fullscreen(); RefreshApps(); Render(); EnsureWorkArea();
                 if (panelTick != null) panelTick();
             }
             catch (Exception ex) { Log(ex); }
@@ -1064,16 +1196,19 @@ namespace FlowBar
             const string ns = "xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' ";
             // поверхность меню: тень — отдельный слой позади, без эффекта на тексте
             Func<string, string> surface = inner =>
-                "<Grid Margin='4,2,14,16'>" +
+                "<Grid Margin='4,2,14,16'><Grid.RenderTransform><TranslateTransform/></Grid.RenderTransform><Grid.Triggers><EventTrigger RoutedEvent='FrameworkElement.Loaded'><BeginStoryboard><Storyboard>" +
+                "<DoubleAnimation Storyboard.TargetProperty='Opacity' From='0' To='1' Duration='0:0:0.11'/><DoubleAnimation Storyboard.TargetProperty='RenderTransform.Y' From='" + (IsTop ? "-6" : "6") + "' To='0' Duration='0:0:0.16' DecelerationRatio='0.8'/>" +
+                "</Storyboard></BeginStoryboard></EventTrigger></Grid.Triggers>" +
                 "<Border CornerRadius='10' Background='" + bg + "'><Border.Effect><DropShadowEffect BlurRadius='16' ShadowDepth='4' Direction='270' Opacity='0.35'/></Border.Effect></Border>" +
                 "<Border CornerRadius='10' Background='" + bg + "' BorderBrush='" + edge + "' BorderThickness='1' Padding='4'>" + inner + "</Border></Grid>";
             var menuT = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='ContextMenu'>" +
                 surface("<ScrollViewer VerticalScrollBarVisibility='Auto'><ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/></ScrollViewer>") + "</ControlTemplate>");
             var itemT = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='MenuItem'>" +
                 "<Grid SnapsToDevicePixels='True'>" +
-                "<Border Name='Bd' CornerRadius='6' Background='Transparent' Padding='8,6,10,6' MinWidth='180'><Grid>" +
-                "<Grid.ColumnDefinitions><ColumnDefinition Width='22'/><ColumnDefinition Width='*'/><ColumnDefinition Width='18'/></Grid.ColumnDefinitions>" +
+                "<Border Name='Bd' CornerRadius='7' Background='Transparent' Padding='9,7,10,7' MinWidth='200'><Grid>" +
+                "<Grid.ColumnDefinitions><ColumnDefinition Width='27'/><ColumnDefinition Width='*'/><ColumnDefinition Width='18'/></Grid.ColumnDefinitions>" +
                 "<TextBlock Name='Chk' Text='&#xE73E;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='12' Foreground='" + acc + "' VerticalAlignment='Center' Visibility='Collapsed'/>" +
+                "<ContentPresenter Name='Ico' ContentSource='Icon' VerticalAlignment='Center' HorizontalAlignment='Left' Opacity='0.78'/>" +
                 "<ContentPresenter Grid.Column='1' ContentSource='Header' RecognizesAccessKey='True' VerticalAlignment='Center'/>" +
                 "<TextBlock Name='Arrow' Grid.Column='2' Text='&#xE76C;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='9' Opacity='0.7' HorizontalAlignment='Right' VerticalAlignment='Center' Visibility='Collapsed'/>" +
                 "</Grid></Border>" +
@@ -1082,7 +1217,8 @@ namespace FlowBar
                 surface("<ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/>") + "</Popup>" +
                 "</Grid><ControlTemplate.Triggers>" +
                 "<Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Bd' Property='Background' Value='" + hover + "'/></Trigger>" +
-                "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Chk' Property='Visibility' Value='Visible'/></Trigger>" +
+                "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Chk' Property='Visibility' Value='Visible'/><Setter TargetName='Ico' Property='Visibility' Value='Collapsed'/></Trigger>" +
+                "<Trigger Property='Tag' Value='danger'><Setter Property='Foreground' Value='#F0705F'/></Trigger>" +
                 "<Trigger Property='Role' Value='SubmenuHeader'><Setter TargetName='Arrow' Property='Visibility' Value='Visible'/></Trigger>" +
                 "<Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger>" +
                 "</ControlTemplate.Triggers></ControlTemplate>");
@@ -1094,13 +1230,74 @@ namespace FlowBar
             mi.Setters.Add(new Setter(Control.TemplateProperty, itemT)); mi.Setters.Add(new Setter(Control.ForegroundProperty, Frozen(CardFg, 255)));
             mi.Setters.Add(new Setter(Control.FontFamilyProperty, font)); mi.Setters.Add(new Setter(Control.FontSizeProperty, 13.0));
             var sep = new Style(typeof(Separator));
-            sep.Setters.Add(new Setter(Control.TemplateProperty, System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='Separator'><Border Height='1' Margin='10,4,10,4' Background='" + edge + "'/></ControlTemplate>")));
+            sep.Setters.Add(new Setter(Control.TemplateProperty, System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='Separator'><Border Height='1' Margin='9,5,9,5' Background='" + edge + "'/></ControlTemplate>")));
             var r = Application.Current.Resources;
             r[typeof(ContextMenu)] = cm; r[typeof(MenuItem)] = mi; r[MenuItem.SeparatorStyleKey] = sep;
         }
         static void RebuildAll() { ApplyAppTheme(); All(b => { b.ResetFit(true); b.Rebuild(); }); }
 
         // ---------- плитка ----------
+        // ---------- подсказка панели ----------
+        Window tipWin; Border tipBubble; TextBlock tipText; DispatcherTimer tipShowT, tipHideT; FrameworkElement tipFor; bool tipOn;
+        const double TipH = 130;
+        void TipEnsure()
+        {
+            if (tipWin != null) return;
+            tipText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxWidth = 320, LineHeight = 16 };
+            tipBubble = new Border { Child = tipText, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(9), Padding = new Thickness(10, 6, 10, 7), Opacity = 0, Margin = new Thickness(0, 10, 0, 10),
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = IsTop ? VerticalAlignment.Top : VerticalAlignment.Bottom, RenderTransform = new TranslateTransform(),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Direction = 270, Opacity = 0.3 } };
+            var host = new Grid(); host.Children.Add(tipBubble);
+            tipWin = new Window { WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize,
+                Width = scr.Bounds.Width / Scale, Height = TipH, Content = host, FontFamily = FontFamily, IsHitTestVisible = false, Focusable = false };
+            tipWin.SourceInitialized += (s, e) => { var ph = new WindowInteropHelper(tipWin).Handle; N.SetWindowLongPtr(ph, -20, new IntPtr(N.GetWindowLongPtr(ph, -20).ToInt64() | 0x08000000 | 0x80 | 0x20)); }; // не забирает фокус и пропускает мышь
+            Closed += (s, e) => { if (tipWin != null) { tipWin.Close(); tipWin = null; } };
+            tipWin.Show();
+        }
+        void TipShow(FrameworkElement el)
+        {
+            var text = el.ToolTip as string;
+            if (string.IsNullOrEmpty(text) || dragging) { TipHide(true); return; }
+            tipFor = el; if (tipHideT != null) tipHideT.Stop(); if (tipShowT != null) tipShowT.Stop();
+            if (tipOn) { TipMove(el, text); return; }
+            tipShowT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+            tipShowT.Tick += (s, e) => { tipShowT.Stop(); if (tipFor == el && el.IsMouseOver && !dragging && preview == null) TipMove(el, el.ToolTip as string ?? text); };
+            tipShowT.Start();
+        }
+        void TipMove(FrameworkElement el, string text)
+        {
+            TipEnsure();
+            tipBubble.Background = Frozen(CardBg, 255); tipBubble.BorderBrush = CardEdge; tipText.Foreground = Frozen(CardFg, 255);
+            double sc = Scale; PlaceWin(tipWin, scr.Bounds.Left / sc, IsTop ? CapBottom - 4 : CapTop - TipH + 4);
+            tipText.Text = text; tipText.Measure(new Size(320, double.PositiveInfinity));
+            double w = Math.Ceiling(tipText.DesiredSize.Width) + 22;
+            double cx = el.PointToScreen(new Point(el.ActualWidth / 2, 0)).X / sc - scr.Bounds.Left / sc;
+            double x = Math.Round(Math.Max(6, Math.Min(tipWin.Width - w - 6, cx - w / 2)));
+            var tt = (TranslateTransform)tipBubble.RenderTransform;
+            if (!tipOn || !Motion)
+            {
+                tt.BeginAnimation(TranslateTransform.XProperty, null); tipBubble.BeginAnimation(WidthProperty, null); tt.X = x; tipBubble.Width = w;
+                tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(Motion ? 120 : 0)));
+            }
+            else
+            {
+                var ease = new CubicEase { EasingMode = EasingMode.EaseOut }; var dur = TimeSpan.FromMilliseconds(190);
+                tt.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(x, dur) { EasingFunction = ease });
+                tipBubble.BeginAnimation(WidthProperty, new DoubleAnimation(w, dur) { EasingFunction = ease });
+                tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(80)));
+            }
+            tipOn = true;
+        }
+        void TipHide(bool now)
+        {
+            if (tipShowT != null) tipShowT.Stop(); if (tipHideT != null) tipHideT.Stop();
+            if (!tipOn) { tipFor = null; return; }
+            Action hide = () => { tipOn = false; tipFor = null; if (tipBubble != null) tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(Motion ? 110 : 0))); };
+            if (now) { hide(); return; }
+            tipHideT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) }; // переход на соседний значок не гасит подсказку
+            tipHideT.Tick += (s, e) => { tipHideT.Stop(); hide(); };
+            tipHideT.Start();
+        }
         Press Tile(UIElement content, string tip, Action click, Action<ContextMenu> menu, bool wide = false)
         {
             double th = TileH;
@@ -1114,8 +1311,22 @@ namespace FlowBar
             if (tip != null) { b.ToolTip = tip; System.Windows.Automation.AutomationProperties.SetName(b, tip.Split('\n')[0]); }
             b.MouseEnter += (s, e) => Fade(b, Lift(b.Base, 0x16), 120);
             b.MouseLeave += (s, e) => Fade(b, b.Base, 140);
+            // подсказка — своя, одна на панель: перетекает от значка к значку (стандартная остаётся у плиток в карточке «Ещё»)
+            b.MouseEnter += (s, e) => { bool mine = Window.GetWindow(b) == this; ToolTipService.SetIsEnabled(b, !mine); if (mine) TipShow(b); };
+            b.MouseLeave += (s, e) => TipHide(false); b.PreviewMouseDown += (s, e) => TipHide(true);
             b.PreviewMouseLeftButtonDown += (s, e) => { shellAtDown = ShellFlyoutOpen(); Fade(b, Lift(b.Base, 0x2C), 60); };  // нажатие
-            b.MouseLeftButtonUp += (s, e) => { Fade(b, Lift(b.Base, 0x16), 120); e.Handled = true; anchor = b; anchorAt = DateTime.Now; if (click != null) click(); };
+            b.MouseLeftButtonUp += (s, e) =>
+            {
+                Fade(b, Lift(b.Base, 0x16), 120); e.Handled = true; anchor = b; anchorAt = DateTime.Now; if (click == null) return;
+                // открыт Пуск или поиск: панель не забирает фокус, поэтому он сам не закрывается, а Windows не даёт вывести окно программы — закрываем и действуем следом
+                if (shellAtDown && !b.ShellKey && ShellFlyoutOpen())
+                {
+                    Keys(0x1B); int n = 0; var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+                    t.Tick += (o2, e2) => { if (++n < 12 && ShellFlyoutOpen()) return; t.Stop(); anchor = b; anchorAt = DateTime.Now; click(); };
+                    t.Start();
+                }
+                else click();
+            };
             if (menu != null) b.MouseRightButtonUp += (s, e) =>
             {
                 e.Handled = true;
@@ -1338,7 +1549,7 @@ namespace FlowBar
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
                             title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
                             artist.Text = s.HasMedia ? (s.Remote ? "На другом устройстве" : string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
-                            prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN);
+                            prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN); prog.Squeeze(s.HasMedia && !s.Playing);
                             if (ring != null) ring.Set(s.HasMedia && !double.IsNaN(s.Dur) && s.Dur > 0 ? s.Pos / s.Dur : 0, "");
                             if (first || s.Cover != shown)
                             {
@@ -1523,8 +1734,21 @@ namespace FlowBar
                     {
                         var g = G("");
                         var t = Tile(g, "Корзина", act(() => Launch("shell:RecycleBinFolder")),
-                            menu(m => m.Items.Add(Item("Очистить корзину…", () => { N.SHEmptyRecycleBin(hwnd, null, 0); UpdateBin(); })))); // Windows сам спросит подтверждение
-                        if (live) { t.AllowDrop = true; t.Drop += BinDrop; }
+                            menu(m => { m.Items.Add(Item("Открыть корзину", () => Launch("shell:RecycleBinFolder"))); m.Items.Add(Item("Очистить корзину…", () => { N.SHEmptyRecycleBin(hwnd, null, 0); UpdateBin(); })); m.Items.Add(Item("Спрашивать перед удалением", () => { cfg["binConfirm"] = C("binConfirm", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("binConfirm", "1") == "1")); })); // Windows сам спросит подтверждение
+                        if (live)
+                        {
+                            t.AllowDrop = true; t.Drop += BinDrop;
+                            // файлы над корзиной: подсветка и подсказка, сколько объектов удалится
+                            t.DragEnter += (o, e) =>
+                            {
+                                var fs = e.Data.GetData(DataFormats.FileDrop) as string[]; if (fs == null) return;
+                                Fade(t, Color.FromArgb(0x66, AccentColor.R, AccentColor.G, AccentColor.B), 100); g.Opacity = 1;
+                                t.ToolTip = "Удалить в корзину: " + fs.Length + (fs.Length == 1 ? " объект" : fs.Length < 5 ? " объекта" : " объектов"); tipOn = true; TipMove(t, (string)t.ToolTip);
+                            };
+                            t.DragOver += (o, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) { e.Effects = DragDropEffects.Move; e.Handled = true; } };
+                            t.DragLeave += (o, e) => { Fade(t, t.Base, 140); TipHide(true); };
+                            t.Drop += (o, e) => { Fade(t, t.Base, 140); TipHide(true); };
+                        }
                         up.Add(() =>
                         {
                             g.Opacity = s.BinItems > 0 ? 1 : 0.55; // пустая корзина — приглушённый значок
@@ -1534,7 +1758,7 @@ namespace FlowBar
                     }
                 case "tray": return Tile(G(""), "Показать трей Windows на 15 секунд", act(TogglePeek), menu(null));
                 case "quick": return Tile(G(""), "Быстрые переключатели: Wi-Fi, Bluetooth, звук, яркость", act(ShowQuick), menu(m => m.Items.Add(Item("Быстрые настройки Windows (Win+A)", () => ShellToggle(0x5B, 0x41)))));
-                case "notif": return Tile(G(""), "Уведомления и календарь Windows (Win+N)", act(() => ShellToggle(0x5B, 0x4E)), menu(null));
+                case "notif": return Tile(G(""), "Уведомления и календарь Windows (Win+N)", act(() => ShellToggle(0x5B, 0x4E)), menu(null)).Shell();
                 case "lang":
                     {
                         var lt = L("", 11.5 * f, true); lt.HorizontalAlignment = HorizontalAlignment.Center;
@@ -1595,7 +1819,7 @@ namespace FlowBar
                         var name = L("", 10 * f, false, 0.72); var pct = L("", 10.5 * f, true);
                         var top = new DockPanel { Width = bw }; if (v > 0) { DockPanel.SetDock(pct, Dock.Right); top.Children.Add(pct); top.Children.Add(name); } // в мини-виде процент стоит у значка
                         UIElement content = v == 0 ? HS(mb, Mg(pct, 4 * f, 0, 4 * f, 0)) : HS(mb, Mg(VS(top, hit), 6 * f));
-                        var t = Tile(content, "Громкость", act(ShowQuick), menu(m => { m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Параметры звука", () => Launch("ms-settings:sound"))); }), true);
+                        var t = Tile(content, "Громкость", act(ShowQuick), menu(m => { var dm = new MenuItem { Header = "Устройство вывода" }; DeviceItems(dm); if (dm.Items.Count > 1) m.Items.Add(dm); m.Items.Add(Item("Звук при изменении громкости", () => { cfg["volBeep"] = C("volBeep", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("volBeep", "1") == "1")); m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Параметры звука", () => Launch("ms-settings:sound"))); }), true);
                         bool drag = false; var gray = new SolidColorBrush(Color.FromArgb(0x90, 0x90, 0x90, 0x98));
                         Func<MouseEventArgs, float> at = e => (float)Math.Max(0, Math.Min(1, e.GetPosition(bar).X / bar.Width));
                         if (live)
@@ -1603,8 +1827,8 @@ namespace FlowBar
                             hit.PreviewMouseLeftButtonDown += (o, e) => dragTok = null; // ползунок, а не перестановка модуля
                             hit.MouseLeftButtonDown += (o, e) => { drag = true; hit.CaptureMouse(); var x = at(e); Audio.SetVolume(x); bar.Set(x, Accent, true); e.Handled = true; };
                             hit.MouseMove += (o, e) => { if (!drag) return; var x = at(e); Audio.SetVolume(x); bar.Set(x, Accent, true); };
-                            hit.MouseLeftButtonUp += (o, e) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); e.Handled = true; ReadVolume(); All(b => b.Render()); };
-                            t.MouseWheel += (o, e) => { if (double.IsNaN(s.Vol)) return; Audio.SetVolume((float)Math.Max(0, Math.Min(1, s.Vol + (e.Delta > 0 ? 0.02 : -0.02)))); ReadVolume(); All(b => b.Render()); e.Handled = true; };
+                            hit.MouseLeftButtonUp += (o, e) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); e.Handled = true; ReadVolume(); All(b => b.Render()); VolBeep(); };
+                            t.MouseWheel += (o, e) => { if (double.IsNaN(s.Vol)) return; Audio.SetVolume((float)Math.Max(0, Math.Min(1, s.Vol + (e.Delta > 0 ? 0.02 : -0.02)))); ReadVolume(); All(b => b.Render()); VolBeep(); e.Handled = true; };
                         }
                         up.Add(() =>
                         {
@@ -1640,7 +1864,7 @@ namespace FlowBar
                             name.Text = k > 0 ? (string.IsNullOrEmpty(s.NetName) ? ConnKind(k) : s.NetName) : ConnKind(k);
                             stat.Text = k > 0 ? ConnKind(k) + " · " + ConnAccess(k, s.NetLevel) : ConnAccess(k, s.NetLevel);
                             Warn(stat, limited ? 80 : 0);
-                            t.ToolTip = (k > 0 ? ConnKind(k) + (string.IsNullOrEmpty(s.NetName) ? "" : ": " + s.NetName) + (k == 2 && s.NetBars >= 0 ? ", сигнал " + s.NetBars + " из 5" : "") + "\n" + char.ToUpper(ConnAccess(k, s.NetLevel)[0]) + ConnAccess(k, s.NetLevel).Substring(1) : ConnKind(k))
+                            t.ToolTip = (k > 0 ? ConnKind(k) + (s.NetVpn ? " + VPN" : "") + (string.IsNullOrEmpty(s.NetName) ? "" : ": " + s.NetName) + (k == 2 && s.NetBars >= 0 ? ", сигнал " + s.NetBars + " из 5" : "") + "\n" + char.ToUpper(ConnAccess(k, s.NetLevel)[0]) + ConnAccess(k, s.NetLevel).Substring(1) : ConnKind(k))
                                 + "\nКлик — карточка сети · ПКМ — параметры";
                         });
                         return t;
@@ -1678,20 +1902,18 @@ namespace FlowBar
             }
             return null;
         }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct SHFILEOPSTRUCT { public IntPtr hwnd; public uint wFunc; [MarshalAs(UnmanagedType.LPWStr)] public string pFrom; [MarshalAs(UnmanagedType.LPWStr)] public string pTo; public ushort fFlags; public bool fAnyOperationsAborted; public IntPtr hNameMappings; [MarshalAs(UnmanagedType.LPWStr)] public string lpszProgressTitle; }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
+        // файлы и папки, брошенные на «Корзину»: одно обычное подтверждение Windows на всю группу; только в Корзину — удаление можно отменить (Ctrl+Z в Проводнике)
         void BinDrop(object sender, DragEventArgs e)
         {
-            var files = e.Data.GetData(DataFormats.FileDrop) as string[]; if (files == null) return;
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[]; if (files == null || files.Length == 0) return;
             e.Handled = true; // не закреплять на панели
-            foreach (var f in files)
-                try
-                {
-                    // в корзину, с обычным подтверждением Windows — удаление можно отменить
-                    if (Directory.Exists(f)) Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(f, Microsoft.VisualBasic.FileIO.UIOption.AllDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-                    else Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(f, Microsoft.VisualBasic.FileIO.UIOption.AllDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex) { MessageBox.Show(ex.Message, "FlowBar"); }
-            UpdateBin();
+            var op = new SHFILEOPSTRUCT { wFunc = 3 /* FO_DELETE */, pFrom = string.Join("\0", files) + "\0\0", fFlags = (ushort)(0x40 /* FOF_ALLOWUNDO */ | (C("binConfirm", "1") == "1" ? 0 : 0x10 /* FOF_NOCONFIRMATION */)) };
+            int rc = SHFileOperation(ref op);
+            if (rc != 0 && rc != 1223 && !op.fAnyOperationsAborted) Notify("Корзина", "Не удалось удалить (код " + rc + ")", true);
+            UpdateBin(); All(b => b.Render());
         }
         // значок сервиса ИИ: Claude — восьмилучевая звезда, Codex — символ кода в круге
         // значок модуля ИИ на цветной скруглённой плитке, как значок приложения
@@ -2261,8 +2483,8 @@ namespace FlowBar
             KeyboardNavigation.SetTabNavigation(root, KeyboardNavigationMode.Cycle);
 
             startLogo = new StartLogo();
-            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellToggle(0x5B), null); // в ряду: его можно поставить между модулями
-            searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellToggle(0x5B, 0x53), null) : null;
+            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), null); ((Press)startEl).ShellKey = true; // в ряду: его можно поставить между модулями
+            searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellOver(searchEl, 0x5B, 0x53), null) : null; if (searchEl != null) ((Press)searchEl).ShellKey = true;
             strip = new StackPanel { Orientation = Orientation.Horizontal };
             stripScroll = new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
             strip.SizeChanged += (s, e) => { if (e.WidthChanged) Fit(); }; // панель уже во всю ширину и не растёт — ряд внутри меняется, следующий шаг сжатия нужен всё равно
@@ -2533,7 +2755,7 @@ namespace FlowBar
             ApplyWidth(); Fit();
             double sc = MonScale; var b = scr.Bounds; var wa = scr.WorkingArea;
             bool hidden = HideTb && DateTime.Now >= peekUntil;
-            Reserve();
+            Reserve(); EnsureWorkArea();
             double ch = root.ActualHeight > 0 ? root.ActualHeight : BarH;
             // физические пиксели монитора панели: размеры в DIP переводим его масштабом
             double x = b.Left + ((b.Width / sc - root.ActualWidth) / 2 - SM) * sc;
