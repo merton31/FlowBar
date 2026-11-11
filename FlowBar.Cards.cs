@@ -134,6 +134,21 @@ namespace FlowBar
             Press prevB = RoundBtn("\uE892", 40, false, () => MediaCmd("prev"), "Предыдущий трек"), nextB = RoundBtn("\uE893", 40, false, () => MediaCmd("next"), "Следующий трек");
             var ctr = HS(prevB, Mg(play, 10, 0, 10, 0), nextB);
             ctr.HorizontalAlignment = HorizontalAlignment.Center; ctr.Margin = new Thickness(0, 8, 0, 4); body.Children.Add(ctr);
+            // громкость самого плеера (его сеанс в микшере Windows); общая громкость не меняется
+            var volIcon = G("", 14); volIcon.Opacity = 0.7;
+            var vol = new Slider { Minimum = 0, Maximum = 100, Width = 250, VerticalAlignment = VerticalAlignment.Center, IsMoveToPointEnabled = true }; vol.Style = SliderSty();
+            System.Windows.Automation.AutomationProperties.SetName(vol, "Громкость плеера");
+            var volPct = Txt("", 11, false); volPct.Text = "0%"; volPct.Width = 40; volPct.Opacity = 0.7; volPct.TextAlignment = TextAlignment.Right;
+            var volRow = HS(volIcon, Mg(vol, 10, 0, 6, 0), volPct); volRow.HorizontalAlignment = HorizontalAlignment.Center; volRow.Margin = new Thickness(0, 4, 0, 2); volRow.Visibility = Visibility.Collapsed;
+            volRow.ToolTip = "Громкость только этого плеера — общая громкость Windows не меняется";
+            body.Children.Add(volRow);
+            var volSess = new List<Audio.MixerSession>(); bool volSync = false;
+            vol.ValueChanged += (o, e) =>
+            {
+                volPct.Text = Math.Round(e.NewValue) + "%"; volIcon.Text = e.NewValue < 1 ? "" : "";
+                if (volSync) return;
+                foreach (var x in volSess) { if (x.Muted && e.NewValue >= 1) x.SetMute(false); x.SetVolume((float)(e.NewValue / 100)); }
+            };
             var status = CardStatus(""); body.Children.Add(status);
             ImageSource shown = null; bool first = true; string shownTrack = null;
             Func<double, string> mmss = x => double.IsNaN(x) ? "—" : ((int)(x / 60)) + ":" + ((int)x % 60).ToString("00");
@@ -172,6 +187,15 @@ namespace FlowBar
                     cover.Child = s.Cover != null ? null : G("", 36);
                 }
                 status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count : "";
+                // сеансы звука процессов плеера: «Spotify.exe» → Spotify, «Издатель.Пакет!Spotify» → Spotify, «Chrome» → chrome.exe
+                var player = !s.HasMedia || string.IsNullOrEmpty(s.App) ? null : s.App.Contains("!") ? s.App.Substring(s.App.LastIndexOf('!') + 1) : System.IO.Path.GetFileNameWithoutExtension(s.App);
+                volSess = player == null ? new List<Audio.MixerSession>() : Audio.MixerSessions().Where(x => { var ep = ExePath(x.Pid); return ep != null && string.Equals(System.IO.Path.GetFileNameWithoutExtension(ep), player, StringComparison.OrdinalIgnoreCase); }).ToList();
+                volRow.Visibility = volSess.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                if (volSess.Count > 0 && !vol.IsMouseCaptureWithin)
+                {
+                    var v = volSess.Max(x => x.Muted ? 0 : x.Volume) * 100.0;
+                    if (Math.Abs(v - vol.Value) > 0.5) { volSync = true; vol.Value = v; volSync = false; } // громкость поменяли в самом плеере или в микшере
+                }
             };
             tick();
             ShowPanel("Музыка", tint, 394, null, tick);
