@@ -1963,7 +1963,8 @@ namespace FlowBar
             c.Children.Add(SSub("Клавиатура"));
             c.Children.Add(SHint("Ctrl+Alt+B — перейти на панель; стрелки и Tab — по элементам; Enter или Пробел — нажать; Shift+F10 — меню; Esc — вернуться в прежнее окно.\nAlt+T — задачи. Win+S — поиск Windows."));
             c.Children.Add(SSub("Панель Windows"));
-            c.Children.Add(CardActions(Btn("Вернуть панель Windows и выйти", () => { cfg["hideTaskbar"] = "0"; SaveCfg(); ExitWhy = "кнопка «Вернуть панель Windows и выйти»"; Application.Current.Shutdown(); })));
+            // только до следующего запуска: выход и так возвращает панель Windows; запись «не скрывать» оставляла обе панели при каждом запуске
+            c.Children.Add(CardActions(Btn("Вернуть панель Windows и выйти", () => { ExitWhy = "кнопка «Вернуть панель Windows и выйти»"; Application.Current.Shutdown(); })));
             var exe = Assembly.GetExecutingAssembly().Location;
             c.Children.Add(CardStatus("FlowBar · сборка от " + File.GetLastWriteTime(exe).ToString("d MMMM yyyy, HH:mm") + " · " + exe));
         }
