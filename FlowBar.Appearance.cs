@@ -291,6 +291,13 @@ namespace FlowBar
                     v => { cfg["material.diffusion"] = Math.Round(v).ToString(); refresh(); }, "Плотность стекла")));
             if (WantsGlass(Cur))
             {
+                var why = Backdrop.Why;
+                if (why != null)
+                {
+                    c.Children.Add(SHint("Стекло сейчас не работает: " + why + ". Панель рисуется сплошной поверхностью и станет стеклянной сама, когда Windows разрешит прозрачность."));
+                    var open = Btn("Параметры прозрачности Windows", () => Launch("ms-settings:colors")); open.HorizontalAlignment = HorizontalAlignment.Left; open.Margin = new Thickness(0, 6, 0, 4);
+                    c.Children.Add(open);
+                }
                 c.Children.Add(SetRow("Размытие фона", "Свой радиус меняет резкость реального фона под панелью и карточками.",
                     Seg(new[] { "Системное", "Свой радиус" }, GlassRadius < 0 ? 0 : 1, i =>
                     {

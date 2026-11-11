@@ -1170,6 +1170,7 @@ namespace FlowBar
                 if (primary && !DemoMode)
                 {
                     ticks++; CheckHide("опрос"); CheckReminders(); CheckUpdateQuietly();
+                    if (GlassOn != glassAllowed) { glassAllowed = GlassOn; All(b => b.ApplyStyle()); } // Windows включила или выключила прозрачность (настройка, энергосбережение)
                     if (DateTime.Now < peekUntil && TrayOpen()) peekUntil = DateTime.Now.AddSeconds(3); // пока открыты скрытые значки — панель Windows не прячем
                     bool peek = DateTime.Now < peekUntil;
                     if (HideTb && !peek) SetTaskbar(false);
@@ -2961,6 +2962,7 @@ namespace FlowBar
             UpdateRegion();
         }
         // стекло включено и доступно; иначе стеклянная тема рисуется читаемой сплошной поверхностью
+        static bool? glassAllowed;
         static bool GlassOn { get { return WantsGlass(Cur) && Backdrop.Available; } }
         static Brush CardFill { get { return PopupFill(GlassOn); } }
         static Brush CardEdge { get { return MaterialEdge(Cur, GlassOn, false); } }
