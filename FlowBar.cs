@@ -35,6 +35,7 @@ namespace FlowBar
         public delegate bool EnumProc(IntPtr h, IntPtr l);
         [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
         [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
@@ -1088,7 +1089,7 @@ namespace FlowBar
             SourceInitialized += OnInit;
             var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             t.Tick += (o, e) => Tick(); t.Start();
-            Closed += (o, e) => { t.Stop(); hoverT.Stop(); if (hideT != null) hideT.Stop(); Unreserve(); bars.Remove(this); };
+            Closed += (o, e) => { t.Stop(); ClosePreview(); if (hideT != null) hideT.Stop(); Unreserve(); bars.Remove(this); };
             hoverT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             hoverT.Tick += (o, e) => PreviewHoverCheck();
             // async-код WinRT запускаем только после старта диспетчера, иначе продолжения уйдут не в UI-поток
@@ -1890,7 +1891,8 @@ namespace FlowBar
             }
             else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
-            if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
+            if (ws.Count == 0 && Elsewhere(path).Count > 0)
+                tile.ToolTip = name + "\nОткрыто на другом мониторе\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
             tile.AllowDrop = true;
             // файл тянут над значком открытой программы — её окно сразу выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
@@ -2012,70 +2014,103 @@ namespace FlowBar
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
             ClosePreview(); previewPinned = pinned; TipHide(true);
-            const double BW = 220, BH = 130;
+            var windows = ws.Where(item => N.IsWindow(item.H)).Take(6).ToList();
+            if (windows.Count == 0) return;
+            const double padding = 8, margin = 4;
+            double available = scr.Bounds.Width / MonScale - 2 * (padding + 5);
+            double span = Math.Min(244, Math.Max(105, available));
+            int columns = Math.Min(windows.Count, Math.Max(1, (int)(available / span)));
+            int rows = (windows.Count + columns - 1) / columns;
+            double panelSpace = VerticalBar ? 0 : BarH;
+            double slotHeight = Math.Min(136, Math.Max(54, Math.Floor((scr.Bounds.Height / MonScale - panelSpace - 32) / rows - 46)));
             var w = new Window
             {
                 WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Topmost = true, ShowInTaskbar = false, ShowActivated = false,
-                SizeToContent = SizeToContent.WidthAndHeight, Background = Frozen(CardBg, 255), FontFamily = FontFamily,
-                Foreground = Frozen(CardFg, 255)
+                SizeToContent = SizeToContent.WidthAndHeight, AllowsTransparency = true, Background = Brushes.Transparent, Foreground = Frozen(CardFg, 255)
             };
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6) };
+            StylePopupText(w);
+            var row = new WrapPanel { Width = span * columns };
             var slots = new List<Tuple<Border, IntPtr>>();
-            foreach (var win in ws.Take(6))
+            foreach (var win in windows)
             {
                 var h = win.H;
+                var title = TitleOf(h);
+                if (string.IsNullOrWhiteSpace(title)) title = AppName(win.Path);
                 var close = Cross("Закрыть окно", () => { N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); ClosePreview(); });
-                var head = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
-                DockPanel.SetDock(close, Dock.Right); head.Children.Add(close); head.Children.Add(Txt(TitleOf(h), 12, false));
-                var slot = new Border { Width = BW, Height = BH };
-                var cell = new StackPanel { Width = BW, Margin = new Thickness(6), Background = Brushes.Transparent, Cursor = Cursors.Hand };
-                cell.Children.Add(head); cell.Children.Add(slot);
-                cell.MouseLeftButtonUp += (s, e) => { ClosePreview(); ActivateWin(h); };
+                close.MouseEnter += (s, e) => close.Background = Frozen(CardFg, 0x20);
+                close.MouseLeave += (s, e) => close.Background = Brushes.Transparent;
+                var head = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
+                DockPanel.SetDock(close, Dock.Right); head.Children.Add(close);
+                var image = IconFor(win.Path);
+                if (image != null)
+                {
+                    var icon = new Image { Source = image, Width = 16, Height = 16, Margin = new Thickness(0, 0, 7, 0) };
+                    DockPanel.SetDock(icon, Dock.Left); head.Children.Add(icon);
+                }
+                var label = Txt(title, 12, true); label.ToolTip = title; head.Children.Add(label);
+                var slot = new Border { Height = slotHeight, Margin = new Thickness(3), Background = Frozen(CardFg, 0x09) };
+                var frame = new Border { CornerRadius = new CornerRadius(7), BorderThickness = new Thickness(1), BorderBrush = Frozen(CardFg, 0x20), Child = slot };
+                var cell = Act(VS(head, frame), title, () => { ClosePreview(); ActivateWin(h); });
+                cell.Width = span - margin * 2; cell.Margin = new Thickness(margin); cell.Padding = new Thickness(7);
+                cell.CornerRadius = new CornerRadius(12); cell.BorderThickness = new Thickness(1);
+                var restFill = Frozen(CardFg, 0x0A); var restEdge = Frozen(CardFg, 0x16);
+                cell.Background = restFill; cell.BorderBrush = restEdge;
                 // файл над миниатюрой — это окно выходит вперёд
                 cell.AllowDrop = true; DispatcherTimer cs = null;
                 cell.DragEnter += (s, e) => { previewMiss = 0; if (cs != null) cs.Stop(); cs = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(90) }; cs.Tick += (o2, e2) => { cs.Stop(); ClosePreview(); ActivateWin(h); }; cs.Start(); };
                 cell.DragOver += (s, e) => { previewMiss = 0; e.Effects = DragDropEffects.None; e.Handled = true; }; cell.DragLeave += (s, e) => { if (cs != null) cs.Stop(); };
                 cell.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); ClosePreview(); } }; // средний клик — закрыть окно
-                cell.MouseEnter += (s, e) => cell.Background = Frozen(CardFg, 0x14); cell.MouseLeave += (s, e) => cell.Background = Brushes.Transparent;
+                cell.MouseEnter += (s, e) => { cell.Background = Frozen(AccentColor, 0x20); cell.BorderBrush = Frozen(AccentColor, 0x7A); };
+                cell.MouseLeave += (s, e) => { cell.Background = restFill; cell.BorderBrush = restEdge; };
                 row.Children.Add(cell); slots.Add(Tuple.Create(slot, h));
             }
-            w.Content = row;
+            var face = new Border { Child = row, Padding = new Thickness(padding), Background = CardFill, BorderBrush = CardEdge,
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(16) };
+            w.Content = face;
             w.SourceInitialized += (s, e) =>
             {
                 var ph = new WindowInteropHelper(w).Handle;
                 N.SetWindowLongPtr(ph, -20, new IntPtr(N.GetWindowLongPtr(ph, -20).ToInt64() | 0x08000000 | 0x80));
-                int round = 2; N.DwmSetWindowAttribute(ph, 33, ref round, 4); // скруглённые углы Windows 11
+            };
+            var previews = new List<Tuple<Border, IntPtr, N.POINT>>();
+            Action position = () =>
+            {
+                if (!w.IsVisible || !tile.IsLoaded) return;
+                double sc = VisualTreeHelper.GetDpi(w).DpiScaleX, gap = Math.Round(7 * sc);
+                double width = w.ActualWidth * sc, height = w.ActualHeight * sc;
+                var center = tile.PointToScreen(new Point(tile.ActualWidth / 2, tile.ActualHeight / 2));
+                var start = root.PointToScreen(new Point()); var end = root.PointToScreen(new Point(root.ActualWidth, root.ActualHeight));
+                var bounds = scr.Bounds;
+                double x = VerticalBar ? (LeftBar ? end.X + gap : start.X - width - gap) : center.X - width / 2;
+                double y = VerticalBar ? center.Y - height / 2 : IsTop ? end.Y + gap : start.Y - height - gap;
+                x = Math.Max(bounds.Left + 4, Math.Min(bounds.Right - 4 - width, x));
+                y = Math.Max(bounds.Top + 4, Math.Min(bounds.Bottom - 4 - height, y));
+                N.SetWindowPos(new WindowInteropHelper(w).Handle, IntPtr.Zero, (int)Math.Round(x), (int)Math.Round(y), 0, 0, 0x1 | 0x4 | 0x10);
+                foreach (var entry in previews)
+                {
+                    var o = entry.Item1.TranslatePoint(new Point(), w);
+                    double bw = entry.Item1.ActualWidth * sc, bh = entry.Item1.ActualHeight * sc;
+                    double k = Math.Min(1, Math.Min(bw / entry.Item3.X, bh / entry.Item3.Y));
+                    double dw = entry.Item3.X * k, dh = entry.Item3.Y * k;
+                    int left = (int)Math.Round(o.X * sc + (bw - dw) / 2), top = (int)Math.Round(o.Y * sc + (bh - dh) / 2);
+                    var props = new N.THUMBPROPS { Flags = 1 | 4 | 8, Dest = new N.RECT { L = left, T = top, R = left + (int)Math.Round(dw), B = top + (int)Math.Round(dh) }, Opacity = 255, Visible = 1 };
+                    N.DwmUpdateThumbnailProperties(entry.Item2, ref props);
+                }
             };
             w.Loaded += (s, e) =>
             {
-                var c = tile.TranslatePoint(new Point(tile.ActualWidth / 2, 0), this);
-                double left = Left + c.X - w.ActualWidth / 2, minL = scr.Bounds.Left / Scale, maxL = scr.Bounds.Right / Scale - w.ActualWidth;
-                if (VerticalBar) PlaceSideCard(w, tile, 6);
-                else PlaceWin(w, Math.Max(minL, Math.Min(maxL, left)), IsTop ? CapBottom + 6 : CapTop - w.ActualHeight - 6);
-                var ph = new WindowInteropHelper(w).Handle; double sc = Scale;
+                var ph = new WindowInteropHelper(w).Handle;
                 foreach (var sl in slots)
                 {
                     IntPtr th; if (N.DwmRegisterThumbnail(ph, sl.Item2, out th) != 0) continue;
                     thumbs.Add(th);
                     N.POINT sz; N.DwmQueryThumbnailSourceSize(th, out sz);
-                    if (sz.X <= 0 || sz.Y <= 0) continue;
-                    var o = sl.Item1.TranslatePoint(new Point(0, 0), w);
-                    double bw = BW * sc, bh = BH * sc, k = Math.Min(1, Math.Min(bw / sz.X, bh / sz.Y)), dw = sz.X * k, dh = sz.Y * k;
-                    int x = (int)(o.X * sc + (bw - dw) / 2), y = (int)(o.Y * sc + (bh - dh) / 2);
-                    var props = new N.THUMBPROPS { Flags = 1 | 4 | 8, Dest = new N.RECT { L = x, T = y, R = x + (int)dw, B = y + (int)dh }, Opacity = 255, Visible = 1 };
-                    N.DwmUpdateThumbnailProperties(th, ref props);
+                    if (sz.X > 0 && sz.Y > 0) previews.Add(Tuple.Create(sl.Item1, th, sz));
                 }
+                position();
             };
-            if (C("apps.stack", "0") == "1")
-                row.Loaded += (s, e) =>
-                {
-                    if (!Motion) return;
-                    for (int i = 0; i < row.Children.Count; i++)
-                    {
-                        var cell = (FrameworkElement)row.Children[i]; var slide = new TranslateTransform(); cell.RenderTransform = slide;
-                        slide.BeginAnimation(TranslateTransform.XProperty, SettingsMotion((row.Children.Count / 2.0 - i) * 12, 0, ExpressiveMotion ? 300 : 180));
-                    }
-                };
+            w.DpiChanged += (s, e) => w.Dispatcher.BeginInvoke(position, DispatcherPriority.Loaded);
+            Glass(w, face, face.CornerRadius.TopLeft, 0);
             preview = w; previewFor = tile; previewMiss = 0;
             w.Show(); hoverT.Start();
         }
@@ -2387,8 +2422,8 @@ namespace FlowBar
             };
             win("5-часовое окно", codex.Eff5(now), codex.R5, "HH:mm");
             win("Неделя", codex.EffW(now), codex.RW, "ddd, d MMM HH:mm");
-            var foot = Txt(((now - codex.Seen).TotalHours > 6 ? "Данные устарели: последняя запись Codex " : "По последней записи Codex: ") + codex.Seen.ToString("d MMM HH:mm") + ". Обновляется, когда вы работаете в Codex.", 10, false);
-            foot.TextWrapping = TextWrapping.Wrap; foot.Opacity = 0.6; foot.Margin = new Thickness(0, 12, 0, 0); body.Children.Add(foot);
+            var foot = CardStatus(((now - codex.Seen).TotalHours > 6 ? "Данные устарели. Последняя запись Codex " : "Последняя запись Codex ") + codex.Seen.ToString("d MMM HH:mm") + ". Обновляется во время работы в Codex.");
+            foot.Margin = new Thickness(0, 12, 0, 0); body.Children.Add(foot);
             ShowPanel("Codex", body, 320, null);
         }
 
@@ -2411,7 +2446,7 @@ namespace FlowBar
             if (panel != null) panel.Close();
             if (same) return; // повторный клик по виджету закрывает карточку
             width = Math.Max(320, width); // обычная ширина карточки 320–420
-            Color bg = CardBg, fg = CardFg;
+            Color fg = CardFg;
             const double Shadow = 18; // поле под тень вокруг карточки
             var w = new Window
             {
@@ -2419,10 +2454,11 @@ namespace FlowBar
                 ResizeMode = ResizeMode.NoResize, SizeToContent = SizeToContent.Height, Width = width + Shadow * 2, FontFamily = FontFamily,
                 Foreground = Frozen(fg, 255)
             };
+            StylePopupText(w);
             System.Windows.Documents.Typography.SetNumeralAlignment(w, FontNumeralAlignment.Tabular); UseCardScroll(w);
             // заголовок всегда виден, длинное содержимое прокручивается целиком (поле ввода и кнопки внизу тоже достижимы)
             var sp = new DockPanel();
-            var head = new TextBlock { Text = title.Length > 0 ? char.ToUpper(title[0]) + title.Substring(1) : title, FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), Margin = new Thickness(0, 0, 0, 12) };
+            var head = new TextBlock { Text = title.Length > 0 ? char.ToUpper(title[0]) + title.Substring(1) : title, FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = Display, Margin = new Thickness(0, 0, 0, 12) };
             FrameworkElement top = head;
             if (back != null)
             {
@@ -2436,11 +2472,11 @@ namespace FlowBar
             DockPanel.SetDock(top, Dock.Top); sp.Children.Add(top);
             sp.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Padding = new Thickness(0, 0, 6, 0), Margin = new Thickness(0, 0, -6, 0) });
             StyleInputs(sp, fg);
-            var face = new Border { Background = CardFill, CornerRadius = new CornerRadius(12), Padding = new Thickness(16), BorderThickness = new Thickness(1), BorderBrush = CardEdge, Child = sp };
+            var face = new Border { Background = CardFill, CornerRadius = new CornerRadius(16), Padding = new Thickness(16), BorderThickness = new Thickness(1), BorderBrush = CardEdge, Child = sp };
             // тень — отдельный слой позади: эффект на самом контейнере с текстом заставлял WPF рисовать буквы через промежуточный растр, и они мылились
-            var shade = new Border { CornerRadius = new CornerRadius(12), Background = Frozen(CardBg, 255), Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 24, ShadowDepth = 4, Direction = IsTop ? 90 : 270, Opacity = 0.32 } };
+            var shade = new Border { CornerRadius = face.CornerRadius, Background = Frozen(CardBg, 255), Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 24, ShadowDepth = 4, Direction = IsTop ? 90 : 270, Opacity = 0.32 } };
             var card = new Grid { Margin = new Thickness(Shadow), RenderTransform = new TranslateTransform() }; card.Children.Add(shade); card.Children.Add(face);
-            w.Content = card; Glass(w, face, 12, Shadow, shade); FadeClose(w, card, IsTop ? -8 : 8);
+            w.Content = card; Glass(w, face, face.CornerRadius.TopLeft, Shadow, shade); FadeClose(w, card, IsTop ? -8 : 8);
             { double sc0 = Scale, room0 = VerticalBar ? scr.Bounds.Height / sc0 - 20 : IsTop ? scr.Bounds.Bottom / sc0 - (CapBottom + 8) : CapTop - 8 - scr.Bounds.Top / sc0; w.MaxHeight = Math.Max(220, room0) + Shadow * 2; }
             bool closed = false;
             double cx0 = double.NaN;

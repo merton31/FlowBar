@@ -29,9 +29,9 @@ namespace FlowBar
         static readonly FontFamily Display = new FontFamily("Segoe UI Variable Display, Segoe UI");
 
         // ---------- единая структура карточки: основной показатель, подробности, действия, статус ----------
-        static TextBlock CardHead(string s) { var t = Txt(s, 12, true); t.Margin = new Thickness(0, 14, 0, 6); t.Opacity = 0.85; return t; }
+        static TextBlock CardHead(string s) { var t = Txt(s, 13, true); t.Margin = new Thickness(0, 16, 0, 6); return t; }
         static WrapPanel CardActions(params Border[] bs) { var w = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) }; foreach (var b in bs) { b.Margin = new Thickness(0, 0, 8, 8); w.Children.Add(b); } return w; }
-        static TextBlock CardStatus(string s) { var t = Txt(s, 10, false); t.TextWrapping = TextWrapping.Wrap; t.Opacity = 0.55; t.Margin = new Thickness(0, 6, 0, 0); return t; }
+        static TextBlock CardStatus(string s) { var t = Txt(s, 11.5, false); t.TextWrapping = TextWrapping.Wrap; t.LineHeight = 16; t.Opacity = 0.76; t.Margin = new Thickness(0, 6, 0, 0); return t; }
         static DockPanel KV(string k, string v, out TextBlock val)
         {
             var dp = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
@@ -2130,6 +2130,7 @@ namespace FlowBar
             }
             row.Children.Add(texts);
             var face = new Border { Background = CardFill, CornerRadius = new CornerRadius(14), Padding = new Thickness(14, 12, 10, 12), BorderThickness = new Thickness(1), BorderBrush = CardEdge, Child = row };
+            StylePopupText(w);
             // тень отдельным слоем — текст уведомления не проходит через промежуточный растр
             var shade = new Border { CornerRadius = new CornerRadius(14), Background = Frozen(CardBg, 255), Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 24, ShadowDepth = 4, Direction = IsTop ? 90 : 270, Opacity = 0.32 } };
             var card = new Grid { Margin = new Thickness(Shadow), RenderTransform = new TranslateTransform() }; card.Children.Add(shade); card.Children.Add(face);

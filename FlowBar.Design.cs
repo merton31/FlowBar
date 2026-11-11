@@ -1253,20 +1253,29 @@ namespace FlowBar
 
         // ---------- плитка ----------
         // ---------- подсказка панели ----------
-        Window tipWin; Border tipBubble; TextBlock tipText; DispatcherTimer tipShowT, tipHideT; FrameworkElement tipFor; bool tipOn;
-        const double TipH = 130;
+        Window tipWin; Border tipBubble; TextBlock tipTitle, tipDetail; DispatcherTimer tipShowT, tipHideT; FrameworkElement tipFor; bool tipOn;
+        Backdrop tipBackdrop;
+        Rect tipBackdropRect = Rect.Empty;
+        DateTime tipTrackingUntil;
+        const double TipH = 145, TipWidth = 340;
         void TipEnsure()
         {
             if (tipWin != null) return;
-            tipText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxWidth = 320, LineHeight = 16 };
-            tipBubble = new Border { Child = tipText, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(9), Padding = new Thickness(10, 6, 10, 7), Opacity = 0, Margin = new Thickness(0, 10, 0, 10),
-                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = IsTop ? VerticalAlignment.Top : VerticalAlignment.Bottom, RenderTransform = new TranslateTransform(),
-                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Direction = 270, Opacity = 0.3 } };
+            tipTitle = new TextBlock { FontSize = 13, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, LineHeight = 18 };
+            tipDetail = new TextBlock { FontSize = 11.5, TextWrapping = TextWrapping.Wrap, LineHeight = 16, Opacity = 0.8, Margin = new Thickness(0, 3, 0, 0) };
+            tipBubble = new Border { Child = VS(tipTitle, tipDetail), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Padding = new Thickness(12, 8, 12, 9), Opacity = 0,
+                HorizontalAlignment = HorizontalAlignment.Left, RenderTransform = new TranslateTransform() };
             var host = new Grid(); host.Children.Add(tipBubble);
             tipWin = new Window { WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize,
-                Width = scr.Bounds.Width / Scale, Height = TipH, Content = host, FontFamily = FontFamily, IsHitTestVisible = false, Focusable = false };
+                Width = 1, Height = 1, Content = host, IsHitTestVisible = false, Focusable = false };
+            StylePopupText(tipWin);
             tipWin.SourceInitialized += (s, e) => { var ph = new WindowInteropHelper(tipWin).Handle; N.SetWindowLongPtr(ph, -20, new IntPtr(N.GetWindowLongPtr(ph, -20).ToInt64() | 0x08000000 | 0x80 | 0x20)); }; // не забирает фокус и пропускает мышь
-            Closed += (s, e) => { if (tipWin != null) { tipWin.Close(); tipWin = null; } };
+            Closed += (s, e) =>
+            {
+                CompositionTarget.Rendering -= SyncTipBackdrop;
+                if (tipBackdrop != null) { tipBackdrop.Dispose(); tipBackdrop = null; }
+                if (tipWin != null) { tipWin.Close(); tipWin = null; }
+            };
             tipWin.Show();
         }
         void TipShow(FrameworkElement el)
@@ -1282,32 +1291,100 @@ namespace FlowBar
         void TipMove(FrameworkElement el, string text)
         {
             TipEnsure();
-            tipBubble.Background = Frozen(CardBg, 255); tipBubble.BorderBrush = CardEdge; tipText.Foreground = Frozen(CardFg, 255);
-            double sc = Scale; PlaceWin(tipWin, scr.Bounds.Left / sc, IsTop ? CapBottom - 4 : CapTop - TipH + 4);
-            tipText.Text = text; tipText.Measure(new Size(320, double.PositiveInfinity));
-            double w = Math.Ceiling(tipText.DesiredSize.Width) + 22;
-            double cx = el.PointToScreen(new Point(el.ActualWidth / 2, 0)).X / sc - scr.Bounds.Left / sc;
-            double x = Math.Round(Math.Max(6, Math.Min(tipWin.Width - w - 6, cx - w / 2)));
+            bool vertical = VerticalBar;
+            var bounds = scr.Bounds;
+            double sc = MonScale;
+            double screenW = bounds.Width / sc, screenH = bounds.Height / sc;
+            tipWin.Width = vertical ? Math.Min(TipWidth + 16, screenW) : screenW;
+            tipWin.Height = vertical ? screenH : TipH;
+            tipBubble.HorizontalAlignment = vertical && !LeftBar ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+            tipBubble.VerticalAlignment = !vertical && !IsTop ? VerticalAlignment.Bottom : VerticalAlignment.Top;
+            tipBubble.Margin = vertical ? new Thickness(0) : new Thickness(0, 7, 0, 7);
+            var start = root.PointToScreen(new Point()); var end = root.PointToScreen(new Point(root.ActualWidth, root.ActualHeight));
+            double left = !vertical ? bounds.Left : LeftBar ? end.X + 7 * sc : start.X - (tipWin.Width + 7) * sc;
+            double top = vertical ? bounds.Top : IsTop ? end.Y : start.Y - TipH * sc;
+            N.SetWindowPos(new WindowInteropHelper(tipWin).Handle, IntPtr.Zero, (int)Math.Round(left), (int)Math.Round(top), 0, 0, 0x1 | 0x4 | 0x10);
+            tipBubble.Background = CardFill; tipBubble.BorderBrush = CardEdge; tipWin.Foreground = Frozen(CardFg, 255);
+            int line = text.IndexOf('\n');
+            tipTitle.Text = line < 0 ? text : text.Substring(0, line);
+            tipDetail.Text = line < 0 ? "" : text.Substring(line + 1);
+            tipDetail.Visibility = line < 0 ? Visibility.Collapsed : Visibility.Visible;
+            var content = (FrameworkElement)tipBubble.Child;
+            content.Measure(new Size(Math.Max(30, Math.Min(tipWin.Width, TipWidth) - 28), double.PositiveInfinity));
+            double width = Math.Ceiling(content.DesiredSize.Width) + 26;
+            double height = Math.Ceiling(content.DesiredSize.Height) + 19;
+            var center = el.PointToScreen(new Point(el.ActualWidth / 2, el.ActualHeight / 2));
+            double span = vertical ? tipWin.Height : tipWin.Width, length = vertical ? height : width;
+            double cursor = vertical ? (center.Y - bounds.Top) / sc : (center.X - bounds.Left) / sc;
+            double offset = Math.Round(Math.Max(5, Math.Min(span - length - 5, cursor - length / 2)));
             var tt = (TranslateTransform)tipBubble.RenderTransform;
+            var axis = vertical ? TranslateTransform.YProperty : TranslateTransform.XProperty;
+            var otherAxis = vertical ? TranslateTransform.XProperty : TranslateTransform.YProperty;
+            tt.BeginAnimation(otherAxis, null); tt.SetValue(otherAxis, 0d);
             if (!tipOn || !Motion)
             {
-                tt.BeginAnimation(TranslateTransform.XProperty, null); tipBubble.BeginAnimation(WidthProperty, null); tt.X = x; tipBubble.Width = w;
+                tt.BeginAnimation(axis, null); tipBubble.BeginAnimation(WidthProperty, null); tt.SetValue(axis, offset); tipBubble.Width = width;
                 tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(Motion ? 120 : 0)));
             }
             else
             {
                 var ease = new CubicEase { EasingMode = EasingMode.EaseOut }; var dur = TimeSpan.FromMilliseconds(190);
-                tt.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(x, dur) { EasingFunction = ease });
-                tipBubble.BeginAnimation(WidthProperty, new DoubleAnimation(w, dur) { EasingFunction = ease });
+                tt.BeginAnimation(axis, new DoubleAnimation(offset, dur) { EasingFunction = ease });
+                tipBubble.BeginAnimation(WidthProperty, new DoubleAnimation(width, dur) { EasingFunction = ease });
                 tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(80)));
             }
             tipOn = true;
+            CompositionTarget.Rendering -= SyncTipBackdrop;
+            if (GlassOn)
+            {
+                tipTrackingUntil = DateTime.UtcNow.AddMilliseconds(260);
+                CompositionTarget.Rendering += SyncTipBackdrop;
+            }
+            else HideTipBackdrop();
+        }
+        void SyncTipBackdrop(object sender, EventArgs args)
+        {
+            if (!tipOn || tipWin == null || !GlassOn) { HideTipBackdrop(); return; }
+            if (DateTime.UtcNow >= tipTrackingUntil) CompositionTarget.Rendering -= SyncTipBackdrop;
+            if (tipBubble.ActualWidth < 1 || tipBubble.ActualHeight < 1) return;
+            if (tipBackdrop == null && (tipBackdrop = Backdrop.Create()) == null)
+            {
+                tipBubble.Background = PopupFill(false); tipBubble.BorderBrush = MaterialEdge(Cur, false, false);
+                HideTipBackdrop(); return;
+            }
+            var start = tipBubble.PointToScreen(new Point());
+            var end = tipBubble.PointToScreen(new Point(tipBubble.ActualWidth, tipBubble.ActualHeight));
+            var rect = new Rect(new Point(Math.Round(start.X), Math.Round(start.Y)), new Point(Math.Round(end.X), Math.Round(end.Y)));
+            if (rect == tipBackdropRect) return;
+            tipBackdropRect = rect;
+            double sc = VisualTreeHelper.GetDpi(tipBubble).DpiScaleX;
+            tipBackdrop.Set(new WindowInteropHelper(tipWin).Handle, (int)rect.X, (int)rect.Y, (int)rect.Width, (int)rect.Height,
+                tipBubble.CornerRadius.TopLeft * sc, true, GlassBlurPixels(sc));
+        }
+        void HideTipBackdrop()
+        {
+            CompositionTarget.Rendering -= SyncTipBackdrop;
+            tipBackdropRect = Rect.Empty;
+            if (tipBackdrop != null) tipBackdrop.Set(IntPtr.Zero, 0, 0, 0, 0, 0, false);
         }
         void TipHide(bool now)
         {
             if (tipShowT != null) tipShowT.Stop(); if (tipHideT != null) tipHideT.Stop();
-            if (!tipOn) { tipFor = null; return; }
-            Action hide = () => { tipOn = false; tipFor = null; if (tipBubble != null) tipBubble.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(Motion ? 110 : 0))); };
+            if (!tipOn && !now) { tipFor = null; return; }
+            Action hide = () =>
+            {
+                tipOn = false; tipFor = null;
+                CompositionTarget.Rendering -= SyncTipBackdrop;
+                if (tipBubble == null || now || !Motion)
+                {
+                    HideTipBackdrop();
+                    if (tipBubble != null) { tipBubble.BeginAnimation(OpacityProperty, null); tipBubble.Opacity = 0; }
+                    return;
+                }
+                var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(110));
+                fade.Completed += (s, e) => { if (!tipOn) HideTipBackdrop(); };
+                tipBubble.BeginAnimation(OpacityProperty, fade);
+            };
             if (now) { hide(); return; }
             tipHideT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) }; // переход на соседний значок не гасит подсказку
             tipHideT.Tick += (s, e) => { tipHideT.Stop(); hide(); };
@@ -2859,9 +2936,25 @@ namespace FlowBar
         }
         // стекло включено и доступно; иначе стеклянная тема рисуется читаемой сплошной поверхностью
         static bool GlassOn { get { return WantsGlass(Cur) && Backdrop.Available; } }
-        // материал карточек и уведомлений: в стеклянных темах — то же размытие, что у панели, полупрозрачная заливка и мягкая кромка
-        static Brush CardFill { get { return Frozen(CardBg, GlassOn ? (byte)0xB0 : (byte)0xF7); } }
-        static Brush CardEdge { get { return GlassOn ? (Brush)new LinearGradientBrush(Color.FromArgb(0x48, 255, 255, 255), Color.FromArgb(0x10, 255, 255, 255), 90) : Frozen(CardFg, 0x24); } }
+        static Brush CardFill { get { return PopupFill(GlassOn); } }
+        static Brush CardEdge { get { return MaterialEdge(Cur, GlassOn, false); } }
+        static Brush PopupFill(bool glass)
+        {
+            if (Material == "metal") return MaterialFill(Cur, false);
+            var color = MaterialTint(CardBg);
+            if (!glass) return Frozen(color, 255);
+            byte alpha = Material == "frost" ? (byte)0xDC : (byte)0xC8;
+            var top = Color.FromArgb((byte)(alpha + 12), (byte)Math.Min(255, color.R + 9), (byte)Math.Min(255, color.G + 9), (byte)Math.Min(255, color.B + 9));
+            return new LinearGradientBrush(top, Frozen(color, alpha).Color, 90);
+        }
+        static readonly FontFamily PopupFont = new FontFamily("Segoe UI Variable Text, Segoe UI");
+        static void StylePopupText(Window window)
+        {
+            window.FontFamily = PopupFont;
+            window.UseLayoutRounding = true;
+            window.SnapsToDevicePixels = true;
+            TextOptions.SetTextFormattingMode(window, TextFormattingMode.Display);
+        }
         void Glass(Window w, Border card, double radius, double margin, UIElement shade = null)
         {
             if (!GlassOn) return;
@@ -2870,7 +2963,12 @@ namespace FlowBar
             Action sync = () =>
             {
                 var h = new WindowInteropHelper(w).Handle; if (gone || h == IntPtr.Zero || card.ActualWidth < 1) return;
-                if (bd == null && (bd = Backdrop.Create()) == null) return;
+                if (bd == null && (bd = Backdrop.Create()) == null)
+                {
+                    card.Background = PopupFill(false); card.BorderBrush = MaterialEdge(Cur, false, false);
+                    if (shade != null) shade.Visibility = Visibility.Visible;
+                    return;
+                }
                 var src = PresentationSource.FromVisual(w); double sc = src == null ? 1 : src.CompositionTarget.TransformToDevice.M11; // масштаб окна карточки, а не панели
                 N.RECT r; N.GetWindowRect(h, out r); int m = (int)Math.Round(margin * sc);
                 bd.Set(h, r.L + m, r.T + m, (int)Math.Round(card.ActualWidth * sc), (int)Math.Round(card.ActualHeight * sc), radius * sc, w.IsVisible, GlassBlurPixels(sc));

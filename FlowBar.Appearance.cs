@@ -70,15 +70,20 @@ namespace FlowBar
             double strength = Clamp(C("material.diffusion", ""), 65, 0, 100) / 100;
             int alpha = Material == "frost" ? (int)(120 + strength * 100) : Material == "prism" ? (int)(40 + strength * 80) : c.A;
             if (WantsGlass(style) && !glass) alpha = 242;
-            Color tint;
-            if (TryReadColor(C("material.tint", ""), out tint))
-                c = Color.FromRgb((byte)((c.R * 3 + tint.R) / 4), (byte)((c.G * 3 + tint.G) / 4), (byte)((c.B * 3 + tint.B) / 4));
+            c = MaterialTint(c);
             byte a = (byte)Math.Round(alpha * Opac);
             if (WantsGlass(style) && !glass) a = (byte)Math.Max(224, (int)a);
             var bg = Color.FromArgb(a, c.R, c.G, c.B);
             if (!glass) return new SolidColorBrush(bg);
             var highlight = Color.FromArgb((byte)Math.Min(255, a + 20), (byte)Math.Min(255, c.R + 24), (byte)Math.Min(255, c.G + 24), (byte)Math.Min(255, c.B + 24));
             return new LinearGradientBrush(new GradientStopCollection { new GradientStop(highlight, 0), new GradientStop(bg, 0.55) }, 90);
+        }
+
+        static Color MaterialTint(Color color)
+        {
+            Color tint;
+            if (!TryReadColor(C("material.tint", ""), out tint)) return color;
+            return Color.FromRgb((byte)((color.R * 3 + tint.R) / 4), (byte)((color.G * 3 + tint.G) / 4), (byte)((color.B * 3 + tint.B) / 4));
         }
 
         static Brush MaterialEdge(Sty style, bool glass, bool animate)
