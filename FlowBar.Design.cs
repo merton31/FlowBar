@@ -39,6 +39,7 @@ namespace FlowBar
         static double Gap { get { return Flush ? 0 : Clamp(C("gap", ""), 10, 0, 32); } } // вплотную — без отступа, как панель Windows
         // ширина: fit — по содержимому; wide — широкая плавающая (отступ и скругление сохраняются); full — во всю ширину вплотную к краю
         static bool FullWidth { get { return C("width", "fit") != "fit"; } }
+        static string BarAlign { get { var a = C("align", "center"); return a == "left" || a == "right" ? a : "center"; } }
         static bool Flush { get { return C("width", "fit") == "full"; } }                // отступ капсулы от края экрана
         static double Opac { get { return Clamp(C("opacity", ""), 100, 30, 100) / 100; } }
         const double SM = 14; // поле окна под тень капсулы
@@ -990,7 +991,14 @@ namespace FlowBar
                 if (ss != null && !ReferenceEquals(ss, hooked)) { hooked = ss; ss.PlaybackInfoChanged += (a, b) => KickMedia(); ss.MediaPropertiesChanged += (a, b) => { lastMedia = null; KickMedia(); }; } // пауза, перемотка и смена трека — сразу, а не при следующем опросе
                 s.Sessions = mediaMgr.GetSessions().Where(x => !SpotifyOnly || IsSpotify(x.SourceAppUserModelId)).Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
                 { var sp = System.Diagnostics.Process.GetProcessesByName("Spotify"); spotifyUp = sp.Length > 0; foreach (var x in sp) x.Dispose(); }
-                if (ss == null) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null; return; }
+                if (ss == null)
+                {
+                    bool was = s.HasMedia; string wasKey = s.Title + "\u0001" + s.Artist;
+                    s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null;
+                    if (!SpotifyByTitle(s)) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; }
+                    if (was != s.HasMedia || wasPlaying != s.Playing || wasKey != s.Title + "\u0001" + s.Artist) All(b => b.Render());
+                    return;
+                }
                 var info = ss.GetPlaybackInfo();
                 s.Playing = info.PlaybackStatus == MC.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; bool smtcPlaying = s.Playing;
                 // Spotify сообщает Windows о паузе и воспроизведении через 5–10 с, а заголовок окна меняет сразу: «Spotify Premium» — пауза, «Исполнитель - трек» — играет
@@ -1023,6 +1031,24 @@ namespace FlowBar
             }
             catch (Exception ex) { Log(ex); var s = live; s.MediaError = ex.Message; s.HasMedia = s.Playing = false; s.Cover = null; lastMedia = null; } // источник сломался — не держим старую обложку
             finally { mediaBusy = false; if (mediaAgain) { mediaAgain = false; Dispatcher.BeginInvoke(new Action(UpdateMedia)); } }
+        }
+        // Spotify не сообщает Windows о треке, если в нём выключено «Показывать оверлей при использовании медиаклавиш»: тогда трек — из заголовка окна
+        // «Исполнитель - трек» (пока играет), на паузе («Spotify Premium») — последний трек; кнопки работают медиаклавишами
+        static string[] titleTrack;
+        static bool SpotifyByTitle(Snap s)
+        {
+            if (!spotifyUp) { titleTrack = null; return false; }
+            string t = null;
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("Spotify"))
+                try { var w = p.MainWindowTitle; if (!string.IsNullOrEmpty(w)) t = w; } catch { } finally { p.Dispose(); }
+            if (t == null) return titleTrack != null && s.HasMedia; // окно свёрнуто в трей — оставляем, что было
+            int i = t.IndexOf(" - ", StringComparison.Ordinal);
+            bool playing = i > 0;
+            if (playing) titleTrack = new[] { t.Substring(0, i), t.Substring(i + 3) };
+            if (titleTrack == null) return false;
+            s.HasMedia = true; s.Playing = playing; s.Remote = false; s.Artist = titleTrack[0]; s.Title = titleTrack[1]; s.App = "Spotify.exe";
+            s.CanToggle = s.CanNext = s.CanPrev = true; s.CanSeek = false; s.MediaError = null;
+            return true;
         }
         // плеер, который показан и которым управляют кнопки; null — текущий по мнению Windows
         static string mediaPick;
@@ -1145,6 +1171,7 @@ namespace FlowBar
                 if (primary && !DemoMode)
                 {
                     ticks++; CheckHide("опрос"); CheckReminders(); CheckUpdateQuietly();
+                    if (GlassOn != glassAllowed) { glassAllowed = GlassOn; All(b => b.ApplyStyle()); } // Windows включила или выключила прозрачность (настройка, энергосбережение)
                     if (DateTime.Now < peekUntil && TrayOpen()) peekUntil = DateTime.Now.AddSeconds(3); // пока открыты скрытые значки — панель Windows не прячем
                     bool peek = DateTime.Now < peekUntil;
                     if (HideTb && !peek) SetTaskbar(false);
@@ -1664,6 +1691,20 @@ namespace FlowBar
                         if (v == 0) { ring = new Gauge(th - 8, 2.4, -90, 360, 1) { Plain = true }; play.Width = play.Height = th - 16; var pg = new Grid { VerticalAlignment = VerticalAlignment.Center }; pg.Children.Add(ring); pg.Children.Add(play); playEl = pg; }
                         body.Children.Add(Mg(playEl, v == 0 ? 6 * f : 2, 0, 2, 0));
                         if (v >= 2) body.Children.Add(nextB);
+                        // свёрнутый вид: мини-кнопка «без звука» — только для плеера, общий звук Windows не трогает
+                        Press muteB = null; bool playerMuted = false; int muteCheck = 0;
+                        if (v < 2)
+                        {
+                            double md = Math.Max(18, Math.Round(nd * 0.8));
+                            muteB = RoundBtn("", md, false, act(() =>
+                            {
+                                var ps = PlayerSessions(s); if (ps.Count == 0) return;
+                                bool mute = ps.Any(x => !x.Muted); foreach (var x in ps) x.SetMute(mute);
+                                playerMuted = mute; ((TextBlock)muteB.Child).Text = mute ? "" : "";
+                            }), "Без звука — только плеер");
+                            muteB.Base = Fa(0x16); muteB.Background = new SolidColorBrush(muteB.Base);
+                            body.Children.Add(Mg(muteB, 2, 0, 0, 0));
+                        }
                         // расширенный вид: полоса прогресса по нижнему краю модуля, во всю ширину — как на образце
                         FrameworkElement mediaContent = body;
                         if (v >= 2)
@@ -1683,6 +1724,12 @@ namespace FlowBar
                             if (shownTrack != null && track != shownTrack) Soft(texts); shownTrack = track;
                             playG.Text = s.Playing ? "\uE769" : "\uE768";
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
+                            if (muteB != null)
+                            {
+                                // раз в 3 с: заглушили ли плеер в микшере или в нём самом; кнопка есть, только пока у плеера есть звук
+                                if (muteCheck++ % 3 == 0) { var ps = s.HasMedia ? PlayerSessions(s) : new List<Audio.MixerSession>(); muteB.Visibility = ps.Count > 0 ? Visibility.Visible : Visibility.Collapsed; playerMuted = ps.Count > 0 && ps.All(x => x.Muted); }
+                                ((TextBlock)muteB.Child).Text = playerMuted ? "" : ""; muteB.ToolTip = playerMuted ? "Включить звук плеера" : "Без звука — только плеер";
+                            }
                             title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
                             artist.Text = s.HasMedia ? (s.Remote ? "На другом устройстве" : string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
                             prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN); prog.Squeeze(s.HasMedia && !s.Playing);
@@ -2231,7 +2278,7 @@ namespace FlowBar
                 foreach (var kv in tokenOf) if (!oldX.ContainsKey(kv.Value)) oldX[kv.Value] = SlotStart(kv.Key);
             }
             foreach (var el in tokenOf.Keys.ToList()) Detach(el);
-            strip.Children.Clear(); tokenOf.Clear(); shownTokens = new List<string>();
+            strip.Children.Clear(); tokenOf.Clear(); shownTokens = new List<string>(); secSpacers.Clear();
             int previousSection = -1; bool overflowPut = false; overflowTile = null;
             Action putOverflow = () =>
             {
@@ -2252,7 +2299,7 @@ namespace FlowBar
                 if (el == null) continue;
                 int nextSection = t == "__drop" ? previousSection : SectionFor(t);
                 if (UseSections && previousSection >= 0 && nextSection != previousSection)
-                    strip.Children.Add(new Border { Width = 12, IsHitTestVisible = false });
+                { var gapEl = new Border { Width = 12 + SecExtra(nextSection), IsHitTestVisible = false }; secSpacers[nextSection] = gapEl; strip.Children.Add(gapEl); }
                 Detach(el); strip.Children.Add(el); tokenOf[el] = t; shownTokens.Add(t); previousSection = nextSection;
                 if (t.StartsWith("w:")) { FrameworkElement bd; if (badges.TryGetValue(t.Substring(2), out bd)) bd.Visibility = editMode ? Visibility.Visible : Visibility.Collapsed; }
             }
@@ -2371,14 +2418,16 @@ namespace FlowBar
         }
         void InitStripDrag()
         {
-            strip.PreviewMouseLeftButtonDown += (s, e) => { if (Locked) return; dragTok = TokenAt(e.OriginalSource as DependencyObject); dragDown = e.GetPosition(strip); };
+            strip.PreviewMouseLeftButtonDown += (s, e) => { if (Locked) return; dragTok = TokenAt(e.OriginalSource as DependencyObject); dragDown = e.GetPosition(strip); if (UseSections && dragTok != null) StartSecHold(); };
             strip.PreviewMouseMove += (s, e) =>
             {
+                if (secDragging) { MoveSec(); e.Handled = true; return; }
                 if (dragTok == null || e.LeftButton != MouseButtonState.Pressed) { if (!sDragging) dragTok = null; return; }
                 var p = e.GetPosition(strip);
                 if (!sDragging)
                 {
                     if (Math.Abs(p.X - dragDown.X) < 6 && Math.Abs(p.Y - dragDown.Y) < 6) return;
+                    if (secHold != null) secHold.Stop(); // повели сразу — переносим значок, а не секцию
                     dragEl = ElOf(dragTok); if (dragEl == null) { dragTok = null; return; }
                     sDragging = true; dragging = true; ClosePreview(); Mouse.Capture(strip, CaptureMode.SubTree);
                     dragOrder = shownTokens.ToList();
@@ -2421,8 +2470,50 @@ namespace FlowBar
                 }
                 PaintInsertion(dragEl);
             };
-            strip.PreviewMouseLeftButtonUp += (s, e) => { if (sDragging) { e.Handled = true; FinishStripDrag(); } dragTok = null; };
-            strip.LostMouseCapture += (s, e) => { if (sDragging && !strip.IsMouseCaptureWithin) FinishStripDrag(); };
+            strip.PreviewMouseLeftButtonUp += (s, e) => { if (secHold != null) secHold.Stop(); if (secDragging) { e.Handled = true; EndSec(); } else if (sDragging) { e.Handled = true; FinishStripDrag(); } dragTok = null; };
+            strip.LostMouseCapture += (s, e) => { if (secDragging && !strip.IsMouseCaptureWithin) EndSec(); else if (sDragging && !strip.IsMouseCaptureWithin) FinishStripDrag(); };
+        }
+        // ---------- раздельный режим: секцию двигают, зажав любой её значок на 0,4 с, — как окно ----------
+        // Положение — добавочные промежутки перед второй и третьей секцией (DIP), своё для каждого монитора.
+        // Средняя секция едет за курсором, соседние стоят; крайняя отодвигается от остальных. Шире экрана панель не становится.
+        readonly Dictionary<int, Border> secSpacers = new Dictionary<int, Border>();
+        DispatcherTimer secHold; bool secDragging; int secIdx; double secStartX, secX1, secX2, secRoom, secCur1, secCur2;
+        string SecKey(int k) { return "sec" + k + "@" + scr.DeviceName; }
+        double SecExtra(int k)
+        {
+            double v; return k > 0 && double.TryParse(C(SecKey(k), "0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v) ? Math.Max(0, v) : 0;
+        }
+        void StartSecHold()
+        {
+            if (secHold == null) { secHold = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) }; secHold.Tick += (s, e) => { secHold.Stop(); BeginSec(); }; }
+            secHold.Stop(); secHold.Start();
+        }
+        void BeginSec()
+        {
+            if (dragTok == null || sDragging || Mouse.LeftButton != MouseButtonState.Pressed || !UseSections) return;
+            N.POINT p; N.GetCursorPos(out p);
+            secDragging = true; dragging = true; secIdx = SectionFor(dragTok); secStartX = p.X / MonScale;
+            secCur1 = secX1 = SecExtra(1); secCur2 = secX2 = SecExtra(2); secRoom = Math.Max(0, FreeWidth - 4);
+            ClosePreview(); Mouse.Capture(strip, CaptureMode.SubTree); Mouse.OverrideCursor = Cursors.SizeWE;
+        }
+        void MoveSec()
+        {
+            N.POINT p; N.GetCursorPos(out p); double dx = p.X / MonScale - secStartX, x1 = secX1, x2 = secX2;
+            if (secIdx == 1) { x1 += dx; x2 -= dx; } else if (secIdx == 2) x2 += dx; else x1 -= dx;
+            x1 = Math.Max(0, x1); x2 = Math.Max(0, x2);
+            if (x1 + x2 - (secX1 + secX2) > secRoom) return; // дальше — панель не поместилась бы на экране
+            secCur1 = x1; secCur2 = x2; Border sp;
+            if (secSpacers.TryGetValue(1, out sp)) sp.Width = 12 + x1;
+            if (secSpacers.TryGetValue(2, out sp)) sp.Width = 12 + x2;
+        }
+        void EndSec()
+        {
+            secDragging = false; dragging = false; dragTok = null; lastDragEnd = DateTime.Now; Mouse.OverrideCursor = null;
+            if (strip.IsMouseCaptureWithin) Mouse.Capture(null);
+            Func<double, string> f = v => Math.Round(v).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (secCur1 > 0) cfg[SecKey(1)] = f(secCur1); else cfg.Remove(SecKey(1));
+            if (secCur2 > 0) cfg[SecKey(2)] = f(secCur2); else cfg.Remove(SecKey(2));
+            SaveCfg();
         }
         void FinishStripDrag()
         {
@@ -2718,7 +2809,7 @@ namespace FlowBar
             sectionSurface.LayoutUpdated += (s, e) => { if (ReferenceEquals(s, sectionSurface) || s == null) PaintSections(); };
             if (DemoMode) frame.Children.Add(new TextBlock { Text = "ПРИМЕР", FontSize = 8, FontWeight = FontWeights.SemiBold, Opacity = 0.55, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(10, 2, 0, 0), Foreground = Brushes.White });
             var orientation = VerticalBar ? Orientation.Vertical : Orientation.Horizontal;
-            var row = new StackPanel { Orientation = orientation, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+            var row = new StackPanel { Orientation = orientation, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = VerticalBar || BarAlign == "center" ? HorizontalAlignment.Center : BarAlign == "left" ? HorizontalAlignment.Left : HorizontalAlignment.Right }; // во всю ширину — ряд по выравниванию
             root.Child = row; rowPanel = row;
             KeyboardNavigation.SetDirectionalNavigation(root, KeyboardNavigationMode.Cycle);
             KeyboardNavigation.SetTabNavigation(root, KeyboardNavigationMode.Cycle);
@@ -2815,6 +2906,8 @@ namespace FlowBar
             var m = new ContextMenu();
             m.Items.Add(Item(collapsed ? "Развернуть панель" : "Свернуть в значок", () => SetCollapsed(!collapsed)));
             m.Items.Add(Item("Во всю ширину", () => { cfg["width"] = FullWidth ? "fit" : "full"; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows(); }, FullWidth));
+            if (UseSections && SecExtra(1) + SecExtra(2) > 0)
+                m.Items.Add(Item("Вернуть секции на место", () => { cfg.Remove(SecKey(1)); cfg.Remove(SecKey(2)); SaveCfg(); Compose(); }));
             m.Items.Add(new Separator());
             m.Items.Add(Item("Диспетчер задач", () => Launch("taskmgr.exe")));
             m.Items.Add(Item("Настройки FlowBar…", () => ShowSettings(null)));
@@ -2896,14 +2989,44 @@ namespace FlowBar
                                       : p.X >= b.Left && p.X < b.Right && (IsTop ? p.Y <= b.Top + 1 : p.Y >= b.Bottom - 2);
             if (autoHidden) { if (atEdge) { autoHidden = false; lastUse = DateTime.Now; ApplyVis(); } return; }
             if (InUse || atEdge) { lastUse = DateTime.Now; return; }
-            if ((DateTime.Now - lastUse).TotalMilliseconds > 900) { autoHidden = true; ApplyVis(); }
+            autoHidden = true; ApplyVis(); // мышь ушла и панель ничем не занята — сразу (опрос раз в 150 мс)
         }
+        bool sliding; // панель уезжает за край
         void ApplyVis()
         {
-            var v = fsHidden || autoHidden ? Visibility.Hidden : Visibility.Visible;
-            if (Visibility == v) return;
-            Visibility = v;
-            if (v == Visibility.Visible && Motion && frame != null) frame.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
+            bool hide = fsHidden || autoHidden;
+            if (frame == null || !Motion || fsHidden) // полный экран и выключенные анимации — без движения
+            {
+                sliding = false; if (frame != null) frame.BeginAnimation(OpacityProperty, null);
+                var v = hide ? Visibility.Hidden : Visibility.Visible; if (Visibility != v) Visibility = v; return;
+            }
+            var tt = frame.RenderTransform as TranslateTransform; if (tt == null) frame.RenderTransform = tt = new TranslateTransform();
+            var axis = VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty;
+            // уезжает к своему краю экрана на свою толщину с отступом
+            double away = (VerticalBar ? SideWidth : BarH) + Gap + SM; if (IsTop || (VerticalBar && LeftBar)) away = -away;
+            if (hide)
+            {
+                if (Visibility != Visibility.Visible || sliding) return;
+                sliding = true; if (glassBg != null) glassBg.Fade();
+                var o = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200));
+                o.Completed += (s, e) =>
+                {
+                    if (!sliding) return; // успели вернуть мышь — панель уже едет обратно
+                    sliding = false; Visibility = Visibility.Hidden;
+                    frame.BeginAnimation(OpacityProperty, null); tt.BeginAnimation(axis, null);
+                };
+                tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
+                frame.BeginAnimation(OpacityProperty, o);
+            }
+            else
+            {
+                if (Visibility == Visibility.Visible && !sliding) return;
+                double from = sliding ? (double)tt.GetValue(axis) : away, op = sliding ? frame.Opacity : 0;
+                if (sliding && glassBg != null) glassBg.Unfade();
+                sliding = false; Visibility = Visibility.Visible;
+                tt.BeginAnimation(axis, new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+                frame.BeginAnimation(OpacityProperty, new DoubleAnimation(op, 1, TimeSpan.FromMilliseconds(180)));
+            }
         }
 
         // ---------- стиль и позиция ----------
@@ -2936,6 +3059,7 @@ namespace FlowBar
             UpdateRegion();
         }
         // стекло включено и доступно; иначе стеклянная тема рисуется читаемой сплошной поверхностью
+        static bool? glassAllowed;
         static bool GlassOn { get { return WantsGlass(Cur) && Backdrop.Available; } }
         static Brush CardFill { get { return PopupFill(GlassOn); } }
         static Brush CardEdge { get { return MaterialEdge(Cur, GlassOn, false); } }
@@ -3029,7 +3153,8 @@ namespace FlowBar
             Reserve(); EnsureWorkArea();
             double ch = root.ActualHeight > 0 ? root.ActualHeight : BarH;
             // физические пиксели монитора панели: размеры в DIP переводим его масштабом
-            double x = b.Left + ((b.Width / sc - root.ActualWidth) / 2 - SM) * sc;
+            var al = BarAlign; // слева, по центру или справа — как «Выравнивание панели задач» в Windows
+            double x = al == "left" ? b.Left + (Gap - SM) * sc : al == "right" ? b.Right - (Gap + root.ActualWidth + SM) * sc : b.Left + ((b.Width / sc - root.ActualWidth) / 2 - SM) * sc;
             double y = appBar ? (IsTop ? reserved.T + (Gap - SM) * sc : reserved.B - (Gap + ch + SM) * sc)
                               : (IsTop ? b.Top + (Gap - SM) * sc : (hidden ? b.Bottom : wa.Bottom) - (Gap + ch + SM) * sc);
             if (VerticalBar)

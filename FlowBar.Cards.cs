@@ -108,6 +108,13 @@ namespace FlowBar
             ShowPanel("Система", body, 380, null, tick);
         }
 
+        // сеансы звука процессов плеера в микшере Windows: «Spotify.exe» → Spotify, «Издатель.Пакет!Spotify» → Spotify, «Chrome» → chrome.exe
+        static List<Audio.MixerSession> PlayerSessions(Snap s)
+        {
+            var player = !s.HasMedia || string.IsNullOrEmpty(s.App) ? null : s.App.Contains("!") ? s.App.Substring(s.App.LastIndexOf('!') + 1) : System.IO.Path.GetFileNameWithoutExtension(s.App);
+            if (player == null) return new List<Audio.MixerSession>();
+            return Audio.MixerSessions().Where(x => { var ep = ExePath(x.Pid); return ep != null && string.Equals(System.IO.Path.GetFileNameWithoutExtension(ep), player, StringComparison.OrdinalIgnoreCase); }).ToList();
+        }
         void ShowMusic()
         {
             var s = live; var body = new StackPanel();
@@ -187,9 +194,7 @@ namespace FlowBar
                     cover.Child = s.Cover != null ? null : G("", 36);
                 }
                 status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count : "";
-                // сеансы звука процессов плеера: «Spotify.exe» → Spotify, «Издатель.Пакет!Spotify» → Spotify, «Chrome» → chrome.exe
-                var player = !s.HasMedia || string.IsNullOrEmpty(s.App) ? null : s.App.Contains("!") ? s.App.Substring(s.App.LastIndexOf('!') + 1) : System.IO.Path.GetFileNameWithoutExtension(s.App);
-                volSess = player == null ? new List<Audio.MixerSession>() : Audio.MixerSessions().Where(x => { var ep = ExePath(x.Pid); return ep != null && string.Equals(System.IO.Path.GetFileNameWithoutExtension(ep), player, StringComparison.OrdinalIgnoreCase); }).ToList();
+                volSess = PlayerSessions(s);
                 volRow.Visibility = volSess.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
                 if (volSess.Count > 0 && !vol.IsMouseCaptureWithin)
                 {
@@ -801,7 +806,7 @@ namespace FlowBar
                 Background = Frozen(CardBg, 255), Foreground = Frozen(CardFg, 255), FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI"), ShowInTaskbar = true,
                 UseLayoutRounding = true, SnapsToDevicePixels = true
             };
-            System.Windows.Documents.Typography.SetNumeralAlignment(win, FontNumeralAlignment.Tabular); UseCardScroll(win);
+            System.Windows.Documents.Typography.SetNumeralAlignment(win, FontNumeralAlignment.Tabular); UseCardScroll(win); ShowOnBar(win);
             win.SourceInitialized += (s, e) => { var hw = new WindowInteropHelper(win).Handle; int dark = Sty.Lum(CardBg) < 128 ? 1 : 0; N.DwmSetWindowAttribute(hw, 20, ref dark, 4); };
             win.PreviewKeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.Escape && !(Keyboard.FocusedElement is TextBox && ((TextBox)Keyboard.FocusedElement).Text != "")) { e.Handled = true; win.Close(); } };
             return win;
@@ -1705,6 +1710,9 @@ namespace FlowBar
             c.Children.Add(SetRow("Значков программ на панели", "Остальные — в «…» (активная программа всегда на панели). «Все» — значки не прячутся; если места нет, ряд листается колесом.",
                 Seg(new[] { "Все", "6", "8", "10", "14" }, bi, i => { cfg[MK("appMax")] = budgets[i].ToString(); MarkCustom(); SaveCfg(); All(b => { b.ResetFit(false); b.Compose(); }); again(); })));
             c.Children.Add(SetRow("Отступ от края экрана", null, SliderRow(0, 32, Gap, 1, v => Math.Round(v) + " px", v => { cfg["gap"] = Math.Round(v).ToString(); SaveCfg(); All(b => { b.reserveKey = null; b.Place(); }); preview(null); }, "Отступ от края экрана")));
+            var aligns = new[] { "left", "center", "right" };
+            c.Children.Add(SetRow("Выравнивание", "Где стоит панель вдоль края экрана. При ширине «во всю ширину» — где стоят значки внутри неё. Для боковой панели не действует.",
+                Seg(new[] { "Слева", "По центру", "Справа" }, Math.Max(0, Array.IndexOf(aligns, BarAlign)), i => { cfg["align"] = aligns[i]; SaveCfg(); RebuildAll(); All(b => b.Place()); preview(null); })));
             var edges = new[] { "bottom", "top", "left", "right" };
             c.Children.Add(SetRow("Общее расположение", "В разделе «Мониторы» можно выбрать свой край для каждого экрана.",
                 Seg(new[] { "Снизу", "Сверху", "Слева", "Справа" }, Math.Max(0, Array.IndexOf(edges, C("pos", "bottom"))),
@@ -1963,7 +1971,8 @@ namespace FlowBar
             c.Children.Add(SSub("Клавиатура"));
             c.Children.Add(SHint("Ctrl+Alt+B — перейти на панель; стрелки и Tab — по элементам; Enter или Пробел — нажать; Shift+F10 — меню; Esc — вернуться в прежнее окно.\nAlt+T — задачи. Win+S — поиск Windows."));
             c.Children.Add(SSub("Панель Windows"));
-            c.Children.Add(CardActions(Btn("Вернуть панель Windows и выйти", () => { cfg["hideTaskbar"] = "0"; SaveCfg(); ExitWhy = "кнопка «Вернуть панель Windows и выйти»"; Application.Current.Shutdown(); })));
+            // только до следующего запуска: выход и так возвращает панель Windows; запись «не скрывать» оставляла обе панели при каждом запуске
+            c.Children.Add(CardActions(Btn("Вернуть панель Windows и выйти", () => { ExitWhy = "кнопка «Вернуть панель Windows и выйти»"; Application.Current.Shutdown(); })));
             var exe = Assembly.GetExecutingAssembly().Location;
             c.Children.Add(CardStatus("FlowBar · сборка от " + File.GetLastWriteTime(exe).ToString("d MMMM yyyy, HH:mm") + " · " + exe));
         }

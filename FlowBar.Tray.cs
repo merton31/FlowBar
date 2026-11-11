@@ -348,14 +348,30 @@ namespace FlowBar
         // нажатие — так же, как его передаёт программе панель Windows: у версии 4 событие и номер значка в lParam, точка — в wParam
         public static void Click(TrayIcon t, bool right, bool dbl)
         {
-            if (t.CbMsg == 0) return;
-            AllowSetForegroundWindow(Pid(t)); // программа сможет вывести своё окно или меню вперёд
+            if (t.CbMsg == 0) { if (right) Bar.Info("трей, правая кнопка: у значка нет сообщения для кликов — " + Bar.ExePathOf(Pid(t))); return; }
+            uint pid = Pid(t), me = (uint)System.Diagnostics.Process.GetCurrentProcess().Id, fp;
+            GetWindowThreadProcessId(N.GetForegroundWindow(), out fp); bool weFront = fp == me;
+            bool allowed = AllowSetForegroundWindow(pid); // программа сможет вывести своё окно или меню вперёд
+            // меню: окно значка — вперёд заранее, как при клике по трею Windows. Без этого меню части программ не появляется или сразу закрывается
+            bool fronted = right && N.SetForegroundWindow(t.Wnd);
             POINT pt; GetCursorPos(out pt);
             uint[] seq = right ? new uint[] { 0x204, 0x205 } : dbl ? new uint[] { 0x203, 0x202 } : new uint[] { 0x201, 0x202 };
             bool v4 = t.Version >= 4;
             IntPtr wp = v4 ? new IntPtr((pt.X & 0xFFFF) | (pt.Y << 16)) : new IntPtr(unchecked((int)t.Id));
             foreach (var e in seq) PostMessage(t.Wnd, t.CbMsg, wp, v4 ? new IntPtr((int)(e | (t.Id << 16))) : new IntPtr((int)e));
             if (v4) PostMessage(t.Wnd, t.CbMsg, wp, new IntPtr((int)((right ? 0x7Bu : 0x400u) | (t.Id << 16)))); // WM_CONTEXTMENU или NIN_SELECT
+            // журнал: правая кнопка у части программ не открывает меню — что получила программа и что оказалось впереди
+            if (right)
+            {
+                string exe = Bar.ExePathOf(pid);
+                diag = new System.Threading.Timer(_ =>
+                {
+                    uint p2; GetWindowThreadProcessId(N.GetForegroundWindow(), out p2);
+                    Bar.Info("трей, правая кнопка: " + exe + ", версия значка " + t.Version + ", FlowBar впереди: " + (weFront ? "да" : "нет") + ", разрешение: " + (allowed ? "да" : "нет")
+                        + ", окно значка вперёд: " + (fronted ? "да" : "нет") + "; через 0,6 с впереди: " + (p2 == pid ? "эта программа" : p2 == me ? "FlowBar" : Bar.ExePathOf(p2)));
+                }, null, 600, System.Threading.Timeout.Infinite);
+            }
         }
+        static System.Threading.Timer diag;
     }
 }

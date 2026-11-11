@@ -1166,7 +1166,8 @@ namespace FlowBar
             string win = "";
             try { using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion")) { int bn; int.TryParse(k.GetValue("CurrentBuild") as string, out bn); win = ((k.GetValue("ProductName") as string) ?? "").Replace("Windows 10", bn >= 22000 ? "Windows 11" : "Windows 10") + " " + k.GetValue("DisplayVersion") + ", сборка " + bn + "." + k.GetValue("UBR"); } } catch { }
             sb.Append("FlowBar " + Setup.VersionText + (Setup.IsInstalledCopy ? "" : " (запущен не из папки установки)") + "; " + win + "; права администратора: " + (Setup.Elevated ? "да" : "нет")
-                + "; панель Windows скрывается: " + (HideTb ? "да" : C("hideTaskbar", "1") == "1" ? "нет — сторож не запустился" : "нет — выключено") + "; свой трей: " + (Bar.C("ownTray", "1") == "1" ? Tray.Icons.Count + " значков" : "выключен") + "\r\n");
+                + "; панель Windows скрывается: " + (HideTb ? "да" : C("hideTaskbar", "1") == "1" ? "нет — сторож не запустился" : "нет — выключено") + "; свой трей: " + (Bar.C("ownTray", "1") == "1" ? Tray.Icons.Count + " значков" : "выключен")
+                + "; стекло: " + (!WantsGlass(Cur) ? "не выбрано" : Backdrop.Why == null ? "работает" : "нет — " + Backdrop.Why) + "\r\n");
             foreach (var b in bars.ToList())
                 try { sb.Append("монитор " + b.scr.DeviceName + (b.scr.Primary ? " (основной)" : "") + ": " + b.scr.Bounds.Width + "×" + b.scr.Bounds.Height + " в " + b.scr.Bounds.X + "," + b.scr.Bounds.Y + ", масштаб " + Math.Round(b.MonScale * 100) + "%; панель " + Math.Round(b.Left) + "," + Math.Round(b.Top) + " " + Math.Round(b.ActualWidth) + "×" + Math.Round(b.ActualHeight) + (b.IsVisible ? "" : " скрыта") + "\r\n"); }
                 catch { }
@@ -1372,19 +1373,30 @@ namespace FlowBar
             try { for (var d = System.IO.Path.GetDirectoryName(path); !string.IsNullOrEmpty(d); d = System.IO.Path.GetDirectoryName(d)) { var s = System.IO.Path.Combine(d, "steam.exe"); if (File.Exists(s)) { res = s; break; } } } catch { }
             hostCache[path] = res; return res;
         }
+        // окна FlowBar, которые видны на панели как открытая программа: настройки, каталог, карточки виджетов
+        static readonly HashSet<IntPtr> shownOnBar = new HashSet<IntPtr>();
+        static readonly string SelfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+        internal static void ShowOnBar(Window w)
+        {
+            IntPtr h = IntPtr.Zero;
+            w.SourceInitialized += (s, e) => { h = new WindowInteropHelper(w).Handle; shownOnBar.Add(h); };
+            w.Closed += (s, e) => shownOnBar.Remove(h);
+        }
         List<Win> GetWindows()
         {
             var list = new List<Win>();
             N.EnumWindows((h, l) =>
             {
-                if (!N.IsWindowVisible(h) || N.GetWindow(h, 4) != IntPtr.Zero) return true; // есть владелец
+                if (!N.IsWindowVisible(h)) return true;
+                uint pid; N.GetWindowThreadProcessId(h, out pid);
+                if (pid == selfPid) { if (shownOnBar.Contains(h)) list.Add(new Win { H = h, Pid = pid, Path = SelfExe, Mon = MonOf(h) }); return true; } // свои окна — только настройки, каталог и карточки
+                if (N.GetWindow(h, 4) != IntPtr.Zero) return true; // есть владелец
                 long ex = N.GetWindowLongPtr(h, -20).ToInt64();
                 if ((ex & 0x80) != 0) return true; // WS_EX_TOOLWINDOW
                 if ((ex & 0x08000000) != 0 && (ex & 0x40000) == 0) return true; // NOACTIVATE без APPWINDOW
                 int cloaked; if (N.DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;
                 if (N.GetWindowText(h, new StringBuilder(2), 2) == 0) return true;
                 var c = Cls(h); if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return true;
-                uint pid; N.GetWindowThreadProcessId(h, out pid); if (pid == selfPid) return true;
                 // shortcut: UWP-приложения группируются под ApplicationFrameHost; для раздельных иконок нужен AppUserModelID
                 list.Add(new Win { H = h, Pid = pid, Path = HostExe(ExePath(pid)), Mon = MonOf(h) });
                 return true;
@@ -1691,12 +1703,13 @@ namespace FlowBar
         // При скрытой панели Windows её полоса и так зарезервирована, FlowBar стоит в ней.
         static readonly uint AppBarMsg = N.RegisterWindowMessage("FlowBarAppBar"), TaskbarCreatedMsg = N.RegisterWindowMessage("TaskbarCreated");
         bool appBar; N.RECT reserved; string reserveKey;
+        // место под панель: её высота и отступ от края экрана; со стороны окон отступа нет — развёрнутое окно заканчивается у самой панели
         void Reserve()
         {
             if (hwnd == IntPtr.Zero) return;
             bool want = !DemoMode && C("reserve", "1") == "1" && !AutoHide;
-            int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
-            if (VerticalBar) h = (int)Math.Ceiling((SideWidth + 2 * Gap) * MonScale);
+            int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
+            if (VerticalBar) h = (int)Math.Ceiling((SideWidth + Gap) * MonScale);
             var key = want + "|" + PositionKey + "|" + h + "|" + scr.Bounds;
             if (key == reserveKey) return;
             reserveKey = key;
@@ -1731,10 +1744,10 @@ namespace FlowBar
             var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
             var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
             if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); } return; }
-            int h = (int)Math.Ceiling((BarH + 2 * Gap) * MonScale);
+            int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
             if (VerticalBar)
             {
-                h = (int)Math.Ceiling((SideWidth + 2 * Gap) * MonScale);
+                h = (int)Math.Ceiling((SideWidth + Gap) * MonScale);
                 if (LeftBar) w.L = m.L + h; else w.R = m.R - h;
             }
             else if (IsTop) w.T = m.T + h; else w.B = m.B - h;
@@ -2454,9 +2467,9 @@ namespace FlowBar
             {
                 WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false,
                 ResizeMode = ResizeMode.NoResize, SizeToContent = SizeToContent.Height, Width = width + Shadow * 2, FontFamily = FontFamily,
-                Foreground = Frozen(fg, 255)
+                Foreground = Frozen(fg, 255), Title = "FlowBar — " + title
             };
-            StylePopupText(w);
+            StylePopupText(w); ShowOnBar(w); // на панели — как открытая программа
             System.Windows.Documents.Typography.SetNumeralAlignment(w, FontNumeralAlignment.Tabular); UseCardScroll(w);
             // заголовок всегда виден, длинное содержимое прокручивается целиком (поле ввода и кнопки внизу тоже достижимы)
             var sp = new DockPanel();
@@ -2471,6 +2484,7 @@ namespace FlowBar
                 var hp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, -4, 0, 8) }; hp.Children.Add(arrow); hp.Children.Add(head); top = hp;
                 w.PreviewKeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Back && !(Keyboard.FocusedElement is TextBox)) { e.Handled = true; back(); } };
             }
+            if (title == "Значки трея") { head.Text = ""; if (back == null) top.Visibility = Visibility.Collapsed; } // сетка значков говорит сама за себя; стрелка «Назад» остаётся
             DockPanel.SetDock(top, Dock.Top); sp.Children.Add(top);
             sp.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Padding = new Thickness(0, 0, 6, 0), Margin = new Thickness(0, 0, -6, 0) });
             StyleInputs(sp, fg);

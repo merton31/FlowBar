@@ -110,13 +110,22 @@ namespace FlowBar
         bool shown;
 
         // «Эффекты прозрачности» Windows выключены или композиция недоступна — стекла нет, темы рисуются сплошной поверхностью
-        public static bool Available
+        public static bool Available { get { return Why == null; } }
+        static string lastError; static DateTime whyAt; static string whyCached;
+        // почему стекла нет (null — есть): видно в «Оформлении» и в отчёте. Проверка раз в 3 с
+        public static string Why
         {
             get
             {
-                if (Failed) return false;
-                try { var v = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", 1); return !(v is int) || (int)v != 0; }
-                catch { return true; }
+                if (Failed) return "Windows не дала создать размытие: " + lastError;
+                if ((DateTime.Now - whyAt).TotalSeconds < 3) return whyCached;
+                whyAt = DateTime.Now; whyCached = null;
+                bool regOn = true;
+                try { var v = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", 1); regOn = !(v is int) || (int)v != 0; } catch { }
+                if (!regOn) return whyCached = "в Windows выключены «Эффекты прозрачности»";
+                // учитывает и галочку, и режим энергосбережения, в котором Windows сама выключает прозрачность
+                try { if (!new Windows.UI.ViewManagement.UISettings().AdvancedEffectsEnabled) return whyCached = "Windows сейчас выключила прозрачность — обычно из-за режима энергосбережения"; } catch { }
+                return null;
             }
         }
 
@@ -147,7 +156,7 @@ namespace FlowBar
             catch (Exception ex)
             {
                 b.Dispose(); if (blurFactory != null) { blurFactory.Dispose(); blurFactory = null; }
-                comp = null; blurUnavailable = false; failedAt = DateTime.Now;
+                comp = null; blurUnavailable = false; failedAt = DateTime.Now; lastError = ex.Message;
                 Bar.Log(new Exception("Стеклянный материал недоступен — темы рисуются сплошной поверхностью, новая попытка через минуту", ex)); return null;
             }
         }
@@ -193,6 +202,7 @@ namespace FlowBar
         }
         // уход вместе с карточкой
         public void Fade() { if (host != null && shown) Animate(1, 0, 120); }
+        public void Unfade() { if (host != null && shown) Animate(0, 1, 150); } // панель вернули, пока она уезжала
         void Animate(float from, float to, int ms)
         {
             var a = comp.CreateScalarKeyFrameAnimation(); a.InsertKeyFrame(0f, from); a.InsertKeyFrame(1f, to); a.Duration = TimeSpan.FromMilliseconds(ms);
