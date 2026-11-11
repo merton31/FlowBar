@@ -1567,6 +1567,17 @@ namespace FlowBar
         {
             lastSection = "connect";
             c.Children.Add(SH("Подключения"));
+            // агенты: MCP-сервер внутри FlowBar
+            c.Children.Add(SSub("Агенты · MCP"));
+            c.Children.Add(SHint("Claude Code, Codex и другие агенты могут добавлять задачи, заметки и напоминания, запускать таймер и показывать уведомления. Работает только на этом компьютере, без сети. Удалять данные агенты не могут."));
+            c.Children.Add(CheckRow("Разрешить агентам управлять FlowBar", null, C("agent", "1") == "1", v => { cfg["agent"] = v ? "1" : "0"; SaveCfg(); }));
+            {
+                string exe = Setup.InstalledExe, cmd = "claude mcp add flowbar -- \"" + exe + "\" --mcp";
+                var box = new TextBox { Text = cmd, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 6, 0, 0), FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11.5 };
+                c.Children.Add(SHint("Подключение к Claude Code — выполните один раз в терминале:")); c.Children.Add(box);
+                c.Children.Add(CardActions(Btn("Скопировать команду", () => { try { Clipboard.SetText(cmd); } catch (Exception ex) { Log(ex); } })));
+                c.Children.Add(SHint("Другим агентам укажите команду запуска сервера: \"" + exe + "\" --mcp"));
+            }
             Action<string, string, string, Border> item = (title, state, hint, btn) =>
             {
                 c.Children.Add(SSub(title));

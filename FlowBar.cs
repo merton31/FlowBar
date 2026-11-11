@@ -3657,6 +3657,7 @@ namespace FlowBar
                 int dpi = 96; if (si + 1 < args.Length) int.TryParse(args[si + 1], out dpi);
                 PostToBar(N.RegisterWindowMessage("FlowBarShot"), (IntPtr)dpi, IntPtr.Zero); return 0;
             }
+            if (args.Contains("--mcp")) return Agent.RunMcp(); // сервер для агентов: действия выполняет работающая панель
             if (args.Contains("--selftest")) return SelfTest();
             // запуск нового exe откуда угодно обновляет установленную копию и передаёт работу ей; --here — запустить прямо отсюда (разработка)
             // Запущен из приложения Microsoft Store (Claude, Telegram из Store и т. п.): Windows тихо уводит записи в %APPDATA% в папку того приложения —
@@ -3737,6 +3738,7 @@ namespace FlowBar
             app.Exit += (s, e) => { Bar.Info("выход: " + (Bar.ExitWhy ?? "приложение завершено без названной причины")); Bar.Shutdown(); };
             app.SessionEnding += (s, e) => { Bar.ExitWhy = "завершение сеанса Windows (" + e.ReasonSessionEnding + ")"; Bar.Info("выход: " + Bar.ExitWhy); Bar.Shutdown(); };
             Bar.Init();
+            Agent.StartServer();
             if (Bar.C("ownTray", "1") == "1") Tray.Start(); // свой трей (до панелей: рассылка TaskbarCreated их не касается)
             foreach (var scr in System.Windows.Forms.Screen.AllScreens) new Bar(scr).Show();
             Bar.WatchScreens();
@@ -3764,6 +3766,19 @@ namespace FlowBar
                         && !Directory.Exists(System.IO.Path.Combine(dst, "cache")) && !File.Exists(System.IO.Path.Combine(dst, "error.log")) && !Directory.Exists(System.IO.Path.Combine(dst, "backups")), "Обновление: резервная копия данных");
                     { var nw = Bar.ParseNews("# t\n\nвступление\n\n## 1.1 — дата\n- Пункт **один**\n  - вложенный\n## 1.0\n- старый"); fails += check(nw.Count == 5 && nw[0].Item1 == 0 && nw[1].Item2 == "Пункт один" && nw[2].Item1 == 2 && nw[3].Item2 == "1.0", "Что нового: разбор списка изменений"); }
                     fails += check(Bar.HostExe(@"C:\x\notepad.exe") == @"C:\x\notepad.exe" && Bar.HostExe(null) == null && Bar.HostExe(@"Z:\nowhere\bin\steamwebhelper.exe") == @"Z:\nowhere\bin\steamwebhelper.exe", "Окна: основной exe программы");
+                    {
+                        // агенты: протокол MCP без панели — инструмент подменён
+                        Func<string, Dictionary<string, object>, KeyValuePair<bool, string>> fake = (n, a) => new KeyValuePair<bool, string>(true, n + ":" + a["text"]);
+                        var init = Agent.HandleLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}", fake);
+                        var list = Agent.HandleLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}", fake);
+                        var call = Agent.HandleLine("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"add_task\",\"arguments\":{\"text\":\"молоко\"}}}", fake);
+                        var bad = Agent.HandleLine("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"nope\"}", fake);
+                        fails += check(init.Contains("\"protocolVersion\":\"2025-06-18\"") && list.Contains("\"add_reminder\"") && list.Contains("\"required\":[\"text\"]") && call.Contains("add_task:молоко") && call.Contains("\"isError\":false")
+                            && bad.Contains("-32601") && Agent.HandleLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", fake) == null, "Агенты: протокол MCP");
+                        var t0 = new DateTime(2026, 11, 11, 12, 0, 0);
+                        fails += check(Bar.AgentWhen(new Dictionary<string, object> { { "in_minutes", 30 } }, t0) == t0.AddMinutes(30) && Bar.AgentWhen(new Dictionary<string, object> { { "at", "2026-11-12T10:00" } }, t0) == new DateTime(2026, 11, 12, 10, 0, 0)
+                            && Bar.AgentWhen(new Dictionary<string, object>(), t0) == null, "Агенты: время напоминания");
+                    }
                     fails += check(Bar.BadgeOf("(3) WhatsApp", "x.exe") == 3 && Bar.BadgeOf("Chat (5)", @"C:\Telegram.exe") == 5 && Bar.BadgeOf("Новая папка (2)", "explorer.exe") == 0 && Bar.BadgeOf("(7 426) Mail", null) == 7426 && Bar.BadgeOf("Doc", null) == 0, "Ярлык: счётчик из заголовка окна");
                     fails += check(Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Wintun Userspace Tunnel") && Bar.IsVpnAdapter(NetworkInterfaceType.Ppp, "x") && !Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Realtek PCIe 5GbE Family Controller") && Bar.IsVirtualAdapter("Hyper-V Virtual Ethernet Adapter"), "Сеть: адаптер VPN отличается от обычного");
                     fails += check(Setup.V3(new Version(1, 2)) == "1.2.0" && new Version("1.1.0.0") > new Version("1.0.0.0"), "Обновление: сравнение версий");
