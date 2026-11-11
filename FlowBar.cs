@@ -1299,6 +1299,18 @@ namespace FlowBar
         }
         public static int IconPxFor(double dip, double scale) { int need = (int)Math.Ceiling(dip * scale); foreach (var p in new[] { 32, 40, 48, 64, 96, 128, 256 }) if (p >= need) return p; return 256; }
         static int NeedIconPx { get { return IconPxFor(IconPx, bars.Count == 0 ? 1 : bars.Max(b => b.MonScale)); } }
+        // Окно показывает вспомогательный процесс, а программа и ярлык — другой exe: Steam рисует окна в steamwebhelper.exe.
+        // Берём основной exe программы, иначе у закреплённого ярлыка нет отметки, а рядом появляется второй значок.
+        static readonly Dictionary<string, string> hostCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public static string HostExe(string path)
+        {
+            if (path == null || !path.EndsWith("steamwebhelper.exe", StringComparison.OrdinalIgnoreCase)) return path;
+            string res;
+            if (hostCache.TryGetValue(path, out res)) return res;
+            res = path;
+            try { for (var d = System.IO.Path.GetDirectoryName(path); !string.IsNullOrEmpty(d); d = System.IO.Path.GetDirectoryName(d)) { var s = System.IO.Path.Combine(d, "steam.exe"); if (File.Exists(s)) { res = s; break; } } } catch { }
+            hostCache[path] = res; return res;
+        }
         List<Win> GetWindows()
         {
             var list = new List<Win>();
@@ -1313,7 +1325,7 @@ namespace FlowBar
                 var c = Cls(h); if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return true;
                 uint pid; N.GetWindowThreadProcessId(h, out pid); if (pid == selfPid) return true;
                 // shortcut: UWP-приложения группируются под ApplicationFrameHost; для раздельных иконок нужен AppUserModelID
-                list.Add(new Win { H = h, Pid = pid, Path = ExePath(pid), Mon = MonOf(h) });
+                list.Add(new Win { H = h, Pid = pid, Path = HostExe(ExePath(pid)), Mon = MonOf(h) });
                 return true;
             }, IntPtr.Zero);
             // какие окна на какой панели — настройка «Мониторы»: all — все окна везде; main — основная всё, остальные свои; own — каждая свои
@@ -1673,6 +1685,7 @@ namespace FlowBar
             fsHidden = full; ApplyVis();
         }
 
+        double activeX = double.NaN; // где была подложка активного значка
         List<string> runOrder = new List<string>();
         void RefreshApps()
         {
@@ -1743,7 +1756,19 @@ namespace FlowBar
             }
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
-            if (active) { tile.Base = Fa(0x1E); tile.Background = new SolidColorBrush(tile.Base); } // активное приложение — мягкая подложка
+            if (active)
+            {
+                // активное приложение — мягкая подложка; при смене окна она «переезжает» от прежнего значка к новому
+                var hl = new Border { Background = new SolidColorBrush(Fa(0x1E)), CornerRadius = tile.CornerRadius, Margin = new Thickness(-40, -40, -40, -40), Width = tile.Width, Height = tile.Height, IsHitTestVisible = false, RenderTransform = new TranslateTransform() };
+                grid.Children.Insert(0, hl);
+                tile.Loaded += (s, e) =>
+                {
+                    double x; try { x = tile.PointToScreen(new Point(tile.ActualWidth / 2, 0)).X / Scale; } catch { return; }
+                    double from = activeX; activeX = x;
+                    if (!Motion || double.IsNaN(from) || Math.Abs(from - x) < 2 || Math.Abs(from - x) > 1600) return;
+                    ((TranslateTransform)hl.RenderTransform).BeginAnimation(TranslateTransform.XProperty, new System.Windows.Media.Animation.DoubleAnimation(from - x, 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
+                };
+            }
             else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
             if (ws.Count == 0 && Elsewhere(path).Count > 0) tile.ToolTip = name + "\nОткрыта на другом мониторе — клик покажет окно там. Средний клик или Shift+клик — новое окно";
@@ -3627,6 +3652,7 @@ namespace FlowBar
                     fails += check(File.ReadAllText(System.IO.Path.Combine(dst, "notes.txt")) == "заметка" && File.Exists(System.IO.Path.Combine(dst, "screentime", "d.txt"))
                         && !Directory.Exists(System.IO.Path.Combine(dst, "cache")) && !File.Exists(System.IO.Path.Combine(dst, "error.log")) && !Directory.Exists(System.IO.Path.Combine(dst, "backups")), "Обновление: резервная копия данных");
                     { var nw = Bar.ParseNews("# t\n\nвступление\n\n## 1.1 — дата\n- Пункт **один**\n  - вложенный\n## 1.0\n- старый"); fails += check(nw.Count == 5 && nw[0].Item1 == 0 && nw[1].Item2 == "Пункт один" && nw[2].Item1 == 2 && nw[3].Item2 == "1.0", "Что нового: разбор списка изменений"); }
+                    fails += check(Bar.HostExe(@"C:\x\notepad.exe") == @"C:\x\notepad.exe" && Bar.HostExe(null) == null && Bar.HostExe(@"Z:\nowhere\bin\steamwebhelper.exe") == @"Z:\nowhere\bin\steamwebhelper.exe", "Окна: основной exe программы");
                     fails += check(Bar.BadgeOf("(3) WhatsApp", "x.exe") == 3 && Bar.BadgeOf("Chat (5)", @"C:\Telegram.exe") == 5 && Bar.BadgeOf("Новая папка (2)", "explorer.exe") == 0 && Bar.BadgeOf("(7 426) Mail", null) == 7426 && Bar.BadgeOf("Doc", null) == 0, "Ярлык: счётчик из заголовка окна");
                     fails += check(Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Wintun Userspace Tunnel") && Bar.IsVpnAdapter(NetworkInterfaceType.Ppp, "x") && !Bar.IsVpnAdapter(NetworkInterfaceType.Ethernet, "Realtek PCIe 5GbE Family Controller") && Bar.IsVirtualAdapter("Hyper-V Virtual Ethernet Adapter"), "Сеть: адаптер VPN отличается от обычного");
                     fails += check(Setup.V3(new Version(1, 2)) == "1.2.0" && new Version("1.1.0.0") > new Version("1.0.0.0"), "Обновление: сравнение версий");

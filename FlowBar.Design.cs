@@ -376,6 +376,17 @@ namespace FlowBar
                 Children.Add(t); Children.Add(fill);
                 tw = new Tw(x => { last = x; fill.Width = x <= 0.001 ? 0 : Math.Max(h, this.w * x); });
             }
+            // пауза: полоса «сжимается» — становится тоньше и бледнее; воспроизведение — распрямляется
+            bool squeezed;
+            public void Squeeze(bool on)
+            {
+                if (on == squeezed) return; squeezed = on;
+                var st = RenderTransform as ScaleTransform; if (st == null) { st = new ScaleTransform(1, 1); RenderTransform = st; RenderTransformOrigin = new Point(0.5, 0.5); }
+                var dur = TimeSpan.FromMilliseconds(Motion ? 220 : 0); var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+                st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(on ? 0.45 : 1, dur) { EasingFunction = ease });
+                st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(on ? 0.97 : 1, dur) { EasingFunction = ease });
+                BeginAnimation(OpacityProperty, new DoubleAnimation(on ? 0.6 : 1, dur));
+            }
             // ширина по месту (полоса во всю ширину модуля)
             public void Resize(double nw) { if (nw <= h || Math.Abs(nw - w) < 0.5) return; w = nw; Width = nw; fill.Width = last <= 0.001 ? 0 : Math.Max(h, w * last); }
             public void Set(double frac, Brush b = null, bool now = false)
@@ -1534,7 +1545,7 @@ namespace FlowBar
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
                             title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
                             artist.Text = s.HasMedia ? (s.Remote ? "На другом устройстве" : string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
-                            prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN);
+                            prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN); prog.Squeeze(s.HasMedia && !s.Playing);
                             if (ring != null) ring.Set(s.HasMedia && !double.IsNaN(s.Dur) && s.Dur > 0 ? s.Pos / s.Dur : 0, "");
                             if (first || s.Cover != shown)
                             {

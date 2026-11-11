@@ -145,7 +145,7 @@ namespace FlowBar
                 ((TextBlock)play.Child).Text = s.Playing ? "\uE769" : "\uE768";
                 Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
                 bool stream = s.HasMedia && double.IsNaN(s.Dur);
-                if (!seeking) prog.Set(s.HasMedia && !stream ? s.Pos / s.Dur : double.NaN, Accent);
+                if (!seeking) prog.Set(s.HasMedia && !stream ? s.Pos / s.Dur : double.NaN, Accent); prog.Squeeze(s.HasMedia && !s.Playing && !seeking);
                 hit.Cursor = s.CanSeek && !stream ? Cursors.Hand : null; hit.ToolTip = stream ? null : s.CanSeek ? "Нажмите или протяните, чтобы перемотать" : "Плеер не поддерживает перемотку";
                 t1.Text = stream ? "Трансляция — длительность неизвестна" : mmss(s.Pos); t2.Text = stream ? "" : mmss(s.Dur);
                 var key = string.Join("|", s.Sessions.Select(x => x.Item1)) + "#" + (mediaPick ?? "");
@@ -699,9 +699,20 @@ namespace FlowBar
             body.Children.Add(CardActions(Btn("Разгруппировать", () => { if (panel != null) panel.Close(); Ungroup(name); })));
             ShowPanel(name, body, 340, null);
         }
-        static Rectangle Indicator(bool active, bool many)
+        // отметка под значком: одно окно — одна черта; несколько окон — черта и точка рядом (как две отметки в Windows)
+        static FrameworkElement Indicator(bool active, bool many)
         {
-            var r = new Rectangle { Width = active ? Math.Round(TileH * 0.36) : (many ? 10 : 6), Height = 3, RadiusX = 1.5, RadiusY = 1.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) };
+            var one = Indicator1(active, many);
+            if (!many) return one;
+            var dot = new Rectangle { Width = 3, Height = 3, RadiusX = 1.5, RadiusY = 1.5, Margin = new Thickness(2, 0, 0, 0) };
+            if (active) { dot.Fill = Accent; dot.Opacity = 0.75; } else { FgBind(dot, Shape.FillProperty); dot.Opacity = 0.5; }
+            one.VerticalAlignment = VerticalAlignment.Center; one.Margin = new Thickness(0);
+            var sp = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) };
+            sp.Children.Add(one); sp.Children.Add(dot); return sp;
+        }
+        static Rectangle Indicator1(bool active, bool many)
+        {
+            var r = new Rectangle { Width = active ? Math.Round(TileH * (many ? 0.28 : 0.36)) : 6, Height = 3, RadiusX = 1.5, RadiusY = 1.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) };
             if (active) r.Fill = Accent; else { FgBind(r, Shape.FillProperty); r.Opacity = 0.5; } // фоновое приложение — заметно скромнее
             return r;
         }
