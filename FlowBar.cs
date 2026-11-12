@@ -1459,10 +1459,14 @@ namespace FlowBar
                 list.Add(new Win { H = h, Pid = pid, Path = uwp != null ? @"shell:AppsFolder\" + uwp : HostExe(ExePath(pid)), Mon = MonOf(h) });
                 return true;
             }, IntPtr.Zero);
-            // какие окна на какой панели — настройка «Мониторы»: all — все окна везде; main — основная всё, остальные свои; own — каждая свои
+            allWins = list;
+            return WindowsForBar(list);
+        }
+        // какие окна на какой панели — настройка «Мониторы»: all — все окна везде; main — основная всё, остальные свои; own — каждая свои
+        List<Win> WindowsForBar(List<Win> list)
+        {
             var mode = WinMode;
             bool all = !CompactMonitor && (bars.Count < 2 || mode == "all" || (mode == "main" && primary));
-            allWins = list;
             return all ? list : list.Where(w => w.Mon == mon).ToList();
         }
         // окна на всех мониторах (панель со «своими окнами» показывает только свои): клик по ярлыку выводит уже открытое окно с другого экрана, а не запускает программу заново
@@ -1860,7 +1864,10 @@ namespace FlowBar
         void RefreshApps()
         {
             if (dragging) return; // перестройка панели оборвала бы перетаскивание
-            var wins = GetWindows();
+            RefreshAppsFrom(GetWindows());
+        }
+        void RefreshAppsFrom(List<Win> wins)
+        {
             var present = new HashSet<string>(wins.Select(w => Key(w.Path)));
             runOrder.RemoveAll(p => !present.Contains(p));
             foreach (var w in wins) { var k = Key(w.Path); if (!runOrder.Contains(k)) runOrder.Add(k); }
@@ -1953,11 +1960,12 @@ namespace FlowBar
                 }
             }
             bool active = ws.Any(w => w.H == fg);
-            if (ws.Count > 0) grid.Children.Add(Indicator(active, ws.Count > 1));
-            else { int far = Elsewhere(path).Count; if (far > 0) grid.Children.Add(Indicator(false, far > 1, true)); } // открыта на другом мониторе: полая отметка, несколько окон — две
+            int local = ws.Count(w => w.Mon == mon), remote = Elsewhere(path).Count;
+            if (local + remote > 0) grid.Children.Add(Indicator(ws.Any(w => w.Mon == mon && w.H == fg), local, remote));
             bool flash = AddBadge(grid, ws);
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
+            System.Windows.Automation.AutomationProperties.SetItemStatus(tile, WindowIndicatorStatus(local, remote));
             AddProgress(grid, tile, ws, fg, name);
             if (active)
             {
@@ -1974,8 +1982,8 @@ namespace FlowBar
             }
             else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
-            if (ws.Count == 0 && Elsewhere(path).Count > 0)
-                tile.ToolTip = name + "\nОткрыто на другом мониторе\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
+            if (ws.Count == 0 && remote > 0)
+                tile.ToolTip = name + "\n" + WindowIndicatorStatus(local, remote) + "\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws);
             tile.AllowDrop = true;
             // файл тянут над значком открытой программы — её окно сразу выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)

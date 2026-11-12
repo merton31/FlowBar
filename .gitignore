@@ -15,6 +15,7 @@ tools/GpuGlassProbe/obj/
 !assets/preview/color.jpg
 !assets/FlowBar.ico
 !assets/logo.png
+!assets/elemental/*.png
 shots-*/
 
 # внутренние отчёты и планы (локальные пути, черновики)

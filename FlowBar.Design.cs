@@ -1285,6 +1285,15 @@ namespace FlowBar
             ClosePreview();
             Build(); ApplyStyle(); lastKey = null; RefreshApps(); Render();
         }
+        void RebuildForTheme(bool settingsChanged)
+        {
+            ClosePreview();
+            if (settingsChanged) ResetFit(true);
+            Build(true); ApplyStyle(); lastKey = null;
+            // The regular tick refreshes open windows. Avoid synchronous shell enumeration while switching themes.
+            RefreshAppsFrom(WindowsForBar(allWins));
+            Render();
+        }
         static Style CardScrollStyle;
         static void UseCardScroll(FrameworkElement w) { if (CardScrollStyle != null) w.Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)] = CardScrollStyle; }
         static void ApplyAppTheme() { try { ApplyAppThemeCore(); } catch (Exception ex) { Log(ex); } } // оформление подсказок не должно ронять панель
@@ -2964,10 +2973,11 @@ namespace FlowBar
 
         // ---------- сборка панели ----------
         Grid frame; Border shadow; Press doneTile;
-        void Build()
+        void Build(bool preserveBackdrops = false)
         {
             HookSharpness(); ConfigureSharpness(this);
-            ClearSectionBackdrops(); sectionKey = null;
+            if (!preserveBackdrops) ClearSectionBackdrops();
+            sectionKey = null;
             ups.Clear(); badges.Clear();
             double rad = Flush ? 0 : BarH / 2; // вплотную к краю — ровный прямоугольник
             root = new Border { CornerRadius = new CornerRadius(rad), Padding = new Thickness(SizeKey == "XL" ? 4 : 6), BorderThickness = new Thickness(1), AllowDrop = true, Height = VerticalBar ? double.NaN : BarH, Width = VerticalBar ? SideWidth : double.NaN };
@@ -3332,7 +3342,7 @@ namespace FlowBar
         Backdrop glassBg; bool glassHooked, glassWas;
         void UpdateRegion()
         {
-            if (hwnd == IntPtr.Zero || root == null) return;
+            if (hwnd == IntPtr.Zero || root == null || !root.IsLoaded || root.ActualWidth <= 0 || root.ActualHeight <= 0) return;
             if (!glassHooked)
             {
                 glassHooked = true;

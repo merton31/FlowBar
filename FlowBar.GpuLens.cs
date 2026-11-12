@@ -90,7 +90,7 @@ internal sealed unsafe class GpuLens : IDisposable
     IntPtr previous, previousView, compare, compareFlag, flagView, flagReadback;
     uint tilesX, tilesY;
     bool hasPresented, opacityChanged;
-    readonly float[] shaderParameters = new float[16];
+    readonly float[] shaderParameters = new float[20];
     readonly IntPtr[] probes;
     readonly long[] stamps = new long[4];
     int written, read;
@@ -134,7 +134,7 @@ internal sealed unsafe class GpuLens : IDisposable
             tilesY = (uint)(source.Height + 15) / 16;
             for (int i = 0; i < probes.Length; i++) probes[i] = MakeTexture(1, 1, 3, 0, 0x20000);
             CreateComposition(hwnd, lens);
-            PreparePipeline(lens, source, ios, screen, radius, band, shift, blur);
+            PreparePipeline(lens, source, ios, screen, radius, band, shift, blur, !diagnostics);
         }
         catch { Dispose(); throw; }
     }
@@ -197,7 +197,7 @@ internal sealed unsafe class GpuLens : IDisposable
         renderView = handle;
     }
 
-    void PreparePipeline(Rectangle lens, Rectangle source, bool ios, Rectangle screen, float radius, float band, float shift, int blur)
+    void PreparePipeline(Rectangle lens, Rectangle source, bool ios, Rectangle screen, float radius, float band, float shift, int blur, bool liveRim)
     {
         byte[] code;
         using (var shader = typeof(GpuLens).Assembly.GetManifestResourceStream("FlowBar.Glass.hlsl"))
@@ -215,7 +215,7 @@ internal sealed unsafe class GpuLens : IDisposable
         var desc = new SamplerDesc { Filter = 0x15, U = 3, V = 3, W = 3, Comparison = 8, MaxLod = float.MaxValue };
         Check(Method<CreateSampler>(device, 23)(device,&desc,&handle), "CreateSamplerState");
         sampler = handle;
-        constants = MakeBuffer(new BufferDesc { Bytes = 64, Bind = 4 });
+        constants = MakeBuffer(new BufferDesc { Bytes = 80, Bind = 4 });
         float half = Math.Min(lens.Width, lens.Height) * 0.5f;
         var data = shaderParameters;
         data[0] = lens.Width; data[1] = lens.Height;
@@ -227,6 +227,7 @@ internal sealed unsafe class GpuLens : IDisposable
         data[13] = lens.Top - screen.Top < shift ? -1 : 1;
         data[14] = screen.Right - lens.Right < shift ? -1 : 1;
         data[15] = screen.Bottom - lens.Bottom < shift ? -1 : 1;
+        data[16] = liveRim ? 1 : 0;
         UploadParameters();
         var viewport = new Viewport { Width = lens.Width, Height = lens.Height, MaxDepth = 1 };
         Method<SetViewport>(context, 44)(context,1,&viewport);
@@ -237,6 +238,7 @@ internal sealed unsafe class GpuLens : IDisposable
         Method<BindViews>(context, 10)(context,0,1,&handle);
         handle = constants;
         Method<BindViews>(context, 16)(context,0,1,&handle);
+        Method<BindViews>(context, 71)(context,0,1,&handle);
     }
 
     void UploadParameters()

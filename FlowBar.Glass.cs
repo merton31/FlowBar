@@ -182,7 +182,7 @@ namespace FlowBar
                 }
                 else if (UseLens(owner, new System.Drawing.Rectangle(x, y, w, h), monitor, r, lens, device, preferGpu))
                 {
-                    if (shown) { ShowWindow(host.Handle, 0); shown = false; }
+                    SetCore(lensWindow.StackBelow(owner), x, y, w, h, r, show, blur);
                     return;
                 }
                 SetCore(owner, x, y, w, h, r, show, blur);

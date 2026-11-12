@@ -20,7 +20,7 @@ namespace FlowBar
     }
 
     // Converts a rounded glass contour into a map from destination pixels to background samples.
-    // The same map is used by the live panel and the settings preview.
+    // The preview owns a clean image. Live glass samples only outside the panel.
     internal sealed class GlassLensMap
     {
         readonly int sourceWidth, sourceHeight, targetWidth, targetHeight;
@@ -29,7 +29,7 @@ namespace FlowBar
         readonly byte[] alpha;
         public int[] Pixels { get; private set; }
 
-        public GlassLensMap(PixelRect target, PixelRect source, PixelRect screen, double radius, LensSettings lens)
+        public GlassLensMap(PixelRect target, PixelRect source, PixelRect screen, double radius, LensSettings lens, PixelRect covered = default(PixelRect))
         {
             sourceWidth = source.Width; sourceHeight = source.Height;
             targetWidth = target.Width; targetHeight = target.Height;
@@ -52,7 +52,7 @@ namespace FlowBar
                     double distance = outside + Math.Min(Math.Max(qx, qy), 0) - radius;
                     int i = y * target.Width + x;
                     if (distance >= 0.5) continue;
-                    alpha[i] = (byte)Math.Round(255 * Math.Min(1, 0.5 - distance));
+                    double opacity = Math.Min(1, 0.5 - distance);
                     double sx = x + left, sy = y + top;
                     if (distance > -band)
                     {
@@ -62,9 +62,27 @@ namespace FlowBar
                         if (lens.Profile == LensProfile.Ios) shift *= t;
                         double nx = outside > 0 ? ox / outside : qx >= qy ? 1 : 0;
                         double ny = outside > 0 ? oy / outside : qx < qy ? 1 : 0;
-                        sx += shift * nx * (px < 0 ? (flipLeft ? 1 : -1) : (flipRight ? -1 : 1));
-                        sy += shift * ny * (py < 0 ? (flipTop ? 1 : -1) : (flipBottom ? -1 : 1));
+                        if (covered.IsEmpty)
+                        {
+                            sx += shift * nx * (px < 0 ? (flipLeft ? 1 : -1) : (flipRight ? -1 : 1));
+                            sy += shift * ny * (py < 0 ? (flipTop ? 1 : -1) : (flipBottom ? -1 : 1));
+                        }
+                        else
+                        {
+                            int edgeX = px < 0 ? covered.Left - 1 : covered.Right;
+                            int edgeY = py < 0 ? covered.Top - 1 : covered.Bottom;
+                            if (edgeX < source.Left || edgeX >= source.Right) nx = 0;
+                            if (edgeY < source.Top || edgeY >= source.Bottom) ny = 0;
+                            if (nx == 0 && ny == 0) continue;
+                            opacity *= 0.55 * t * Math.Min(1, lens.Shift / 4) * Math.Max(nx, ny);
+                            if (nx >= ny)
+                                sx = edgeX - source.Left + (px < 0 ? -shift : shift);
+                            else
+                                sy = edgeY - source.Top + (py < 0 ? -shift : shift);
+                        }
                     }
+                    else if (!covered.IsEmpty) continue;
+                    alpha[i] = (byte)Math.Round(255 * opacity);
                     sx = Math.Max(0, Math.Min(sourceWidth - 1, sx));
                     sy = Math.Max(0, Math.Min(sourceHeight - 1, sy));
                     int ix = (int)sx, iy = (int)sy;

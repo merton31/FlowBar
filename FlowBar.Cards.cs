@@ -1,4 +1,4 @@
-﻿// FlowBar — карточки (система, музыка, переполнение, группы программ), каталог виджетов, окно настроек,
+// FlowBar — карточки (система, музыка, переполнение, группы программ), каталог виджетов, окно настроек,
 // уведомления и снимки для приёмки.
 using System;
 using System.Collections.Generic;
@@ -718,11 +718,13 @@ namespace FlowBar
         {
             var members = appGroups.ContainsKey(name) ? appGroups[name] : new List<string>();
             var holder = new Grid(); holder.Children.Add(GroupIcon(members));
-            int running = members.Count(m => wins.ContainsKey(Key(Target(m))));
-            bool active = members.Any(m => { List<Win> ws; return wins.TryGetValue(Key(Target(m)), out ws) && ws.Any(w => w.H == fg); });
-            if (running > 0) holder.Children.Add(Indicator(active, running > 1));
+            var memberKeys = new HashSet<string>(members.Select(m => Key(Target(m))));
             // уведомления участников — на значке группы: сумма счётчиков, мигание, прогресс
             var gws = members.SelectMany(x => { List<Win> w1; return wins.TryGetValue(Key(Target(x)), out w1) ? w1 : new List<Win>(); }).ToList();
+            bool active = gws.Any(w => w.H == fg);
+            int local = gws.Where(w => w.Mon == mon).Select(w => w.H).Distinct().Count();
+            int remote = allWins.Count(w => w.Mon != mon && memberKeys.Contains(Key(w.Path)));
+            if (local + remote > 0) holder.Children.Add(Indicator(gws.Any(w => w.Mon == mon && w.H == fg), local, remote));
             bool flash = AddBadge(holder, gws);
             string tip = "Группа «" + name + "»: " + members.Count + " прогр.";
             var t = Tile(holder, tip, () => ShowGroup(name), m =>
@@ -731,6 +733,7 @@ namespace FlowBar
                 m.Items.Add(Item("Разгруппировать", () => Ungroup(name)));
             });
             AddProgress(holder, t, gws, fg, tip);
+            System.Windows.Automation.AutomationProperties.SetItemStatus(t, WindowIndicatorStatus(local, remote));
             if (active) { t.Base = Fa(0x1E); t.Background = new SolidColorBrush(t.Base); }
             else if (flash) { t.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); t.Background = new SolidColorBrush(t.Base); }
             return t;
@@ -822,22 +825,6 @@ namespace FlowBar
             };
             body.Children.Add(CardActions(Btn("Разгруппировать", () => { if (panel != null) panel.Close(); Ungroup(name); })));
             ShowPanel(name, body, 340, null);
-        }
-        // отметка под значком: одно окно — одна черта; несколько окон — две равные черты рядом; hollow — окна на другом мониторе (полые)
-        FrameworkElement Indicator(bool active, bool many, bool hollow = false)
-        {
-            Func<Rectangle> bar = () =>
-            {
-                var r = new Rectangle { Width = active ? Math.Round(TileH * (many ? 0.17 : 0.36)) : (hollow ? 8 : 6), Height = hollow ? 4 : 3, RadiusX = hollow ? 2 : 1.5, RadiusY = hollow ? 2 : 1.5 };
-                if (hollow) { r.StrokeThickness = 1; FgBind(r, Shape.StrokeProperty); r.Opacity = 0.6; }
-                else if (active) r.Fill = Accent;
-                else { FgBind(r, Shape.FillProperty); r.Opacity = 0.5; } // фоновое приложение — заметно скромнее
-                return r;
-            };
-            var sp = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1), IsHitTestVisible = false };
-            sp.Children.Add(bar());
-            if (many) { var b2 = bar(); b2.Margin = new Thickness(3, 0, 0, 0); sp.Children.Add(b2); }
-            return sp;
         }
 
         // ---------- окна FlowBar: каталог и настройки ----------
@@ -1131,11 +1118,55 @@ namespace FlowBar
         static TextBlock SHint(string s) { var t = Txt(s, 11.5, false); t.Opacity = 0.7; t.TextWrapping = TextWrapping.Wrap; return t; }
 
         static readonly string[][] FeaturedThemes = {
-            new[] { "Black", "Уголь", "Тёмная", "♨", "#FF7049" },
-            new[] { "iOS Glass", "Солнце", "Светлое стекло", "☼", "#FFCF60" },
-            new[] { "Liquid Glass", "Ветер", "Прозрачное стекло", "≋", "#6AF4D0" },
-            new[] { "Midnight", "Сумерки", "Синяя ночь", "☾", "#B39BFF" }
+            new[] { "Black", "Уголь", "Тёмная", "#FF7049" },
+            new[] { "iOS Glass", "Солнце", "Светлая", "#FFCF60" },
+            new[] { "Liquid Glass", "Ветер", "Стекло", "#6AF4D0" },
+            new[] { "Midnight", "Сумерки", "Ночная", "#F192C7" }
         };
+
+        enum ThemeMotif { Fire, Sun, Wind, Petals }
+
+        static ThemeMotif ThemeArt(string key, Color tint)
+        {
+            switch (key)
+            {
+                case "Black": return ThemeMotif.Fire;
+                case "iOS Glass": return ThemeMotif.Sun;
+                case "Liquid Glass": return ThemeMotif.Wind;
+                case "Midnight": return ThemeMotif.Petals;
+            }
+            if (tint.R > tint.B + 28)
+                return tint.G > tint.R * 0.64 ? ThemeMotif.Sun : ThemeMotif.Fire;
+            return tint.R > tint.G + 12 && tint.B > tint.G + 12 ? ThemeMotif.Petals : ThemeMotif.Wind;
+        }
+
+        static Shape ThemeLineIcon(ThemeMotif motif)
+        {
+            string shape;
+            switch (motif)
+            {
+                case ThemeMotif.Fire:
+                    shape = "M12,22 C6,22 4,18 5,14 C5,11 8,9 8,6 C12,8 10,11 12,13 C16,11 15,6 15,3 C21,7 21,14 18,19 C17,21 14,22 12,22Z M12,22 C9,20 9,17 12,15 C15,17 15,20 12,22Z";
+                    break;
+                case ThemeMotif.Sun:
+                    shape = "M16.5,12 A4.5,4.5 0 1 1 7.5,12 A4.5,4.5 0 1 1 16.5,12 M12,2 L12,5 M12,19 L12,22 M2,12 L5,12 M19,12 L22,12 M5,5 L7,7 M17,17 L19,19 M5,19 L7,17 M17,7 L19,5";
+                    break;
+                case ThemeMotif.Wind:
+                    shape = "M2,8 L15,8 C19,8 19,3 15,3 C13,3 12,4 12,5 M2,12 L20,12 C23,12 23,8 20,8 M4,16 L15,16 C19,16 18,21 15,21 C13,21 12,20 12,19";
+                    break;
+                default:
+                    shape = "M12,8 C8,4 11,2 12,2 C14,2 16,4 12,8 M16,10 C18,5 22,6 22,9 C22,12 19,13 16,12 M15,15 C20,16 20,20 17,21 C14,22 13,19 13,17 M10,16 C9,22 5,22 4,19 C3,17 6,14 8,14 M8,11 C2,12 1,8 4,6 C6,5 8,7 10,9 M15,12 A3,3 0 1 1 9,12 A3,3 0 1 1 15,12";
+                    break;
+            }
+            return new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse(shape), Width = 22, Height = 22, Stretch = Stretch.Uniform,
+                Stroke = Frozen(Color.FromRgb(236, 235, 245), 0xE0), StrokeThickness = 1.35,
+                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round, HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
+            };
+        }
 
         static DoubleAnimation SettingsMotion(double from, double to, int duration)
         {
@@ -1144,222 +1175,6 @@ namespace FlowBar
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
                 FillBehavior = FillBehavior.Stop
             };
-        }
-
-        sealed class ThemeMotionArt : FrameworkElement
-        {
-            static readonly DependencyProperty PhaseProperty = DependencyProperty.Register(
-                "Phase", typeof(double), typeof(ThemeMotionArt),
-                new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
-            readonly string key;
-            readonly Brush light, color;
-            readonly Pen core, edge, trail;
-            bool playing;
-
-            public ThemeMotionArt(string themeKey, Color tint)
-            {
-                key = themeKey;
-                Width = 136; Height = 132;
-                HorizontalAlignment = HorizontalAlignment.Center;
-                IsHitTestVisible = false;
-                Visibility = Visibility.Hidden;
-                light = Frozen(Color.FromRgb(
-                    (byte)((tint.R + 255) / 2), (byte)((tint.G + 255) / 2), (byte)((tint.B + 255) / 2)), 255);
-                color = Frozen(tint, 255);
-                core = new Pen(light, 1.2); core.Freeze();
-                edge = new Pen(color, 1); edge.Freeze();
-                trail = new Pen(Frozen(tint, 0x52), 4); trail.Freeze();
-            }
-
-            public void SetActive(bool active, bool animate)
-            {
-                Visibility = active ? Visibility.Visible : Visibility.Hidden;
-                bool run = active && animate;
-                if (run == playing) return;
-                playing = run;
-                if (!run)
-                {
-                    BeginAnimation(PhaseProperty, null);
-                    return;
-                }
-                int duration = key == "Black" ? 1950 : key == "iOS Glass" ? 2700 : key == "Liquid Glass" ? 2100 : 3300;
-                BeginAnimation(PhaseProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(duration))
-                {
-                    RepeatBehavior = RepeatBehavior.Forever
-                });
-            }
-
-            protected override void OnRender(DrawingContext dc)
-            {
-                base.OnRender(dc);
-                double phase = (double)GetValue(PhaseProperty);
-                double pulse = 0.5 - 0.5 * Math.Cos(phase * 2 * Math.PI);
-                dc.PushOpacity(0.34 + 0.28 * pulse);
-                dc.DrawRoundedRectangle(null, trail, new Rect(34, 10, 68, 112), 34, 34);
-                dc.Pop();
-                switch (key)
-                {
-                    case "Black": DrawEmbers(dc, phase); break;
-                    case "iOS Glass": DrawSun(dc, phase, pulse); break;
-                    case "Liquid Glass": DrawWind(dc, phase); break;
-                    default: DrawTwilight(dc, phase); break;
-                }
-            }
-
-            void DrawEmbers(DrawingContext dc, double phase)
-            {
-                // Внешние языки пламени поднимаются вдоль контура капсулы.
-                for (int i = 0; i < 5; i++)
-                {
-                    double wave = Math.Sin((phase + i * 0.17) * 2 * Math.PI);
-                    double x = 32 + i * 18;
-                    var curve = new StreamGeometry();
-                    using (var path = curve.Open())
-                    {
-                        path.BeginFigure(new Point(x, 63 - Math.Abs(2 - i) * 5), false, false);
-                        path.BezierTo(new Point(x - 13, 48), new Point(x + 13 * wave, 31), new Point(x + 7 * wave, 7 + Math.Abs(2 - i) * 8), true, false);
-                    }
-                    dc.PushOpacity(0.3 + 0.23 * wave);
-                    dc.DrawGeometry(null, trail, curve);
-                    dc.DrawGeometry(null, edge, curve);
-                    dc.Pop();
-                }
-                for (int i = 0; i < 22; i++)
-                {
-                    double life = (phase + i * 0.61803398875) % 1;
-                    double spread = 23 + i * 7 % 25;
-                    double x = 68 + (i % 2 == 0 ? -1 : 1) * (spread + 8 * life) + 3 * Math.Sin(life * 8 + i);
-                    double y = 100 - life * (76 + i % 6 * 6);
-                    double radius = (1 + i % 3 * 0.45) * (1 - life * 0.5);
-                    dc.PushOpacity(Math.Sin(life * Math.PI) * 0.9);
-                    dc.DrawEllipse(i % 3 == 0 ? light : color, null, new Point(x, y), radius, radius * 1.3);
-                    dc.Pop();
-                }
-            }
-
-            void DrawSun(DrawingContext dc, double phase, double pulse)
-            {
-                for (int i = 0; i < 32; i++)
-                {
-                    double angle = i * Math.PI / 16 + Math.Sin(phase * 2 * Math.PI) * 0.12;
-                    double x = Math.Cos(angle), y = Math.Sin(angle);
-                    double start = 1 / Math.Sqrt(x * x / (32 * 32) + y * y / (54 * 54));
-                    double length = 10 + (i * 11 % 18) + 9 * pulse;
-                    var near = new Point(68 + x * start, 66 + y * start);
-                    var middle = new Point(68 + x * (start + length * 0.52), 66 + y * (start + length * 0.52));
-                    var end = new Point(68 + x * (start + length), 66 + y * (start + length));
-                    dc.PushOpacity(0.2 + 0.55 * (0.5 + 0.5 * Math.Sin(i * 2.1 + phase * 2 * Math.PI)));
-                    dc.DrawLine(trail, near, middle);
-                    dc.DrawLine(core, near, middle);
-                    dc.DrawLine(edge, middle, end);
-                    dc.Pop();
-                }
-            }
-
-            void DrawWind(DrawingContext dc, double phase)
-            {
-                for (int i = 0; i < 4; i++)
-                {
-                    double progress = (phase + i * 0.25) % 1;
-                    double x = -52 + 70 * progress, y = 26 + i * 23 + 4 * Math.Sin(progress * Math.PI * 2);
-                    var curve = new StreamGeometry();
-                    using (var path = curve.Open())
-                    {
-                        path.BeginFigure(new Point(x, y + 12), false, false);
-                        path.BezierTo(new Point(x + 36, y - 17), new Point(x + 101, y + 25), new Point(x + 125, y - 2), true, false);
-                        path.BezierTo(new Point(x + 143, y - 21), new Point(x + 113, y - 23), new Point(x + 118, y - 8), true, false);
-                    }
-                    dc.PushOpacity(0.88 * Math.Sin(progress * Math.PI));
-                    dc.DrawGeometry(null, trail, curve);
-                    dc.DrawGeometry(null, i % 2 == 0 ? core : edge, curve);
-                    dc.Pop();
-                }
-            }
-
-            void DrawTwilight(DrawingContext dc, double phase)
-            {
-                for (int i = 0; i < 17; i++)
-                {
-                    double wave = 0.5 - 0.5 * Math.Cos((phase + i * 0.61803398875) * Math.PI * 2);
-                    double x = 68 + (i % 2 == 0 ? -1 : 1) * (30 + i * 7 % 34);
-                    double y = 10 + i * 29 % 113 + 2.5 * Math.Sin(phase * 2 * Math.PI + i);
-                    double size = (1.1 + i % 4) * (0.6 + 0.4 * wave);
-                    dc.PushOpacity(0.1 + 0.85 * wave * wave);
-                    dc.DrawEllipse(i % 3 == 0 ? light : color, null, new Point(x, y), 1.05, 1.05);
-                    if (i % 3 == 0)
-                    {
-                        dc.DrawLine(core, new Point(x - size, y), new Point(x + size, y));
-                        dc.DrawLine(core, new Point(x, y - size * 1.25), new Point(x, y + size * 1.25));
-                    }
-                    dc.Pop();
-                }
-            }
-        }
-
-        static Press ElementTheme(string[] theme, bool selected, Action pick, Action<bool> preview)
-        {
-            var tint = (Color)ColorConverter.ConvertFromString(theme[4]);
-            var art = new Grid { Height = 132, ClipToBounds = true, IsHitTestVisible = false };
-            var halo = new Grid { Width = 148, Height = 132, HorizontalAlignment = HorizontalAlignment.Center };
-            var wash = new RadialGradientBrush(Frozen(tint, 0xA0).Color, Frozen(tint, 0).Color);
-            halo.Children.Add(new Rectangle { Fill = wash });
-            art.Children.Add(halo);
-            var effect = new ThemeMotionArt(theme[0], tint);
-            art.Children.Add(effect);
-            var icon = Txt(theme[3], 31, false);
-            icon.Foreground = Brushes.White; icon.HorizontalAlignment = HorizontalAlignment.Center; icon.VerticalAlignment = VerticalAlignment.Center;
-            var capsule = new Border
-            {
-                Width = 62, Height = 106, CornerRadius = new CornerRadius(31), BorderThickness = new Thickness(1),
-                Background = new LinearGradientBrush(Color.FromRgb(17, 17, 24), Frozen(tint, 0x40).Color, 115),
-                Child = icon, RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = new ScaleTransform(1, 1)
-            };
-            art.Children.Add(capsule);
-            var label = Txt(theme[1], 14, true); label.TextAlignment = TextAlignment.Center;
-            var material = Txt(theme[2], 11, false); material.TextAlignment = TextAlignment.Center; material.Opacity = 0.72;
-            var face = VS(art, label, material);
-            var content = new Grid(); content.Children.Add(face);
-            if (selected)
-            {
-                var check = Txt("✓", 13, true); check.Foreground = Frozen(CardFg, 255);
-                check.HorizontalAlignment = HorizontalAlignment.Right; check.VerticalAlignment = VerticalAlignment.Top;
-                check.Margin = new Thickness(0, 2, 4, 0); content.Children.Add(check);
-            }
-            var button = new Press
-            {
-                Width = 150, Margin = new Thickness(0, 0, 8, 8), Padding = new Thickness(6, 4, 6, 10),
-                CornerRadius = new CornerRadius(14), Background = Frozen(CardFg, selected ? (byte)0x13 : (byte)0x07),
-                BorderThickness = new Thickness(1), Child = content, Cursor = Cursors.Hand, Invoke = pick, Tag = "settings-theme:" + theme[0]
-            };
-            bool hover = false;
-            Action<bool> paint = animate =>
-            {
-                bool focused = button.IsKeyboardFocused;
-                double opacity = hover || focused ? 0.9 : selected ? 0.32 : 0;
-                var scale = (ScaleTransform)capsule.RenderTransform;
-                double from = halo.Opacity, fromScale = scale.ScaleX, size = hover && Motion ? 1.05 : 1;
-                halo.BeginAnimation(OpacityProperty, null);
-                scale.BeginAnimation(ScaleTransform.ScaleXProperty, null); scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-                halo.Opacity = opacity; scale.ScaleX = size; scale.ScaleY = size;
-                if (animate && Motion)
-                {
-                    halo.BeginAnimation(OpacityProperty, SettingsMotion(from, opacity, 240));
-                    scale.BeginAnimation(ScaleTransform.ScaleXProperty, SettingsMotion(fromScale, size, 240));
-                    scale.BeginAnimation(ScaleTransform.ScaleYProperty, SettingsMotion(fromScale, size, 240));
-                }
-                capsule.BorderBrush = hover || focused ? Brushes.White : Frozen(tint, selected ? (byte)0xFF : (byte)0x66);
-                button.BorderBrush = focused ? Frozen(CardFg, 255) : selected ? Frozen(tint, 0xC0) : Frozen(CardFg, 0x22);
-                effect.SetActive(hover && button.IsVisible, Motion);
-            };
-            paint(false);
-            button.MouseEnter += (s, e) => { hover = true; paint(true); preview(true); };
-            button.MouseLeave += (s, e) => { hover = false; paint(true); preview(false); };
-            button.IsKeyboardFocusedChanged += (s, e) => paint(true);
-            button.IsVisibleChanged += (s, e) => { if (!button.IsVisible) hover = false; paint(false); };
-            button.Unloaded += (s, e) => effect.SetActive(false, false);
-            button.MouseLeftButtonUp += (s, e) => { e.Handled = true; pick(); };
-            System.Windows.Automation.AutomationProperties.SetName(button, theme[1] + ", " + theme[2] + (selected ? ", выбрана" : ""));
-            return button;
         }
 
         // Локальная примерка меняет только это представление. Настройки панели пишутся обработчиками выбора.
@@ -1401,7 +1216,7 @@ namespace FlowBar
                 string name = next == null ? "" : featured == null ? ThemeName(next) : featured[1];
                 title.Text = compare ? "Сейчас" : next == null ? "Предпросмотр панели" : "Примерка · " + name;
                 otherTitle.Text = saved != null ? "Сохранено " + candidateAppearanceDate : next == null ? "После" : "После · " + name;
-                DrawSettingsBar(scene, compare ? null : next);
+                if (!compare || key == null || scene.Child == null) DrawSettingsBar(scene, compare ? null : next);
                 if (compare) DrawSettingsBar(otherScene, saved != null ? null : next, saved);
             };
             render(null);
@@ -1535,7 +1350,11 @@ namespace FlowBar
                 }
                 var foreground = N.GetForegroundWindow();
                 bool active = wins != null && wins.Any(w => w.H == foreground);
-                if (wins != null && wins.Count > 0) cell.Children.Add(Indicator(active, wins.Count > 1));
+                if (wins != null && wins.Count > 0)
+                {
+                    int local = wins.Count(w => w.Mon == mon);
+                    cell.Children.Add(Indicator(wins.Any(w => w.Mon == mon && w.H == foreground), local, wins.Count - local, false));
+                }
                 var tile = Tile(cell, null, null, null);
                 if (active) tile.Background = Frozen(Cur.Fg, 0x1E);
                 return tile;
@@ -1627,6 +1446,7 @@ namespace FlowBar
         }
 
         static Window settings; static Action<string> settingsGo;
+        static Action settingsRefreshChrome, settingsRefreshTheme;
         static FrameworkElement SettingsFocusTarget(DependencyObject root, string tag)
         {
             var control = root as FrameworkElement;
@@ -1666,6 +1486,13 @@ namespace FlowBar
             var preview = AddSettingsPreview(previewBody);
             refreshPreview = preview;
             string cur = section ?? "look";
+            Action paintChrome = () =>
+            {
+                w.Background = Frozen(CardBg, 255); w.Foreground = Frozen(CardFg, 255);
+                navSide.Background = Frozen(CardFg, 0x08); navSide.BorderBrush = Frozen(CardFg, 0x22);
+                previewFooter.BorderBrush = Frozen(CardFg, 0x22);
+                selection.Background = Frozen(AccentColor, 0x36);
+            };
             Action<string> go = null;
             go = key =>
             {
@@ -1673,10 +1500,7 @@ namespace FlowBar
                 var focused = Keyboard.FocusedElement as FrameworkElement;
                 var focusTag = focused == null ? null : focused.Tag as string;
                 cur = key; lastSection = key; double off = changed ? 0 : scroll.VerticalOffset;
-                w.Background = Frozen(CardBg, 255); w.Foreground = Frozen(CardFg, 255);
-                navSide.Background = Frozen(CardFg, 0x08); navSide.BorderBrush = Frozen(CardFg, 0x22);
-                previewFooter.BorderBrush = Frozen(CardFg, 0x22);
-                selection.Background = Frozen(AccentColor, 0x36);
+                paintChrome();
                 var marker = (TranslateTransform)selection.RenderTransform;
                 double y = Math.Max(0, Array.FindIndex(SettingsSections, item => item[0] == key)) * 40;
                 double from = marker.Y;
@@ -1692,6 +1516,7 @@ namespace FlowBar
                     navList.Children.Add(item);
                 }
                 content.Children.Clear();
+                settingsRefreshTheme = null;
                 Action again = () => go(cur);
                 switch (key)
                 {
@@ -1714,13 +1539,24 @@ namespace FlowBar
                 }
                 if (changed && Motion) content.BeginAnimation(OpacityProperty, SettingsMotion(0.55, 1, 160));
             };
-            settingsGo = go; go(cur);
+            settingsGo = go;
+            settingsRefreshChrome = () => { paintChrome(); StyleInputs(content, CardFg); };
+            go(cur);
             w.Content = dock;
             w.Activated += (s, e) => preview(null);
-            w.Closed += (s, e) => { settings = null; settingsGo = null; refreshPreview = null; settingsPreviewMonitor = null; candidateTheme = null; candidateAppearance = null; };
+            w.Closed += (s, e) => { settings = null; settingsGo = null; settingsRefreshChrome = settingsRefreshTheme = null; refreshPreview = null; settingsPreviewMonitor = null; candidateTheme = null; candidateAppearance = null; };
             settings = w; w.Show(); w.Activate();
         }
-        static void RestyleWindows() { if (settingsGo != null) settingsGo(settingsCur()); if (catalog != null) { catalog.Background = Frozen(CardBg, 255); catalog.Foreground = Frozen(CardFg, 255); if (catalogRender != null) catalogRender(); } }
+        static void RestyleWindows(bool preserveAppearance = false)
+        {
+            if (preserveAppearance && settingsRefreshTheme != null)
+            {
+                settingsRefreshChrome();
+                settingsRefreshTheme();
+            }
+            else if (settingsGo != null) settingsGo(settingsCur());
+            if (catalog != null) { catalog.Background = Frozen(CardBg, 255); catalog.Foreground = Frozen(CardFg, 255); if (catalogRender != null) catalogRender(); }
+        }
         static string settingsCur() { return lastSection ?? "look"; }
         static string lastSection;
 
@@ -1730,17 +1566,66 @@ namespace FlowBar
             c.Children.Add(SH("Оформление"));
             c.Children.Add(SHint(CompareThemes ? "Выберите тему и подтвердите её в предпросмотре." : "Наведите на тему для примерки. Нажмите, чтобы применить."));
             c.Children.Add(SSub("Тема"));
-            var wrap = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
             var curKey = C("style", "Black");
-            foreach (var t in FeaturedThemes)
+            var refreshCards = new List<Action>();
+            string pendingTheme = null;
+            Func<string> selection = () => pendingTheme ?? (CompareThemes ? candidateTheme : null) ?? C("style", "Black");
+            var commit = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(360) };
+            var hoverPreview = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(100) };
+            string hoverKey = null;
+            bool previewAfterSlide = false;
+            hoverPreview.Tick += (s, e) => { hoverPreview.Stop(); previewAfterSlide = false; if (lastSection == "look") preview(hoverKey); };
+            Action<string, bool> queuePreview = (key, afterSlide) =>
             {
-                var k = t[0];
-                wrap.Children.Add(ElementTheme(t, curKey == k, () => PickTheme(k, preview),
-                    over => preview(over ? k : null)));
-            }
-            c.Children.Add(wrap);
-            var more = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-            foreach (var k in Styles.Keys.Where(k => !FeaturedThemes.Any(t => t[0] == k) && !fileThemes.ContainsKey(k)).ToList()) { var kk = k; more.Children.Add(ThemeSwatch(kk, ThemeName(kk), curKey == kk, () => PickTheme(kk, preview))); }
+                hoverKey = key;
+                previewAfterSlide = afterSlide && Motion;
+                hoverPreview.Stop();
+                hoverPreview.Interval = TimeSpan.FromMilliseconds(previewAfterSlide ? 355 : 100);
+                hoverPreview.Start();
+            };
+            commit.Tick += (s, e) =>
+            {
+                commit.Stop();
+                var next = pendingTheme;
+                pendingTheme = null;
+                hoverPreview.Stop();
+                if (next != null) ChangeTheme(next);
+            };
+            Action refresh = () => { foreach (var repaint in refreshCards) repaint(); };
+            settingsRefreshTheme = () => { refresh(); queuePreview(null, false); };
+            Action<string> pick = key =>
+            {
+                commit.Stop();
+                if (CompareThemes)
+                {
+                    pendingTheme = null;
+                    candidateTheme = key;
+                    queuePreview(key, true);
+                }
+                else if (Motion)
+                {
+                    pendingTheme = key;
+                    hoverPreview.Stop();
+                    commit.Start();
+                }
+                else { hoverPreview.Stop(); ChangeTheme(key); return; }
+                refresh();
+            };
+            Func<List<Press>, Border> shelf = cards => ThemeShelf(cards, selection, refreshCards);
+            Func<string, bool, Press> card = (key, palette) =>
+            {
+                var featured = palette ? null : FeaturedThemes.FirstOrDefault(t => t[0] == key);
+                var tint = featured == null ? Styles[key].Ac : (Color)ColorConverter.ConvertFromString(featured[3]);
+                return new ThemeCapsule(key, featured == null ? ThemeName(key) : featured[1], featured == null ? null : featured[2],
+                    tint, () => key == selection(),
+                    () => pick(key), over => { if (!commit.IsEnabled && !previewAfterSlide) queuePreview(over ? key : null, false); }, palette);
+            };
+            var featuredShelf = shelf(FeaturedThemes.Select(t => card(t[0], false)).ToList());
+            featuredShelf.Unloaded += (s, e) => { commit.Stop(); hoverPreview.Stop(); };
+            c.Children.Add(featuredShelf);
+            var extraCards = Styles.Keys.Where(k => !FeaturedThemes.Any(t => t[0] == k) && !fileThemes.ContainsKey(k))
+                .Select(k => card(k, false)).ToList();
+            var more = shelf(extraCards);
             // своё раскрытие вместо Expander: системный стиль Expander перебивал цвета темы
             more.Visibility = FeaturedThemes.Any(t => t[0] == curKey) ? Visibility.Collapsed : Visibility.Visible;
             var arrow = G(more.Visibility == Visibility.Visible ? "\uE70D" : "\uE76C", 10);
@@ -1755,9 +1640,9 @@ namespace FlowBar
             {
                 c.Children.Add(SSub("Свои темы"));
                 c.Children.Add(SHint("Тема — текстовый файл .fbtheme: цвета панели, текста и акцента, размытие и значения вида. Файл можно переслать другому человеку: положите его в папку тем и откройте этот раздел."));
-                var mine = new StackPanel(); var own = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-                foreach (var nm0 in fileThemes.Keys.ToList()) { var nm = nm0; own.Children.Add(ThemeSwatch(nm, nm, curKey == nm, () => PickTheme(nm, preview))); }
-                if (own.Children.Count > 0) mine.Children.Add(own);
+                var mine = new StackPanel();
+                var own = fileThemes.Keys.Select(name => card(name, false)).ToList();
+                if (own.Count > 0) mine.Children.Add(shelf(own));
                 var nameBox = new TextBox { Width = 190, MaxLength = 32, VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "Название темы; пусто — «Моя тема N»" };
                 Action save = () => { SaveThemeFile(nameBox.Text); again(); };
                 nameBox.KeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Enter) { save(); e.Handled = true; } };
@@ -1784,7 +1669,7 @@ namespace FlowBar
             c.Children.Add(acc);
             c.Children.Add(SSub("Плотность заливки панели"));
             c.Children.Add(SliderRow(30, 100, Opac * 100, 5, v => Math.Round(v) + "%", v => { cfg["opacity"] = Math.Round(v).ToString(); SaveCfg(); All(b => b.ApplyStyle()); preview(null); }, "Плотность заливки панели"));
-            MaterialSettings(c, again, preview);
+            MaterialSettings(c, again, preview, card, shelf, refresh);
         }
         void SettingsBar(StackPanel c, Action again, Action<string> preview)
         {

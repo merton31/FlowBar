@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -38,18 +37,15 @@ namespace FlowBar
         [DllImport("user32.dll", SetLastError = true)] static extern bool UpdateLayeredWindow(IntPtr window, IntPtr destination,
             ref N.POINT position, ref N.POINT size, IntPtr source, ref N.POINT offset, uint colorKey, ref Blend blend, uint flags);
         [DllImport("user32.dll")] static extern bool UpdateLayeredWindowIndirect(IntPtr window, ref LayerUpdate update);
-
         sealed class Request
         {
-            public PixelRect Target, Monitor;
+            public PixelRect Target, Monitor, Covered;
             public double Radius;
             public LensSettings Lens;
             public int Frequency;
             public IntPtr GpuHost;
             public string Display;
         }
-        // Окна панели и стекла не исключаются из захвата (WDA_EXCLUDEFROMCAPTURE): на части компьютеров (Windows 11 сборка 28000) Windows прячет такое окно и с экрана,
-        // и панель пропадала целиком. Стекло видит и саму панель, зато панель всегда на экране и на снимках
         readonly object gate = new object();
         readonly AutoResetEvent wake;
         readonly IntPtr host;
@@ -63,7 +59,7 @@ namespace FlowBar
         DispatcherOperation queuedStart;
         int[] readyPixels;
         PixelRect readyRegion;
-        bool presentQueued, disposing, workerStarted, shown, gpuShown;
+        bool presentQueued, disposing, workerStarted, shown, gpuShown, gpuHostVisible;
         PixelRect presentedBounds;
         string display;
         int refreshRate;
@@ -106,11 +102,15 @@ namespace FlowBar
                 var mode = new DisplayMode { Size = 220 };
                 refreshRate = EnumDisplaySettings(device, -1, ref mode) && mode.Frequency >= 24 ? Math.Min(mode.Frequency, 360) : 60;
             }
-            if (wanted != null && wanted.Target == bounds && wanted.Monitor == monitor && wanted.Radius == radius &&
+            var covered = bounds;
+            N.RECT windowRect;
+            if (!PreferGpu && N.GetWindowRect(parent, out windowRect))
+                covered = PixelRect.Union(bounds, PixelRect.FromLTRB(windowRect.L, windowRect.T, windowRect.R, windowRect.B));
+            if (wanted != null && wanted.Target == bounds && wanted.Monitor == monitor && wanted.Covered == covered && wanted.Radius == radius &&
                 wanted.Frequency == refreshRate && wanted.Lens.SameAs(material)) return true;
             IntPtr accelerated = PreferGpu && material.Blur <= 8 && !string.IsNullOrEmpty(device) &&
                 monitor.Contains(bounds) && now >= Interlocked.Read(ref gpuRetryAt) ? PrepareGpuHost() : IntPtr.Zero;
-            wanted = new Request { Target = bounds, Monitor = monitor, Radius = radius, Lens = material,
+            wanted = new Request { Target = bounds, Monitor = monitor, Covered = covered, Radius = radius, Lens = material,
                 Frequency = refreshRate, Display = device, GpuHost = accelerated };
             if (queuedStart == null)
                 queuedStart = dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(StartCapture));
@@ -137,7 +137,7 @@ namespace FlowBar
                 if (wanted.GpuHost != IntPtr.Zero)
                 {
                     var bounds = wanted.Target;
-                    N.SetWindowPos(gpuHost, owner, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0x50);
+                    gpuHostVisible = N.SetWindowPos(gpuHost, owner, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0x50);
                 }
                 else HideGpuHost();
                 if (!workerStarted)
@@ -187,7 +187,7 @@ namespace FlowBar
                                         request.Lens.Width, request.Lens.Shift, request.Lens.Blur);
                                 }
                                 catch (Exception ex) { ReportGpuFailure(request, ex); }
-                            if (gpu == null) sampler.Prepare(request.Target, request.Monitor, request.Radius, request.Lens);
+                            if (gpu == null) sampler.Prepare(request.Target, request.Monitor, request.Covered, request.Radius, request.Lens);
                             active = request; unchanged = 0;
                         }
                         if (gpu != null)
@@ -212,7 +212,7 @@ namespace FlowBar
                             {
                                 gpu.Dispose(); gpu = null;
                                 ReportGpuFailure(request, ex);
-                                sampler.Prepare(request.Target, request.Monitor, request.Radius, request.Lens);
+                                sampler.Prepare(request.Target, request.Monitor, request.Covered, request.Radius, request.Lens);
                                 unchanged = 0;
                             }
                         }
@@ -251,7 +251,7 @@ namespace FlowBar
         void HideGpuHost()
         {
             if (gpuHost != IntPtr.Zero) ShowWindow(gpuHost, 0);
-            gpuShown = false;
+            gpuShown = gpuHostVisible = false;
         }
 
         void Publish(Request request, GlassLensMap map, PixelRect region)
@@ -339,6 +339,12 @@ namespace FlowBar
             if (shown || gpuShown) opacity.BeginAnimation(Brush.OpacityProperty, new DoubleAnimation(to, TimeSpan.FromMilliseconds(ms)));
         }
 
+        internal IntPtr StackBelow(IntPtr parent)
+        {
+            if (gpuHostVisible) return gpuHost;
+            return shown ? host : parent;
+        }
+
         public void Stop()
         {
             if (queuedStart != null) { queuedStart.Abort(); queuedStart = null; }
@@ -347,7 +353,6 @@ namespace FlowBar
             if (shown) ShowWindow(host, 0);
             HideGpuHost();
             shown = false;
-            if (owner == IntPtr.Zero) return;
             owner = IntPtr.Zero;
         }
 
@@ -410,6 +415,10 @@ namespace FlowBar
         [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
         [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr window);
+        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr window, IntPtr dc);
+        [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dest, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
+        [DllImport("gdi32.dll")] static extern bool GdiFlush();
         IntPtr dib, oldDib;
         PixelSize size;
         public IntPtr Dc { get; private set; }
@@ -436,23 +445,32 @@ namespace FlowBar
             if (Dc != IntPtr.Zero) DeleteDC(Dc);
             oldDib = dib = Dc = Pixels = IntPtr.Zero;
         }
+
+        public bool CopyFromDesktop(PixelRect bounds)
+        {
+            Resize(bounds.Size);
+            var screen = GetDC(IntPtr.Zero);
+            if (screen == IntPtr.Zero) return false;
+            try
+            {
+                if (!BitBlt(Dc, 0, 0, bounds.Width, bounds.Height, screen, bounds.X, bounds.Y, 0x40CC0020)) return false;
+                GdiFlush();
+                return true;
+            }
+            finally { ReleaseDC(IntPtr.Zero, screen); }
+        }
     }
 
     internal sealed class LensSampler : IDisposable
     {
-        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr window);
-        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr window, IntPtr dc);
-        [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dest, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
-        [DllImport("gdi32.dll")] static extern bool GdiFlush();
         readonly LensDib input = new LensDib();
-        PixelRect source, target;
-        int[] frame, previous, scratch, softened;
-        ulong[] columns;
-        int blur, coverage;
+        PixelRect source, target, coveredPixels;
+        int[] frame, previous;
+        int coverage;
         bool dirty;
         public GlassLensMap Map { get; private set; }
 
-        public void Prepare(PixelRect target, PixelRect monitor, double radius, LensSettings lens)
+        public void Prepare(PixelRect target, PixelRect monitor, PixelRect covered, double radius, LensSettings lens)
         {
             this.target = target;
             source = target;
@@ -463,34 +481,24 @@ namespace FlowBar
             input.Resize(source.Size);
             int length = source.Width * source.Height;
             if (frame == null || frame.Length != length)
-            { frame = new int[length]; previous = new int[length]; scratch = softened = null; }
-            Map = new GlassLensMap(target, source, monitor, radius, lens);
-            blur = lens.Blur; coverage = lens.Padding; dirty = true;
+            { frame = new int[length]; previous = new int[length]; }
+            coveredPixels = PixelRect.Intersect(covered, source);
+            coveredPixels.Offset(-source.Left, -source.Top);
+            Map = new GlassLensMap(target, source, monitor, radius, lens, covered);
+            coverage = lens.Padding + (int)Math.Ceiling(Math.Max(radius, lens.Width));
+            dirty = true;
         }
 
         public bool Sample(out PixelRect region)
         {
             region = PixelRect.Empty;
-            var dc = GetDC(IntPtr.Zero);
-            if (dc == IntPtr.Zero) throw new InvalidOperationException("Фон рабочего стола сейчас недоступен.");
-            try
-            {
-                if (!BitBlt(input.Dc, 0, 0, source.Width, source.Height, dc, source.X, source.Y, 0x40CC0020))
-                    throw new InvalidOperationException("Windows не дала прочитать область под панелью.");
-                GdiFlush();
-            }
-            finally { ReleaseDC(IntPtr.Zero, dc); }
+            if (!input.CopyFromDesktop(source))
+                throw new InvalidOperationException("Windows не дала прочитать область под панелью.");
             Marshal.Copy(input.Pixels, frame, 0, frame.Length);
+            for (int y = coveredPixels.Top; y < coveredPixels.Bottom; y++)
+                Array.Clear(frame, y * source.Width + coveredPixels.Left, coveredPixels.Width);
             var changes = dirty ? new PixelRect(0, 0, source.Width, source.Height) : FindChanges();
             if (changes.IsEmpty) return false;
-            var pixels = frame;
-            if (blur > 0)
-            {
-                if (scratch == null) { scratch = new int[frame.Length]; softened = new int[frame.Length]; }
-                if (columns == null || columns.Length != source.Width) columns = new ulong[source.Width];
-                GlassLensMap.Soften(frame, scratch, softened, source.Width, source.Height, blur, changes, columns);
-                pixels = softened;
-            }
             region = new PixelRect(0, 0, target.Width, target.Height);
             if (!dirty)
             {
@@ -498,7 +506,7 @@ namespace FlowBar
                 changes.Inflate(coverage, coverage);
                 region.Intersect(changes);
             }
-            Map.Render(pixels, region);
+            Map.Render(frame, region);
             var swap = previous; previous = frame; frame = swap; dirty = false;
             return region.Width > 0 && region.Height > 0;
         }

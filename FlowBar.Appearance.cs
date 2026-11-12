@@ -298,8 +298,20 @@ namespace FlowBar
         {
             if (!Styles.ContainsKey(theme)) return;
             candidateTheme = null;
+            bool sameTheme = C("style", "Black") == theme;
+            var previousExtras = ThemeExtraKeys.Select(key => C(key, "")).ToArray();
             cfg["style"] = theme; ApplyThemeExtras(theme);
-            SaveCfg(); ClosePanels(); All(b => { b.reserveKey = null; }); RebuildAll(); All(b => b.Place()); RestyleWindows();
+            bool settingsChanged = ThemeExtraKeys.Where((key, index) => C(key, "") != previousExtras[index]).Any();
+            if (sameTheme && !settingsChanged)
+            {
+                if (settingsRefreshTheme != null) settingsRefreshTheme();
+                else if (refreshPreview != null) refreshPreview(null);
+                return;
+            }
+            SaveCfg(); ClosePanels();
+            ApplyAppTheme();
+            All(b => b.RebuildForTheme(settingsChanged));
+            RestyleWindows(!settingsChanged);
         }
 
         void PickTheme(string theme, Action<string> preview)
@@ -333,7 +345,7 @@ namespace FlowBar
             return brush;
         }
 
-        void MaterialSettings(StackPanel c, Action again, Action<string> preview)
+        void MaterialSettings(StackPanel c, Action again, Action<string> preview, Func<string, bool, Press> themeCard, Func<List<Press>, Border> shelf, Action refreshThemes)
         {
             Action refresh = () => { SaveCfg(); All(b => b.ApplyStyle()); preview(null); };
             c.Children.Add(SSub("Материал панели"));
@@ -355,7 +367,7 @@ namespace FlowBar
                     c.Children.Add(open);
                 }
                 var lenses = new[] { "auto", "off", "liquid", "ios" };
-                c.Children.Add(SetRow("Преломление фона", "Смещает фон вдоль скруглённой кромки панели.",
+                c.Children.Add(SetRow("Преломление фона", "Смещает фон у скруглённой кромки. Центральная часть сохраняет размытие выбранного материала.",
                     Seg(new[] { "По теме", "Выключено", "Liquid Glass", "iOS Glass" }, Math.Max(0, Array.IndexOf(lenses, C("material.refraction", "auto"))), i =>
                     { cfg["material.refraction"] = lenses[i]; refresh(); again(); })));
                 if (GlassProfile != LensProfile.Off)
@@ -395,21 +407,9 @@ namespace FlowBar
             })));
 
             c.Children.Add(SSub("Палитры"));
-            var paletteRow = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-            foreach (var key in new[] { "Бумага", "Табло", "White", "Midnight" })
-            {
-                var st = Styles[key];
-                var colors = new StackPanel { Orientation = Orientation.Horizontal };
-                foreach (var color in new[] { st.Bg, st.Fg, st.Ac, st.LightText ? Color.FromRgb(255, 167, 121) : Color.FromRgb(169, 66, 30) })
-                    colors.Children.Add(new Border { Width = 25, Height = 13, Background = Frozen(color, 255), CornerRadius = new CornerRadius(3), Margin = new Thickness(0, 0, 3, 0) });
-                var chip = new Border { Background = Frozen(st.Bg, 255), Child = new TextBlock { Text = "◉  12:30", FontSize = 10, Foreground = Frozen(st.Fg, 255) },
-                    Padding = new Thickness(4, 2, 4, 2), CornerRadius = new CornerRadius(4), Margin = new Thickness(0, 4, 0, 0) };
-                var button = Act(VS(colors, chip, Mg(Txt(ThemeName(key), 11, false), 0, 4)), "Палитра " + ThemeName(key), () => PickTheme(key, preview));
-                button.Margin = new Thickness(0, 0, 6, 6);
-                paletteRow.Children.Add(button);
-            }
-            c.Children.Add(SHint("Слева направо: фон, текст, акцент, предупреждение."));
-            c.Children.Add(paletteRow);
+            var paletteRow = new[] { "Бумага", "Табло", "White", "Midnight" }.Select(key => themeCard(key, true)).ToList();
+            c.Children.Add(SHint("Под названием: фон, текст и акцент."));
+            c.Children.Add(shelf(paletteRow));
 
             c.Children.Add(SSub("Предпросмотр и движение"));
             c.Children.Add(SetRow("Обои предпросмотра", null, Seg(SceneNames, SceneIndex, i => { cfg["preview.scene"] = i.ToString(); SaveCfg(); preview(null); })));
@@ -417,7 +417,7 @@ namespace FlowBar
                 v => { cfg["preview.compare"] = v ? "1" : "0"; candidateTheme = null; SaveCfg(); again(); }));
             var motions = new[] { "off", "soft", "full" };
             c.Children.Add(SetRow("Движение", null, Seg(new[] { "Без движения", "Мягкое", "Выразительное" },
-                Math.Max(0, Array.IndexOf(motions, C("motion", "soft"))), i => { cfg["motion"] = motions[i]; SaveCfg(); })));
+                Math.Max(0, Array.IndexOf(motions, C("motion", "soft"))), i => { cfg["motion"] = motions[i]; SaveCfg(); refreshThemes(); })));
             int example = 0;
             var sampleLabel = Txt("Уведомление", 12, true);
             var sample = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 8, 12, 8), Background = Frozen(AccentColor, 0x30), Child = sampleLabel, HorizontalAlignment = HorizontalAlignment.Left };
