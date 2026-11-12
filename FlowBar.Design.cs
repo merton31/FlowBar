@@ -2698,7 +2698,11 @@ namespace FlowBar
         {
             if (tok == hoverTok) return;
             var old = hoverTok == null ? null : ElOf(hoverTok) as Border;
-            if (old != null && groupArmed) { old.BorderBrush = hoverEdge; old.BorderThickness = hoverThick; }
+            if (old != null && groupArmed)
+            {
+                old.BorderBrush = hoverEdge; old.BorderThickness = hoverThick;
+                var oi = old.Child as FrameworkElement; if (oi != null && oi.RenderTransform is ScaleTransform) { oi.RenderTransform = null; } // цель группировки снова обычного размера
+            }
             hoverTok = tok; groupArmed = false;
             if (groupT == null) { groupT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(420) }; groupT.Tick += (s, e) => ArmGroup(); }
             groupT.Stop(); if (tok != null) groupT.Start();
@@ -2709,6 +2713,14 @@ namespace FlowBar
             groupT.Stop(); if (!sDragging || hoverTok == null) return;
             var b = ElOf(hoverTok) as Border; if (b == null) return;
             hoverEdge = b.BorderBrush; hoverThick = b.BorderThickness; b.BorderBrush = Accent; b.BorderThickness = new Thickness(2); groupArmed = true;
+            // как на телефоне: цель увеличивается — видно, что значок упадёт «внутрь»
+            var icon = b.Child as FrameworkElement;
+            if (icon != null && Motion)
+            {
+                var sc = new ScaleTransform(1, 1); icon.RenderTransformOrigin = new Point(0.5, 0.5); icon.RenderTransform = sc;
+                sc.BeginAnimation(ScaleTransform.ScaleXProperty, SettingsMotion(1, 1.2, 150)); sc.BeginAnimation(ScaleTransform.ScaleYProperty, SettingsMotion(1, 1.2, 150));
+                sc.ScaleX = 1.2; sc.ScaleY = 1.2; // SettingsMotion снимает анимацию по окончании (FillBehavior.Stop) — значение остаётся
+            }
         }
         void GroupDrop(string targetTok, string path)
         {
