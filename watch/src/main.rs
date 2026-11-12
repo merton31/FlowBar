@@ -90,7 +90,7 @@ fn main() {
         None => return, // без pid делать нечего
     };
     let state: isize = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(-1);
-    let was_visible = args.get(3).map(|a| a != "0").unwrap_or(true);
+    // 4-й аргумент (была ли панель видна до FlowBar) принимаем для совместимости, но не используем: панель Windows показываем всегда
     unsafe {
         let h = OpenProcess(SYNCHRONIZE, 0, pid);
         if !h.is_null() {
@@ -108,9 +108,7 @@ fn main() {
     if state >= 0 {
         restore_state(state);
     }
-    if was_visible {
-        show_taskbars();
-    }
+    show_taskbars();
     if let Ok(appdata) = std::env::var("APPDATA") {
         let _ = std::fs::remove_file(std::path::Path::new(&appdata).join("FlowBar").join("taskbar.txt"));
     }

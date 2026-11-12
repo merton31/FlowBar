@@ -145,7 +145,7 @@ namespace FlowBar
             reminders = new List<Reminder>();
             foreach (var l in Lines("reminders.txt")) { int i = l.IndexOf('|'); DateTime at; if (i > 0 && DateTime.TryParseExact(l.Substring(0, i), "yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out at)) reminders.Add(new Reminder { At = at, Text = l.Substring(i + 1) }); }
         }
-        static void SaveReminders() { SafeFile.WriteLines(F("reminders.txt"), reminders.OrderBy(r => r.At).Select(r => r.At.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) + "|" + r.Text.Replace("\r", " ").Replace("\n", " "))); }
+        static void SaveReminders() { Persist("напоминания", () => SafeFile.WriteLines(F("reminders.txt"), reminders.OrderBy(r => r.At).Select(r => r.At.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) + "|" + r.Text.Replace("\r", " ").Replace("\n", " ")))); }
         static void AddReminder(DateTime at, string text) { if (reminders == null) LoadReminders(); reminders.Add(new Reminder { At = at, Text = text }); SaveReminders(); }
         // варианты «напомнить»: подпись и время
         public static List<Tuple<string, DateTime>> RemindChoices() { return RemindChoices(DateTime.Now); }
@@ -182,7 +182,7 @@ namespace FlowBar
             if (C("agent", "1") != "1") return no("Доступ агентов выключен: «Настройки FlowBar» → «Подключения» → «Агенты».");
             var p = Primary; if (p == null) return no("Панель FlowBar ещё не готова.");
             string text = AStr(a, "text"); var now = DateTime.Now;
-            Info("агент: " + tool + (text == "" ? "" : " — " + (text.Length > 80 ? text.Substring(0, 80) + "…" : text)));
+            Info("агент: " + tool); // текст не пишем: журнал уходит в отчёт для разработчика
             if (reminders == null) LoadReminders();
             if ((tool == "list_tasks" || tool == "read_notes" || tool == "list_reminders" || tool == "list_events") && C("agent.read", "0") != "1")
                 return no("Чтение задач, заметок и календаря выключено: «Настройки FlowBar» → «Подключения» → «Разрешить агентам читать задачи, заметки и календарь».");

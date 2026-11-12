@@ -957,8 +957,10 @@ namespace FlowBar
     {
         // --demo: пример для визуальной сверки — отдельная папка (настройки и данные пользователя не трогаются) и фиксированные данные
         public static readonly bool DemoMode = Environment.GetCommandLineArgs().Contains("--demo");
+        // --selftest тоже в отдельную папку: его нарочные ошибки (файл «только для чтения») не должны попадать в настоящий журнал и отчёт
         public static readonly string Dir = (DemoMode ? Environment.GetEnvironmentVariable("FLOWBAR_DEMO_DIR") : null)
-            ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DemoMode ? "FlowBar-demo" : "FlowBar");
+            ?? (Environment.GetCommandLineArgs().Contains("--selftest") ? System.IO.Path.Combine(System.IO.Path.GetTempPath(), "FlowBar-selftest")
+            : System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DemoMode ? "FlowBar-demo" : "FlowBar"));
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         // Базовые стили + 10 тем из Theme Factory. Пары текст/фон подобраны с контрастом ≥ 4.5:1, акцент ≥ 3:1 к фону.
         static readonly Dictionary<string, Sty> Styles = new Dictionary<string, Sty> {
@@ -1051,13 +1053,17 @@ namespace FlowBar
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
-            LoadThemeFiles();
+            LoadThemeFiles(); StartTrim();
             rememberedAppearance = SnapshotAppearance();
             LogHideSource();
+            // первая установка (настроек ещё нет): только ярлыки программ, все виджеты выключены — добавляются в каталоге. --demo остаётся с виджетами для сверки вида
+            // файл настроек есть, но не открылся (блокировка): это не первая установка — ничего не подставляем и не перезаписываем
+            bool settingsUnreadable = cfg.Count == 0 && (File.Exists(F("settings.txt")) || File.Exists(F("settings.txt.bak")));
+            if (cfg.Count == 0 && !settingsUnreadable && !DemoMode) cfg["widgets"] = NoWidgets;
             pinned = Lines("pinned.txt");
             // первый запуск (список пуст или только «Проводник» по умолчанию из прошлых версий): берём закрепления панели Windows в её порядке
             var explorer = Environment.ExpandEnvironmentVariables(@"%WINDIR%\explorer.exe");
-            if ((pinned.Count == 0 || (pinned.Count == 1 && string.Equals(pinned[0], explorer, StringComparison.OrdinalIgnoreCase))) && !cfg.ContainsKey("pinsImported"))
+            if ((pinned.Count == 0 || (pinned.Count == 1 && string.Equals(pinned[0], explorer, StringComparison.OrdinalIgnoreCase))) && !cfg.ContainsKey("pinsImported") && !settingsUnreadable)
             {
                 pinned = WindowsPins(); cfg["pinsImported"] = "1"; SaveCfg();
                 if (pinned.Count == 0) pinned.Add(explorer);
@@ -1073,7 +1079,7 @@ namespace FlowBar
         {
             CloseGuarded(); CloseDesktopMedia(true);
             foreach (var b in bars.ToList()) b.Unreserve();
-            if (!DemoMode) { Tray.Stop(); Taskbar.Restore(false, true); }
+            if (!DemoMode) { Tray.Stop(); Taskbar.Restore(true, true); } // всегда показываем панель Windows, даже если до FlowBar она была скрыта
             try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); }
         }
 
@@ -1100,7 +1106,14 @@ namespace FlowBar
         // ---------- хранение ----------
         static string F(string name) { return System.IO.Path.Combine(Dir, name); }
         static List<string> Lines(string name) { return SafeFile.ReadLines(F(name)).ToList(); }
-        static void SaveCfg() { CheckHide("сохранение"); SafeFile.WriteLines(F("settings.txt"), cfg.Select(kv => kv.Key + "=" + kv.Value)); RecordAppearance(); }
+        static void SaveCfg() { CheckHide("сохранение"); Persist("настройки", () => SafeFile.WriteLines(F("settings.txt"), cfg.Select(kv => kv.Key + "=" + kv.Value))); RecordAppearance(); }
+        // запись на диск без падения: сбой — в журнал и одно уведомление (пока записи не пойдут снова), а не тихая потеря настройки
+        internal static bool saveWarned;
+        internal static void Persist(string what, Action write)
+        {
+            try { write(); saveWarned = false; }
+            catch (Exception ex) { Log(ex); if (!saveWarned && Primary != null) { saveWarned = true; Primary.Notify("Не удалось сохранить: " + what, ex.Message, true, ""); } }
+        }
 
         // Диагностика: при входе в Windows панель дважды считала скрытие панели Windows выключенным, хотя в файле включено.
         // Пишем в журнал, что прочитано из settings.txt и .bak, и каждое изменение значения в памяти — с местом в коде.
@@ -1120,14 +1133,14 @@ namespace FlowBar
         static void SavePinned()
         {
             pinned = pinned.OrderBy(p => { int i = appOrder.IndexOf("p|" + p); return i < 0 ? int.MaxValue : i; }).ToList(); // на диск — в порядке панели
-            SafeFile.WriteLines(F("pinned.txt"), pinned); All(b => { b.lastKey = null; b.RefreshApps(); });
+            Persist("закрепления", () => SafeFile.WriteLines(F("pinned.txt"), pinned)); All(b => { b.lastKey = null; b.RefreshApps(); });
         }
         public static void Retag(string from, string to)
         {
             appOrder.Remove(to); int i = appOrder.IndexOf(from); if (i >= 0) appOrder[i] = to;
             foreach (var b in bars) if (b.seq != null) { b.seq.Remove(to); int j = b.seq.IndexOf(from); if (j >= 0) { b.seq[j] = to; b.SaveSeq(); } } // закрепили/открепили — значок на своём месте
         }
-        void SaveTodos() { SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine)); UpdateTodoTile(); }
+        void SaveTodos() { Persist("задачи", () => SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine))); UpdateTodoTile(); }
         public static Todo ParseTodo(string l)
         {
             int i = l.IndexOf('|');
@@ -1168,7 +1181,8 @@ namespace FlowBar
             try { using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion")) { int bn; int.TryParse(k.GetValue("CurrentBuild") as string, out bn); win = ((k.GetValue("ProductName") as string) ?? "").Replace("Windows 10", bn >= 22000 ? "Windows 11" : "Windows 10") + " " + k.GetValue("DisplayVersion") + ", сборка " + bn + "." + k.GetValue("UBR"); } } catch { }
             sb.Append("FlowBar " + Setup.VersionText + (Setup.IsInstalledCopy ? "" : " (запущен не из папки установки)") + "; " + win + "; права администратора: " + (Setup.Elevated ? "да" : "нет")
                 + "; панель Windows скрывается: " + (HideTb ? "да" : C("hideTaskbar", "1") == "1" ? "нет — сторож не запустился" : "нет — выключено") + "; свой трей: " + (Bar.C("ownTray", "1") == "1" ? Tray.Icons.Count + " значков" : "выключен")
-                + "; стекло: " + (!WantsGlass(Cur) ? "не выбрано" : Backdrop.Why == null ? "работает" : "нет — " + Backdrop.Why) + "\r\n");
+                + "; стекло: " + (!WantsGlass(Cur) ? "не выбрано" : Backdrop.Why == null ? "работает" : "нет — " + Backdrop.Why)
+                + "; память: " + (Process.GetCurrentProcess().WorkingSet64 >> 20) + " МБ занято, куча " + (GC.GetTotalMemory(false) >> 20) + " МБ\r\n");
             foreach (var b in bars.ToList())
                 try { sb.Append("монитор " + b.scr.DeviceName + (b.scr.Primary ? " (основной)" : "") + ": " + b.scr.Bounds.Width + "×" + b.scr.Bounds.Height + " в " + b.scr.Bounds.X + "," + b.scr.Bounds.Y + ", масштаб " + Math.Round(b.MonScale * 100) + "%; панель " + Math.Round(b.Left) + "," + Math.Round(b.Top) + " " + Math.Round(b.ActualWidth) + "×" + Math.Round(b.ActualHeight) + (b.IsVisible ? "" : " скрыта") + "\r\n"); }
                 catch { }
@@ -1738,7 +1752,7 @@ namespace FlowBar
             if (msg == ShellHookMsg && primary)
             {
                 int code = w.ToInt32();
-                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); }
+                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); if (IsConsent(l)) BringConsent(l); }
                 else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
                 // активное окно сменилось — подложка переезжает сразу, а не при опросе раз в секунду
                 if (code == 4 || code == 0x8004) Dispatcher.BeginInvoke(new Action(() => All(b => b.RefreshApps())));
@@ -1751,6 +1765,18 @@ namespace FlowBar
             return IntPtr.Zero;
         }
 
+        // Окно подтверждения UAC (consent.exe), если Windows не вывела его вперёд, а лишь мигает кнопкой на скрытой панели Windows — человек его не видит. Выводим вперёд сами.
+        static bool IsConsent(IntPtr h)
+        {
+            try { uint pid; N.GetWindowThreadProcessId(h, out pid); return string.Equals(Process.GetProcessById((int)pid).ProcessName, "consent", StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+        static void BringConsent(IntPtr h)
+        {
+            Info("UAC: окно подтверждения мигает, а не показано — вывожу вперёд");
+            N.ShowWindow(h, 9 /* SW_RESTORE */); N.SetForegroundWindow(h);
+            if (N.GetForegroundWindow() != h) { N.keybd_event(0x12, 0, 0, UIntPtr.Zero); N.keybd_event(0x12, 0, 2, UIntPtr.Zero); N.SetForegroundWindow(h); } // «тычок» Alt даёт право вывести окно вперёд
+        }
         IntPtr backTo;
         void FocusBar()
         {
@@ -2105,7 +2131,7 @@ namespace FlowBar
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
             ClosePreview(); previewPinned = pinned; TipHide(true);
-            var windows = ws.Where(item => N.IsWindow(item.H)).Take(6).ToList();
+            var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
             const double padding = 8, margin = 4;
             double available = scr.Bounds.Width / MonScale - 2 * (padding + 5);
@@ -3897,7 +3923,7 @@ namespace FlowBar
                 Process p = null; try { p = Process.GetProcessById(pid); } catch { }
                 try { System.Threading.EventWaitHandle ev; if (p != null && System.Threading.EventWaitHandle.TryOpenExisting("FlowBar_watch_ready_" + pid, out ev)) { ev.Set(); ev.Dispose(); } } catch { }
                 if (p != null) try { p.WaitForExit(); } catch { }
-                Taskbar.Restore(false, true); return 0;
+                Taskbar.Restore(true, true); return 0;
             }
             // команды работающей панели: открыть раздел или сохранить снимки окон (для приёмки и ярлыков)
             int oi = Array.IndexOf(args, "--open"), si = Array.IndexOf(args, "--shot");
@@ -4191,6 +4217,20 @@ namespace FlowBar
             fails += check(Bar.RateRu(512 * 1024) == "512 КБ/с" && Bar.RateRu(double.NaN) == "—" && Bar.Gb(double.NaN) == "—", "RateRu / unknown values show a dash");
             fails += check(Bar.Clamp("abc", 10, 0, 32) == 10 && Bar.Clamp("50", 10, 0, 32) == 32 && Bar.Clamp("12", 10, 0, 32) == 12, "Settings clamp");
             fails += check(Bar.Clamp("NaN", 10, 0, 32) == 10 && Bar.Clamp("Infinity", 10, 0, 32) == 10 && Bar.Clamp("-Infinity", 10, 0, 32) == 10, "Settings clamp rejects NaN/Infinity");
+            fails += check(Bar.MemLimitGb(32) == 3.2 && Bar.MemLimitGb(8) == 1.5, "Memory saver limit: 10% of RAM, at least 1.5 GB");
+            fails += check(Bar.IsLowMem(3.0, 3.2, false) && !Bar.IsLowMem(3.3, 3.2, false) && Bar.IsLowMem(4.0, 3.2, true) && !Bar.IsLowMem(4.9, 3.2, true), "Memory saver: switches on below limit, off only above limit x1.5");
+            var noWid = Bar.ParseLayout(Bar.NoWidgets, new[] { "zzz-new" });
+            fails += check(noWid.Count > 10 && noWid.Where(x => x.Key != "zzz-new").All(x => !x.Value), "First install layout: every widget hidden, only shortcuts");
+            var shr = new Dictionary<string, string> { { "style", "Midnight" }, { "size", "L" }, { "wxCity", "Сухум" }, { "cl.prevStatus", "powershell -File x" }, { "accent", "#4CC2FF" }, { "align", "diagonal" }, { "view.cpu", "min" }, { "view.net@\\\\.\\DISPLAY2", "min" } };
+            int shSkip; string shErr; var shBack = Bar.ReadShareCode(Bar.MakeShareCode(shr), out shSkip, out shErr);
+            fails += check(shBack != null && shBack.Count == 4 && shBack["size"] == "L" && shBack["accent"] == "#4CC2FF" && shBack["view.cpu"] == "min" && !shBack.ContainsKey("wxCity") && !shBack.ContainsKey("cl.prevStatus") && !shBack.ContainsKey("align") && !shBack.Keys.Any(k => k.Contains("@")), "Settings code: round trip, private, invalid and per-monitor keys dropped");
+            fails += check(Bar.ReadShareCode("мусор", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode("FBS1:AAAA", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode(new string('A', 200000), out shSkip, out shErr) == null && shErr.Contains("большой"), "Settings code: garbage and oversized text rejected");
+            // ползунок-рогатка: тянем влево — цель уходит вправо, сильнее натяжение — дальше, края и шаг соблюдаются
+            Func<double, double, double> aim = (pullX, tick) => { double tn; const double rail = 280; return Bar.ElasticSlider.ValueAt(10 + rail * 0.6 + Bar.ElasticSlider.Shot(new Vector(pullX, 0), rail, out tn), rail, 0, 100, false, tick, 60); };
+            fails += check(aim(-20, 0) > 60 && aim(-60, 0) > aim(-20, 0) && aim(40, 0) < 60 && aim(-500, 0) == 100 && aim(500, 0) == 0 && Math.Abs(aim(-20, 1) - Math.Round(aim(-20, 1))) < 1e-9, "Slider aim: pull left aims right, stronger pull aims farther, clamped, snaps to step");
+            // запись на диск: сбой не бросает исключение, успех сбрасывает признак «уже предупредили»
+            bool persisted = false; Bar.saveWarned = true; Bar.Persist("test", () => { throw new IOException("test"); }); Bar.Persist("test", () => { persisted = true; });
+            fails += check(persisted && !Bar.saveWarned, "Persist: failure is swallowed, success resets the warning");
             // заметка: неудачная запись сообщается и текст не теряется; повтор после восстановления доступа проходит
             var ro = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fb-note-" + Guid.NewGuid().ToString("N") + ".txt");
             try

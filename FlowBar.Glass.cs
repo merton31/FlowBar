@@ -223,6 +223,7 @@ namespace FlowBar
             if (vis.Size != size) { vis.Size = size; geo.Size = size; }
             float rr = (float)Math.Min(r, Math.Min(w, h) / 2.0); geo.CornerRadius = new Vector2(rr, rr);
             SetWindowPos(host.Handle, owner == IntPtr.Zero ? new IntPtr(-1) : owner, x, y, w, h, 0x10 | 0x40); // NOACTIVATE | SHOWWINDOW
+            px = x; py = y;
             if (!shown) Animate(0, 1, 150); // проявляется вместе с содержимым, а не раньше него
             shown = true;
         }
@@ -253,8 +254,11 @@ namespace FlowBar
             }
         }
         // уход вместе с карточкой
-        public void Fade() { if (lensWindow != null) lensWindow.Fade(0, 120); if (host != null && shown) try { Animate(1, 0, 120); } catch (Exception ex) { Bar.Log(ex); } }
-        public void Unfade() { if (lensWindow != null) lensWindow.Fade(1, 150); if (host != null && shown) try { Animate(0, 1, 150); } catch (Exception ex) { Bar.Log(ex); } } // панель вернули, пока она уезжала
+        public void Fade(int ms = 120) { if (lensWindow != null) lensWindow.Fade(0, Math.Min(ms, 120)); if (host != null && shown) try { Animate(1, 0, ms); } catch (Exception ex) { Bar.Log(ex); } } // преломление гаснет быстро: оно стоит на месте, а подложка может ехать
+        public void Unfade(int ms = 150) { if (lensWindow != null) lensWindow.Fade(1, ms); if (host != null && shown) try { Animate(0, 1, ms); } catch (Exception ex) { Bar.Log(ex); } }
+        int px, py;
+        // сдвиг подложки от её места (физические пиксели): уход панели вниз вместе с содержимым
+        public void Shift(int dx, int dy) { if (host != null && shown) SetWindowPos(host.Handle, IntPtr.Zero, px + dx, py + dy, 0, 0, 0x1 | 0x4 | 0x10); } // NOSIZE | NOZORDER | NOACTIVATE // панель вернули, пока она уезжала
         void Animate(float from, float to, int ms)
         {
             var a = comp.CreateScalarKeyFrameAnimation(); a.InsertKeyFrame(0f, from); a.InsertKeyFrame(1f, to); a.Duration = TimeSpan.FromMilliseconds(ms);
