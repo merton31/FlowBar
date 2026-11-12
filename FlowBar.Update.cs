@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.6.7.0")]
-[assembly: AssemblyFileVersion("1.6.7.0")]
+[assembly: AssemblyVersion("1.6.7.1")]
+[assembly: AssemblyFileVersion("1.6.7.1")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
@@ -30,7 +30,13 @@ namespace FlowBar
 
         public static bool IsInstalledCopy { get { return string.Equals(Path.GetFullPath(Path.GetDirectoryName(Self)).TrimEnd('\\'), Path.GetFullPath(InstallDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); } }
 
-        public static string V3(Version v) { return v.Major + "." + v.Minor + "." + Math.Max(0, v.Build); }
+        // Номер вида 1.6.7; мелкие правки — буква в конце: 1.6.7a, 1.6.7b. Буква хранится четвёртым числом версии (a = 1, b = 2), поэтому сравнение версий работает как обычно
+        public static string V3(Version v) { return v.Major + "." + v.Minor + "." + Math.Max(0, v.Build) + (v.Revision >= 1 && v.Revision <= 26 ? ((char)('a' + v.Revision - 1)).ToString() : ""); }
+        public static bool TryParseTag(string tag, out Version v)
+        {
+            v = null; var m = System.Text.RegularExpressions.Regex.Match((tag ?? "").Trim(), @"^[vV]?(\d+\.\d+\.\d+)([a-z]?)$");
+            return m.Success && Version.TryParse(m.Groups[1].Value + "." + (m.Groups[2].Length == 0 ? 0 : m.Groups[2].Value[0] - 'a' + 1), out v);
+        }
         static Version VersionOf(string exe)
         {
             try { if (!File.Exists(exe)) return null; var v = FileVersionInfo.GetVersionInfo(exe).FileVersion; return string.IsNullOrEmpty(v) ? new Version(0, 0) : new Version(v); }
@@ -235,7 +241,7 @@ namespace FlowBar
             var json = Bar.GetSync("https://api.github.com/repos/" + Repo + "/releases/latest");
             var o = (System.Collections.Generic.Dictionary<string, object>)new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(json);
             var tag = o["tag_name"] as string ?? ""; Version v;
-            if (!Version.TryParse(tag.TrimStart('v', 'V'), out v)) throw new Exception("непонятный номер выпуска: " + tag);
+            if (!TryParseTag(tag, out v)) throw new Exception("непонятный номер выпуска: " + tag);
             var r = new Release { Ver = v, Tag = tag, Page = o.ContainsKey("html_url") ? o["html_url"] as string : null };
             foreach (var a0 in (object[])o["assets"])
             {

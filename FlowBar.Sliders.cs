@@ -132,7 +132,8 @@ namespace FlowBar
                 double shot = Shot(pull, RailLength, out tension);
                 aimedValue = ValueForPosition(anchor + shot);
                 double clearance = ActualHeight < 24 ? 4 : 5;
-                double headX = Math.Max(clearance, Math.Min(ActualWidth - clearance, anchor + pull.X));
+                // ручка резинки оттягивается в сторону, противоположную мыши (как в настоящей рогатке), цель летит туда же, куда мышь
+                double headX = Math.Max(clearance, Math.Min(ActualWidth - clearance, anchor - pull.X));
                 double pullY = Math.Abs(pull.Y) < 3 ? Math.Abs(pull.X) * 0.19 : pull.Y;
                 deflection = Motion ? new Vector(headX - PositionForValue(aimedValue),
                     Math.Max(clearance - CenterY, Math.Min(ActualHeight - CenterY - clearance, pullY))) : new Vector();
