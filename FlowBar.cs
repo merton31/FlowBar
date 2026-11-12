@@ -1868,6 +1868,38 @@ namespace FlowBar
             Compose();
         }
 
+        // счётчик уведомлений из заголовков окон; true — какое-то окно мигает и требует внимания. Общее для значка программы и группы
+        bool AddBadge(Grid grid, List<Win> ws)
+        {
+            int badge = ws.Sum(w => BadgeOf(TitleOf(w.H), w.Path)); bool flash = ws.Any(w => flashing.Contains(w.H));
+            if (badge > 0 && C("badges", "1") == "1")
+            {
+                var bt = new TextBlock { Text = badge > 99 ? "99+" : badge.ToString(), FontSize = Math.Round(8.5 * Fs), FontWeight = FontWeights.SemiBold, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3.5, 0, 3.5, 0.5) };
+                double bh = Math.Round(13 * Fs);
+                grid.Children.Add(new Border { Child = bt, Background = Accent, CornerRadius = new CornerRadius(bh / 2), MinWidth = bh, Height = bh, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, -4, 0), IsHitTestVisible = false });
+            }
+            return flash;
+        }
+        // полоска прогресса окон (загрузка, копирование) под значком и подсказка с процентом
+        void AddProgress(Grid grid, Border tile, List<Win> ws, IntPtr fg, string name)
+        {
+            var progress = ProgressFor(ws, fg);
+            if (progress == null) return;
+            if (progress.Paused || progress.Indeterminate)
+                grid.Children.Add(new Line { X1 = 0, X2 = Math.Max(3, IconPx * (progress.Indeterminate ? 0.45 : progress.Value)), Y1 = 1, Y2 = 1,
+                    Stroke = progress.Paused ? Frozen(COrange, 255) : Accent,
+                    StrokeThickness = 2, StrokeDashArray = new DoubleCollection { 1, 1 }, VerticalAlignment = VerticalAlignment.Bottom,
+                    HorizontalAlignment = HorizontalAlignment.Center, IsHitTestVisible = false });
+            else
+            {
+                var meter = new FillBar(IconPx, 3) { VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Center, IsHitTestVisible = false };
+                meter.Set(progress.Value, progress.Error ? Frozen(Color.FromRgb(245, 99, 104), 255) : Accent, true);
+                grid.Children.Add(meter);
+            }
+            tile.ToolTip = name + " · " + (progress.Indeterminate ? "Выполняется" : Math.Round(progress.Value * 100) + "%")
+                + (progress.Paused ? " · На паузе" : progress.Error ? " · Ошибка" : "");
+        }
+
         Border AppTile(string path, List<Win> ws, bool isPinned, IntPtr fg)
         {
             var grid = new Grid();
@@ -1892,32 +1924,10 @@ namespace FlowBar
             bool active = ws.Any(w => w.H == fg);
             if (ws.Count > 0) grid.Children.Add(Indicator(active, ws.Count > 1));
             else { int far = Elsewhere(path).Count; if (far > 0) grid.Children.Add(Indicator(false, far > 1, true)); } // открыта на другом мониторе: полая отметка, несколько окон — две
-            int badge = ws.Sum(w => BadgeOf(TitleOf(w.H), w.Path)); bool flash = ws.Any(w => flashing.Contains(w.H));
-            if (badge > 0 && C("badges", "1") == "1")
-            {
-                var bt = new TextBlock { Text = badge > 99 ? "99+" : badge.ToString(), FontSize = Math.Round(8.5 * Fs), FontWeight = FontWeights.SemiBold, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3.5, 0, 3.5, 0.5) };
-                double bh = Math.Round(13 * Fs);
-                grid.Children.Add(new Border { Child = bt, Background = Accent, CornerRadius = new CornerRadius(bh / 2), MinWidth = bh, Height = bh, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, -4, 0), IsHitTestVisible = false });
-            }
+            bool flash = AddBadge(grid, ws);
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
-            var progress = ProgressFor(ws, fg);
-            if (progress != null)
-            {
-                if (progress.Paused || progress.Indeterminate)
-                    grid.Children.Add(new Line { X1 = 0, X2 = Math.Max(3, IconPx * (progress.Indeterminate ? 0.45 : progress.Value)), Y1 = 1, Y2 = 1,
-                        Stroke = progress.Paused ? Frozen(COrange, 255) : Accent,
-                        StrokeThickness = 2, StrokeDashArray = new DoubleCollection { 1, 1 }, VerticalAlignment = VerticalAlignment.Bottom,
-                        HorizontalAlignment = HorizontalAlignment.Center, IsHitTestVisible = false });
-                else
-                {
-                    var meter = new FillBar(IconPx, 3) { VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Center, IsHitTestVisible = false };
-                    meter.Set(progress.Value, progress.Error ? Frozen(Color.FromRgb(245, 99, 104), 255) : Accent, true);
-                    grid.Children.Add(meter);
-                }
-                tile.ToolTip = name + " · " + (progress.Indeterminate ? "Выполняется" : Math.Round(progress.Value * 100) + "%")
-                    + (progress.Paused ? " · На паузе" : progress.Error ? " · Ошибка" : "");
-            }
+            AddProgress(grid, tile, ws, fg, name);
             if (active)
             {
                 // активное приложение — мягкая подложка; при смене окна она «переезжает» от прежнего значка к новому

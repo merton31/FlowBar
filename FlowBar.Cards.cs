@@ -709,12 +709,18 @@ namespace FlowBar
             int running = members.Count(m => wins.ContainsKey(Key(Target(m))));
             bool active = members.Any(m => { List<Win> ws; return wins.TryGetValue(Key(Target(m)), out ws) && ws.Any(w => w.H == fg); });
             if (running > 0) holder.Children.Add(Indicator(active, running > 1));
-            var t = Tile(holder, "Группа «" + name + "»: " + members.Count + " прогр.", () => ShowGroup(name), m =>
+            // уведомления участников — на значке группы: сумма счётчиков, мигание, прогресс
+            var gws = members.SelectMany(x => { List<Win> w1; return wins.TryGetValue(Key(Target(x)), out w1) ? w1 : new List<Win>(); }).ToList();
+            bool flash = AddBadge(holder, gws);
+            string tip = "Группа «" + name + "»: " + members.Count + " прогр.";
+            var t = Tile(holder, tip, () => ShowGroup(name), m =>
             {
                 m.Items.Add(Item("Открыть группу", () => ShowGroup(name)));
                 m.Items.Add(Item("Разгруппировать", () => Ungroup(name)));
             });
+            AddProgress(holder, t, gws, fg, tip);
             if (active) { t.Base = Fa(0x1E); t.Background = new SolidColorBrush(t.Base); }
+            else if (flash) { t.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); t.Background = new SolidColorBrush(t.Base); }
             return t;
         }
 
@@ -738,7 +744,8 @@ namespace FlowBar
             {
                 var path = m; List<Win> ws; if (!wins.TryGetValue(Key(Target(path)), out ws)) ws = new List<Win>();
                 var ic = IconFor(path) ?? IconFor(Target(path));
-                var nameT = Txt(PinName(path), 11, false); nameT.TextWrapping = TextWrapping.Wrap; nameT.TextAlignment = TextAlignment.Center; nameT.MaxHeight = 32; nameT.HorizontalAlignment = HorizontalAlignment.Center;
+                int newMsgs = C("badges", "1") == "1" ? ws.Sum(w => BadgeOf(TitleOf(w.H), w.Path)) : 0; // счётчик уведомлений участника
+                var nameT = Txt(PinName(path) + (newMsgs > 0 ? " · " + (newMsgs > 99 ? "99+" : newMsgs.ToString()) : ""), 11, newMsgs > 0); nameT.TextWrapping = TextWrapping.Wrap; nameT.TextAlignment = TextAlignment.Center; nameT.MaxHeight = 32; nameT.HorizontalAlignment = HorizontalAlignment.Center;
                 var iconEl = ic != null ? (UIElement)new Image { Source = ic, Width = 32, Height = 32 } : G("", 24);
                 var dot = new Ellipse { Width = 5, Height = 5, Fill = Accent, Margin = new Thickness(0, 3, 0, 0), Visibility = ws.Count > 0 ? Visibility.Visible : Visibility.Hidden };
                 var cellBody = VS(iconEl, dot, Mg(nameT, 0, 2)); ((FrameworkElement)iconEl).HorizontalAlignment = HorizontalAlignment.Center;
