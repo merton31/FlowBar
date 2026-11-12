@@ -258,7 +258,7 @@ namespace FlowBar
             Directory.CreateDirectory(dir);
             var zip = Path.Combine(dir, r.Asset);
             using (var wc = new System.Net.WebClient()) { wc.Headers.Add("User-Agent", "FlowBar"); wc.DownloadFile(r.Url, zip); }
-            if (r.Sha256 != null)
+            if (r.Sha256 == null) throw new Exception("GitHub не прислал контрольную сумму архива — обновление не установлено");
             {
                 string got; using (var sha = System.Security.Cryptography.SHA256.Create()) using (var fs = File.OpenRead(zip)) got = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "").ToLowerInvariant();
                 if (got != r.Sha256) throw new Exception("контрольная сумма скачанного архива не совпала — файл повреждён или подменён, обновление не установлено");

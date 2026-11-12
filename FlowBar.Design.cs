@@ -125,6 +125,7 @@ namespace FlowBar
         static readonly HashSet<string> HiddenByDefault = new HashSet<string> { "temp", "disk", "notes", "screen", "tools", "bin", "vol", "timer", "stopwatch", "pday", "pmonth", "pyear", "fx" };
         static readonly HashSet<string> Variants = new HashSet<string> { "cpu", "ram", "temp", "net", "disk", "bat", "claude", "codex", "media", "vol", "event", "weather", "conn", "clock", "pomo", "timer", "stopwatch", "notes", "todos", "screen" };
         static string[] Def(string id) { return WidgetDefs.FirstOrDefault(d => d[0] == id); }
+        internal static string NoWidgets { get { return string.Join(",", WidgetDefs.Select(d => "-" + d[0])); } } // раскладка «все скрыты» — для первой установки
         static IEnumerable<string> DefaultLayout { get { return WidgetDefs.Select(d => (HiddenByDefault.Contains(d[0]) ? "-" : "") + d[0]); } }
 
         // раскладка: у основного монитора своя; у остальных — нет виджетов, как на основном или своя
@@ -506,27 +507,6 @@ namespace FlowBar
             new[] { "Arabian Standard Time", "Дубай" }, new[] { "China Standard Time", "Пекин" }, new[] { "Tokyo Standard Time", "Токио" },
             new[] { "Eastern Standard Time", "Нью-Йорк" }, new[] { "Pacific Standard Time", "Лос-Анджелес" } };
         public static double NiceTop(double v) { return Spark.Nice(v); }
-        // Общий вид ползунков (громкость, яркость, отступы, прозрачность): тонкая дорожка, пройденная часть — акцент, круглая ручка с точкой акцента, как в Windows 11
-        static Style sliderSty; static string sliderKey;
-        internal static Style SliderSty()
-        {
-            Color a = AccentColor, f = CardFg; string acc = "#" + a.R.ToString("X2") + a.G.ToString("X2") + a.B.ToString("X2"), tr = "#38" + f.R.ToString("X2") + f.G.ToString("X2") + f.B.ToString("X2");
-            if (sliderSty != null && sliderKey == acc + tr) return sliderSty;
-            var x = "<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Slider'>" +
-                "<Setter Property='Height' Value='26'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/><Setter Property='Template'><Setter.Value><ControlTemplate TargetType='Slider'><Grid Background='Transparent'>" +
-                "<Border Height='4' CornerRadius='2' Background='" + tr + "' VerticalAlignment='Center' Margin='2,0'/>" +
-                "<Track x:Name='PART_Track'>" +
-                "<Track.DecreaseRepeatButton><RepeatButton Command='Slider.DecreaseLarge' Focusable='False' IsTabStop='False'><RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'><Border Height='4' CornerRadius='2' Background='" + acc + "' VerticalAlignment='Center' Margin='2,0,-9,0'/></Border></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>" +
-                "<Track.IncreaseRepeatButton><RepeatButton Command='Slider.IncreaseLarge' Focusable='False' IsTabStop='False'><RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton>" +
-                "<Track.Thumb><Thumb Width='20' Height='20' Cursor='Hand'><Thumb.Template><ControlTemplate TargetType='Thumb'><Grid>" +
-                "<Ellipse x:Name='o' Fill='White' Stroke='#33000000' StrokeThickness='1' Margin='1'><Ellipse.Effect><DropShadowEffect BlurRadius='5' ShadowDepth='1' Opacity='0.35'/></Ellipse.Effect></Ellipse>" +
-                "<Ellipse x:Name='i' Width='8' Height='8' Fill='" + acc + "'/></Grid>" +
-                "<ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='i' Property='Width' Value='11'/><Setter TargetName='i' Property='Height' Value='11'/></Trigger>" +
-                "<Trigger Property='IsDragging' Value='True'><Setter TargetName='i' Property='Width' Value='7'/><Setter TargetName='i' Property='Height' Value='7'/><Setter TargetName='o' Property='Margin' Value='0'/></Trigger></ControlTemplate.Triggers>" +
-                "</ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track></Grid>" +
-                "<ControlTemplate.Triggers><Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>";
-            sliderSty = (Style)System.Windows.Markup.XamlReader.Parse(x); sliderKey = acc + tr; return sliderSty;
-        }
         static void VolBeep() { if (C("volBeep", "1") == "1" && !live.Muted && live.Vol > 0) Audio.Beep(); }
         // пункты «Устройство вывода» — в меню модуля громкости
         static void DeviceItems(ItemsControl m)
@@ -2096,19 +2076,22 @@ namespace FlowBar
                         // устройство вывода, ползунок и выключение звука; колесо — громкость
                         var mb = RoundBtn("\uE767", th - 14, false, act(() => { Audio.SetMute(!s.Muted); s.Muted = !s.Muted; All(b => b.Render()); }), "Выключить или включить звук"); var mg = (TextBlock)mb.Child;
                         double bw = (v >= 2 ? 124 : 88) * f;
-                        var bar = new FillBar(bw, 4); var hit = new Border { Background = Brushes.Transparent, Height = 14, Child = bar, Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center };
+                        var volume = new ElasticSlider(true) { Width = bw, Maximum = 100, IsHitTestVisible = live, Focusable = live };
+                        System.Windows.Automation.AutomationProperties.SetName(volume, "Громкость");
                         var name = L("", 10 * f, false, 0.72); var pct = L("", 10.5 * f, true);
                         var top = new DockPanel { Width = bw }; if (v > 0) { DockPanel.SetDock(pct, Dock.Right); top.Children.Add(pct); top.Children.Add(name); } // в мини-виде процент стоит у значка
-                        UIElement content = v == 0 ? HS(mb, Mg(pct, 4 * f, 0, 4 * f, 0)) : HS(mb, Mg(VS(top, hit), 6 * f));
+                        UIElement content = v == 0 ? HS(mb, Mg(pct, 4 * f, 0, 4 * f, 0)) : HS(mb, Mg(VS(top, volume), 6 * f));
                         var t = Tile(content, "Громкость", act(() => { if (C("widget.mixer", "1") == "1") ShowAppMixer(); else ShowQuick(); }), menu(m => { var dm = new MenuItem { Header = "Устройство вывода" }; DeviceItems(dm); if (dm.Items.Count > 1) m.Items.Add(dm); m.Items.Add(Item("Звук при изменении громкости", () => { cfg["volBeep"] = C("volBeep", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("volBeep", "1") == "1")); m.Items.Add(Item("Микшер Flowbar", ShowAppMixer)); m.Items.Add(Item("Микшер Windows", () => Launch("sndvol.exe"))); m.Items.Add(Item("Параметры звука", () => Launch("ms-settings:sound"))); }), true);
-                        bool drag = false; var gray = new SolidColorBrush(Color.FromArgb(0x90, 0x90, 0x90, 0x98));
-                        Func<MouseEventArgs, float> at = e => (float)Math.Max(0, Math.Min(1, e.GetPosition(bar).X / bar.Width));
+                        bool syncing = false;
+                        if (live && v > 0)
+                        {
+                            volume.DragStarted = () => { dragTok = null; if (secHold != null) secHold.Stop(); };
+                            volume.ValueChanged += (o, e) => { if (!syncing) Audio.SetVolume((float)(e.NewValue / 100)); };
+                            volume.DragEnded = () => { ReadVolume(); All(b => b.Render()); VolBeep(); };
+                            volume.KeyUp += (o, e) => { ReadVolume(); All(b => b.Render()); VolBeep(); };
+                        }
                         if (live)
                         {
-                            hit.PreviewMouseLeftButtonDown += (o, e) => dragTok = null; // ползунок, а не перестановка модуля
-                            hit.MouseLeftButtonDown += (o, e) => { drag = true; hit.CaptureMouse(); var x = at(e); Audio.SetVolume(x); bar.Set(x, Accent, true); e.Handled = true; };
-                            hit.MouseMove += (o, e) => { if (!drag) return; var x = at(e); Audio.SetVolume(x); bar.Set(x, Accent, true); };
-                            hit.MouseLeftButtonUp += (o, e) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); e.Handled = true; ReadVolume(); All(b => b.Render()); VolBeep(); };
                             t.MouseWheel += (o, e) => { if (double.IsNaN(s.Vol)) return; Audio.SetVolume((float)Math.Max(0, Math.Min(1, s.Vol + (e.Delta > 0 ? 0.02 : -0.02)))); ReadVolume(); All(b => b.Render()); VolBeep(); e.Handled = true; };
                         }
                         up.Add(() =>
@@ -2117,7 +2100,14 @@ namespace FlowBar
                             mg.Text = none || s.Muted || s.Vol <= 0.001 ? "\uE74F" : s.Vol > 0.66 ? "\uE995" : s.Vol > 0.33 ? "\uE994" : "\uE993";
                             pct.Text = none ? "—" : s.Muted ? "без звука" : Math.Round(s.Vol * 100) + "%";
                             name.Text = none ? "Нет устройства" : ShortDev(s.VolName);
-                            if (!drag) bar.Set(none ? 0 : s.Vol, s.Muted ? (Brush)gray : Accent);
+                            volume.IsEnabled = !none;
+                            volume.Opacity = s.Muted ? 0.72 : 1;
+                            if (!volume.IsMouseCaptureWithin)
+                            {
+                                syncing = true;
+                                volume.Value = none ? 0 : s.Vol * 100;
+                                syncing = false;
+                            }
                             t.ToolTip = none ? "Устройство вывода не найдено" : (s.VolName ?? "Устройство вывода") + " — " + (s.Muted ? "звук выключен" : Math.Round(s.Vol * 100) + "%") + "\nКолесо — громкость · значок — без звука · клик — быстрые переключатели";
                         });
                         return t;
@@ -3213,7 +3203,9 @@ namespace FlowBar
         [DllImport("psapi.dll")] static extern bool EmptyWorkingSet(IntPtr process);
         static DispatcherTimer trimT; static bool lowMem; static int trimTick;
         // Нехватка памяти: свободно меньше 10% от всей (но не меньше 1,5 ГБ). Выход из режима — когда свободно в 1,5 раза больше порога, чтобы не дёргаться на границе
-        static double LowMemGb() { var m = new N.MEMSTAT { Len = (uint)Marshal.SizeOf(typeof(N.MEMSTAT)) }; return N.GlobalMemoryStatusEx(ref m) ? Math.Max(1.5, m.TotalPhys / 1073741824.0 * 0.1) : 1.5; }
+        internal static double MemLimitGb(double totalGb) { return Math.Max(1.5, totalGb * 0.1); }
+        internal static bool IsLowMem(double freeGb, double limitGb, bool wasLow) { return wasLow ? freeGb < limitGb * 1.5 : freeGb < limitGb; }
+        static double LowMemGb() { var m = new N.MEMSTAT { Len = (uint)Marshal.SizeOf(typeof(N.MEMSTAT)) }; return N.GlobalMemoryStatusEx(ref m) ? MemLimitGb(m.TotalPhys / 1073741824.0) : 1.5; }
         static string LowMemText() { return LowMemGb().ToString("0.#", CultureInfo.CurrentCulture) + " ГБ"; }
         static void StartTrim()
         {
@@ -3225,7 +3217,7 @@ namespace FlowBar
                 if (C("memsaver", "1") == "1" && N.GlobalMemoryStatusEx(ref m))
                 {
                     double free = m.AvailPhys / 1073741824.0, limit = LowMemGb();
-                    bool low = lowMem ? free < limit * 1.5 : free < limit;
+                    bool low = IsLowMem(free, limit, lowMem);
                     if (low != lowMem) { lowMem = low; Info("память: " + (low ? "мало свободной (" : "хватает (") + free.ToString("0.0") + " ГБ) — режим экономии " + (low ? "включён" : "выключен")); }
                 }
                 else lowMem = false;

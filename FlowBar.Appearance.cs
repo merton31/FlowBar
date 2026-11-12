@@ -355,7 +355,7 @@ namespace FlowBar
             }));
             if (Material == "frost" || Material == "prism")
                 c.Children.Add(SetRow("Плотность стекла", "Меняет непрозрачность материала.",
-                    SliderRow(0, 100, Clamp(C("material.diffusion", ""), 65, 0, 100), 5, v => Math.Round(v) + "%",
+                    SliderRow(0, 100, Clamp(C("material.diffusion", ""), 65, 0, 100), 1, v => Math.Round(v) + "%",
                     v => { cfg["material.diffusion"] = Math.Round(v).ToString(); refresh(); }, "Плотность стекла")));
             if (WantsGlass(Cur))
             {
@@ -372,7 +372,7 @@ namespace FlowBar
                     { cfg["material.refraction"] = lenses[i]; refresh(); again(); })));
                 if (GlassProfile != LensProfile.Off)
                 {
-                    c.Children.Add(SetRow("Сила преломления", null, SliderRow(0, 100, LensStrength, 5, v => Math.Round(v) + "%",
+                    c.Children.Add(SetRow("Сила преломления", null, SliderRow(0, 100, LensStrength, 1, v => Math.Round(v) + "%",
                         v => { cfg["material.lensStrength"] = Math.Round(v).ToString(); refresh(); }, "Сила преломления")));
                     c.Children.Add(SetRow("Ширина преломления", null, SliderRow(4, 32, LensWidth, 1, v => Math.Round(v) + " px",
                         v => { cfg["material.lensWidth"] = Math.Round(v).ToString(); refresh(); }, "Ширина преломления")));
@@ -391,7 +391,7 @@ namespace FlowBar
                         SliderRow(0, 32, GlassRadius, 1, v => Math.Round(v) + " px",
                             v => { cfg["material.blur"] = Math.Round(v).ToString(); refresh(); }, "Радиус размытия")));
             }
-            c.Children.Add(SetRow("Кромка", null, SliderRow(0, 100, EdgeAlpha, 5, v => Math.Round(v) + "%",
+            c.Children.Add(SetRow("Кромка", null, SliderRow(0, 100, EdgeAlpha, 1, v => Math.Round(v) + "%",
                 v => { cfg["material.edge"] = Math.Round(v).ToString(); refresh(); }, "Кромка")));
             if (Material != "metal")
             {
@@ -1103,16 +1103,35 @@ namespace FlowBar
         {
             var body = new StackPanel();
             var device = CardHead("");
-            var rows = new StackPanel();
-            body.Children.Add(device); body.Children.Add(rows);
+            var master = new StackPanel(); // общая громкость — всегда на виду
+            var rows = new StackPanel { Visibility = Visibility.Collapsed }; // ползунки приложений — в раскрывающемся списке
+            var arrow = Txt("", 11, false); arrow.FontFamily = Icons; arrow.VerticalAlignment = VerticalAlignment.Center;
+            var listTitle = Txt("", 12.5, true);
+            var headRow = new DockPanel { Margin = new Thickness(6, 4, 6, 4) };
+            DockPanel.SetDock(arrow, Dock.Right); headRow.Children.Add(arrow); headRow.Children.Add(listTitle);
+            var header = Act(headRow, "Громкость приложений", () => { bool open = rows.Visibility != Visibility.Visible; rows.Visibility = open ? Visibility.Visible : Visibility.Collapsed; arrow.Text = open ? "" : ""; });
+            header.Margin = new Thickness(0, 6, 0, 2);
+            header.MouseEnter += (o, e) => Fade(header, Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B), 100); header.MouseLeave += (o, e) => Fade(header, Colors.Transparent, 140);
+            body.Children.Add(device); body.Children.Add(master); body.Children.Add(header); body.Children.Add(rows);
             Action refresh = null;
             refresh = () =>
             {
-                double master; bool muted; string output;
-                Audio.Read(out master, out muted, out output);
+                double vol; bool muted; string output;
+                Audio.Read(out vol, out muted, out output);
                 device.Text = output ?? "Устройство вывода недоступно";
+                master.Children.Clear();
+                var mtop = new DockPanel();
+                var mtoggle = Btn(muted ? "Включить" : "Выключить", () => { Audio.SetMute(!muted); ReadVolume(); All(b => b.Render()); refresh(); });
+                DockPanel.SetDock(mtoggle, Dock.Right); mtop.Children.Add(mtoggle); mtop.Children.Add(Txt("Общая громкость", 12, true));
+                var mslider = new ElasticSlider { Minimum = 0, Maximum = 100, Value = double.IsNaN(vol) ? 0 : Math.Round(vol * 100), IsEnabled = !double.IsNaN(vol), IsMoveToPointEnabled = true, Margin = new Thickness(0, 4, 0, 8) };
+                System.Windows.Automation.AutomationProperties.SetName(mslider, "Общая громкость");
+                mslider.ValueChanged += (o, e) => Audio.SetVolume((float)(e.NewValue / 100));
+                Action commit = () => { ReadVolume(); All(b => b.Render()); VolBeep(); };
+                mslider.DragEnded = commit; mslider.KeyUp += (o, e) => commit();
+                master.Children.Add(VS(mtop, mslider)); StyleInputs(master, CardFg);
                 rows.Children.Clear();
                 var sessions = Audio.MixerSessions();
+                listTitle.Text = "Приложения (" + sessions.Count + ")";
                 foreach (var session in sessions)
                 {
                     var s = session;
@@ -1128,7 +1147,7 @@ namespace FlowBar
                     DockPanel.SetDock(toggle, Dock.Right); top.Children.Add(toggle);
                     if (icon != null) top.Children.Add(Mg(new Image { Source = icon, Width = 18, Height = 18 }, 0, 0, 6, 0));
                     top.Children.Add(label);
-                    var slider = new Slider { Minimum = 0, Maximum = 100, Value = s.Volume * 100, Margin = new Thickness(0, 4, 0, 8) };
+                    var slider = new ElasticSlider { Minimum = 0, Maximum = 100, Value = s.Volume * 100, Margin = new Thickness(0, 4, 0, 8) };
                     System.Windows.Automation.AutomationProperties.SetName(slider, "Громкость " + label.Text);
                     slider.ValueChanged += (o, e) => { if (!s.SetVolume((float)(e.NewValue / 100))) slider.IsEnabled = false; };
                     rows.Children.Add(VS(top, slider));

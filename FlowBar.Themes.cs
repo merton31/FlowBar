@@ -84,6 +84,73 @@ namespace FlowBar
             foreach (var kv in t.Extras) cfg[kv.Key] = kv.Value;
         }
 
+        // ---------- код настроек ----------
+        // Короткий текст «FBS1:…»: по нему вид и поведение панели переносятся на другой компьютер. Берутся только разрешённые настройки —
+        // без города, путей к программам, ссылок и команд. При вставке каждое значение проверяется, неподходящее пропускается.
+        static readonly string[] ShareKeys = { "style", "accent", "size", "pos", "align", "width", "gap", "opacity", "material", "motion", "autohide", "bar.sections", "appMax", "winMode", "apps.progress", "apps.stack", "hideTaskbar", "memsaver", "volBeep", "clock.daylight", "cur.from", "cur.to", "cur.amount", "widgets", "preset.custom" };
+        // ключ с «@» — настройка конкретного монитора (имя устройства), на другом компьютере она ничего не значит
+        static bool ShareKey(string k) { return k.Length <= 60 && !k.Contains("@") && System.Text.RegularExpressions.Regex.IsMatch(k, @"^[\w.\-]+$") && (ShareKeys.Contains(k) || k.StartsWith("view.") || k.StartsWith("keep.") || k.StartsWith("material.")); }
+        static bool ShareValue(string k, string v)
+        {
+            if (v.Length > 400 || !System.Text.RegularExpressions.Regex.IsMatch(v, @"^[\w#.,:\- ]*$")) return false;
+            switch (k)
+            {
+                case "style": return Styles.ContainsKey(v);
+                case "accent": case "material.tint": return v == "" || System.Text.RegularExpressions.Regex.IsMatch(v, "^#[0-9A-Fa-f]{6}$");
+                case "material": return MaterialKeys.Contains(v);
+                case "size": return v == "S" || v == "M" || v == "L" || v == "XL";
+                case "align": return v == "left" || v == "center" || v == "right";
+                case "width": return v == "fit" || v == "wide" || v == "full";
+                case "pos": return v == "bottom" || v == "top" || v == "left" || v == "right";
+            }
+            return true;
+        }
+        internal static string MakeShareCode(IDictionary<string, string> c)
+        {
+            var raw = new UTF8Encoding(false).GetBytes(string.Join("\n", c.Where(kv => ShareKey(kv.Key) && ShareValue(kv.Key, kv.Value)).OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value)));
+            using (var ms = new MemoryStream())
+            {
+                using (var z = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionMode.Compress, true)) z.Write(raw, 0, raw.Length);
+                return "FBS1:" + Convert.ToBase64String(ms.ToArray());
+            }
+        }
+        // разбор кода: подходящие настройки; null и причина — если это не код или он повреждён
+        internal static Dictionary<string, string> ReadShareCode(string code, out int skipped, out string error)
+        {
+            skipped = 0; error = null; var res = new Dictionary<string, string>(); string text;
+            if (code != null && code.Length > 100000) { error = "Код слишком большой."; return null; } // до разбора: в буфере могло оказаться что угодно
+            code = System.Text.RegularExpressions.Regex.Replace(code ?? "", @"\s+", "");
+            if (!code.StartsWith("FBS1:")) { error = "Это не код настроек FlowBar: он начинается с «FBS1:»."; return null; }
+            try
+            {
+                using (var z = new System.IO.Compression.DeflateStream(new MemoryStream(Convert.FromBase64String(code.Substring(5))), System.IO.Compression.CompressionMode.Decompress))
+                {
+                    var buf = new byte[65537]; int n = 0, r; // предел 64 КБ: защита от «бомбы» из сжатых данных
+                    while (n < buf.Length && (r = z.Read(buf, n, buf.Length - n)) > 0) n += r;
+                    if (n > 65536) { error = "Код слишком большой."; return null; }
+                    text = Encoding.UTF8.GetString(buf, 0, n);
+                }
+            }
+            catch (Exception) { error = "Код повреждён: скопируйте его целиком."; return null; }
+            foreach (var line in text.Split('\n'))
+            {
+                int eq = line.IndexOf('='); if (eq <= 0) continue;
+                string k = line.Substring(0, eq), v = line.Substring(eq + 1);
+                if (ShareKey(k) && ShareValue(k, v)) res[k] = v; else skipped++;
+            }
+            if (res.Count == 0) { error = "В коде нет подходящих настроек."; return null; }
+            return res;
+        }
+        // применить код из буфера обмена; результат — текст для пользователя
+        static string ImportShareCode(string code)
+        {
+            int skipped; string err; var kv = ReadShareCode(code, out skipped, out err);
+            if (kv == null) return err;
+            foreach (var p in kv) cfg[p.Key] = p.Value;
+            SaveCfg(); ClosePanels(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows();
+            return "Применено настроек: " + kv.Count + (skipped > 0 ? "; пропущено: " + skipped + " (нет такой темы или значение не подошло)" : "") + ".";
+        }
+
         // первая папка тем: один файл-образец с пояснениями; он же рабочая тема
         static void EnsureThemesDir()
         {
