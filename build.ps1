@@ -10,7 +10,7 @@ $previewAssets = @('light','dark','color') | ForEach-Object { "/resource:$PSScri
   /r:"$wpf\PresentationFramework.dll" /r:"$wpf\PresentationCore.dll" /r:"$wpf\WindowsBase.dll" /r:"$wpf\UIAutomationProvider.dll" /r:"$wpf\UIAutomationTypes.dll" /r:"$wpf\UIAutomationClient.dll" `
   /r:System.Xaml.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:Microsoft.VisualBasic.dll /r:System.Management.dll /r:"$fw\System.Runtime.dll" /r:"$fw\System.Runtime.InteropServices.WindowsRuntime.dll" `
   /r:"$wm\Windows.Foundation.winmd" /r:"$wm\Windows.Graphics.winmd" /r:"$wm\Windows.Media.winmd" /r:"$wm\Windows.Devices.winmd" /r:"$wm\Windows.Storage.winmd" /r:"$wm\Windows.Networking.winmd" /r:"$wm\Windows.UI.winmd" /r:System.Numerics.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:"$fw\System.Numerics.Vectors.dll" `
-  "$PSScriptRoot\FlowBar.cs" "$PSScriptRoot\FlowBar.Design.cs" "$PSScriptRoot\FlowBar.Cards.cs" "$PSScriptRoot\FlowBar.Glass.cs" "$PSScriptRoot\FlowBar.Tray.cs" "$PSScriptRoot\FlowBar.Update.cs" "$PSScriptRoot\FlowBar.Agent.cs" "$PSScriptRoot\FlowBar.Appearance.cs"
+  "$PSScriptRoot\FlowBar.cs" "$PSScriptRoot\FlowBar.Design.cs" "$PSScriptRoot\FlowBar.Cards.cs" "$PSScriptRoot\FlowBar.Glass.cs" "$PSScriptRoot\FlowBar.Tray.cs" "$PSScriptRoot\FlowBar.Update.cs" "$PSScriptRoot\FlowBar.Agent.cs" "$PSScriptRoot\FlowBar.Appearance.cs" "$PSScriptRoot\FlowBar.Themes.cs"
 if ($LASTEXITCODE -ne 0) { throw "Не удалось собрать FlowBar.exe (код $LASTEXITCODE)" }
 
 # Сторож на Rust (необязательно): собирается, если установлен Rust. Без него FlowBar использует сторожа на .NET.

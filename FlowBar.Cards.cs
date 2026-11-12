@@ -1647,7 +1647,7 @@ namespace FlowBar
 
         void SettingsLook(StackPanel c, Action again, Action<string> preview)
         {
-            lastSection = "look";
+            lastSection = "look"; LoadThemeFiles();
             c.Children.Add(SH("Оформление"));
             c.Children.Add(SHint(CompareThemes ? "Выберите тему и подтвердите её в предпросмотре." : "Наведите на тему для примерки. Нажмите, чтобы применить."));
             c.Children.Add(SSub("Тема"));
@@ -1661,7 +1661,7 @@ namespace FlowBar
             }
             c.Children.Add(wrap);
             var more = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-            foreach (var k in Styles.Keys.Where(k => !FeaturedThemes.Any(t => t[0] == k))) { var kk = k; more.Children.Add(ThemeSwatch(kk, ThemeName(kk), curKey == kk, () => PickTheme(kk, preview))); }
+            foreach (var k in Styles.Keys.Where(k => !FeaturedThemes.Any(t => t[0] == k) && !fileThemes.ContainsKey(k)).ToList()) { var kk = k; more.Children.Add(ThemeSwatch(kk, ThemeName(kk), curKey == kk, () => PickTheme(kk, preview))); }
             // своё раскрытие вместо Expander: системный стиль Expander перебивал цвета темы
             more.Visibility = FeaturedThemes.Any(t => t[0] == curKey) ? Visibility.Collapsed : Visibility.Visible;
             var arrow = G(more.Visibility == Visibility.Visible ? "\uE70D" : "\uE76C", 10);
@@ -1672,6 +1672,23 @@ namespace FlowBar
             });
             toggle.Padding = new Thickness(4); toggle.Margin = new Thickness(0, 12, 0, 0); toggle.HorizontalAlignment = HorizontalAlignment.Left;
             c.Children.Add(toggle); c.Children.Add(more);
+            // свои темы: файлы *.fbtheme в папке themes; новая тема подхватывается при открытии раздела и после сохранения
+            {
+                c.Children.Add(SSub("Свои темы"));
+                c.Children.Add(SHint("Тема — текстовый файл .fbtheme: цвета панели, текста и акцента, размытие и значения вида. Файл можно переслать другому человеку: положите его в папку тем и откройте этот раздел."));
+                var mine = new StackPanel(); var own = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+                foreach (var nm0 in fileThemes.Keys.ToList()) { var nm = nm0; own.Children.Add(ThemeSwatch(nm, nm, curKey == nm, () => PickTheme(nm, preview))); }
+                if (own.Children.Count > 0) mine.Children.Add(own);
+                var nameBox = new TextBox { Width = 190, MaxLength = 32, VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "Название темы; пусто — «Моя тема N»" };
+                Action save = () => { SaveThemeFile(nameBox.Text); again(); };
+                nameBox.KeyDown += (o, e) => { if (e.Key == System.Windows.Input.Key.Enter) { save(); e.Handled = true; } };
+                var row = HS(nameBox, Mg(Btn("Сохранить текущий вид как тему", save, true), 8, 0, 0, 0)); row.Margin = new Thickness(0, 8, 0, 0);
+                mine.Children.Add(row);
+                var openDir = Btn("Открыть папку тем", () => { try { EnsureThemesDir(); System.Diagnostics.Process.Start(ThemesDir); } catch (Exception ex) { Log(ex); } });
+                openDir.HorizontalAlignment = HorizontalAlignment.Left; openDir.Margin = new Thickness(0, 8, 0, 0); mine.Children.Add(openDir);
+                StyleInputs(mine, CardFg);
+                c.Children.Add(mine);
+            }
             c.Children.Add(SSub("Акцент"));
             c.Children.Add(SHint("Цвет индикаторов, шкал, кнопок и «сегодня» в календаре."));
             var acc = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) }; var curA = C("accent", "");

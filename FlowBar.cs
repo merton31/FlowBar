@@ -1051,6 +1051,7 @@ namespace FlowBar
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
+            LoadThemeFiles();
             rememberedAppearance = SnapshotAppearance();
             LogHideSource();
             pinned = Lines("pinned.txt");
@@ -4020,6 +4021,15 @@ namespace FlowBar
             { var sk = new ScreenTime { Day = "2026-01-01" }; sk.Track("A", from); sk.Track("A", from.AddSeconds(2)); sk.Track("A", from.AddSeconds(5));
               fails += check(sk.Intervals.Count == 2 && sk.Intervals[0].End == 32403, "ScreenTime: пропущенная секунда опроса не рвёт интервал, пауза 3 с — рвёт"); }
             fails += check(Bar.PresetName("  мой=набор" + "\n" + "1  ") == "мойнабор1" && Bar.PresetName(null) == "", "Свои наборы: название очищается от служебных символов");
+            {
+                string te; var ok = Bar.ParseTheme(new[] { "// тест", "$c = #FF112233", "name = Закат", "bg = $c", "fg = #FFFFFFFF", "accent = #A490C2", "blur = 4   // акрил", "opacity = 80", "material = frost", "align = left" }, out te);
+                fails += check(ok != null && ok.Name == "Закат" && ok.Style.Blur == 4 && ok.Style.Bg.R == 0x11 && ok.Extras["opacity"] == "80" && ok.Extras["align"] == "left" && te == null, "Файл темы: разбор, переменные и значения вида");
+                string e1, e2, e3, e4;
+                fails += check(Bar.ParseTheme(new[] { "bg = #FF000000", "fg = #FFFFFFFF", "accent = #FFFFFF" }, out e1) == null && e1 != null
+                    && Bar.ParseTheme(new[] { "name = Х", "bg = красный", "fg = #FFFFFFFF", "accent = #FFFFFF" }, out e2) == null && e2.Contains("цвет")
+                    && Bar.ParseTheme(new[] { "name = Х", "bg = #FF000000", "fg = #FFFFFFFF", "accent = #FFFFFF", "align = вверх" }, out e3) == null && e3.StartsWith("align")
+                    && Bar.ParseTheme(new[] { "name = Х", "bg = $нет", "fg = #FFFFFFFF", "accent = #FFFFFF" }, out e4) == null && e4.Contains("переменная"), "Файл темы: ошибки названы, битая тема не загружается");
+            }
             fails += check(ScreenTime.Fmt(3725) == "1ч 2м" && ScreenTime.Fmt(59) == "0м", "ScreenTime.Fmt");
             fails += check(Weather.Deg(-0.4) == "0°" && Weather.Deg(-2.6) == "-3°" && Weather.Deg(12.5) == "13°", "Weather.Deg");
             fails += check(Weather.Wmo(0, true).Item2 == "Ясно" && Weather.Wmo(95, true).Item2 == "Гроза" && Weather.Wmo(73, true).Item1 == "snow" && Weather.Wmo(1, false).Item1 == "partly-night", "Weather.Wmo");

@@ -242,8 +242,8 @@ namespace FlowBar
         {
             if (!Styles.ContainsKey(theme)) return;
             candidateTheme = null;
-            cfg["style"] = theme;
-            SaveCfg(); ClosePanels(); RebuildAll(); RestyleWindows();
+            cfg["style"] = theme; ApplyThemeExtras(theme);
+            SaveCfg(); ClosePanels(); All(b => { b.reserveKey = null; }); RebuildAll(); All(b => b.Place()); RestyleWindows();
         }
 
         void PickTheme(string theme, Action<string> preview)
