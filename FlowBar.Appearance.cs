@@ -48,6 +48,37 @@ namespace FlowBar
 
         static double GlassRadius { get { return Clamp(C("material.blur", ""), -1, -1, 32); } }
         static float GlassBlurPixels(double scale) { return GlassRadius < 0 ? -1 : (float)(GlassRadius * scale); }
+        static LensProfile GlassProfile
+        {
+            get
+            {
+                switch (C("material.refraction", "auto"))
+                {
+                    case "liquid": return LensProfile.Liquid;
+                    case "ios": return LensProfile.Ios;
+                    case "off": return LensProfile.Off;
+                    default:
+                        return Cur == Styles["Liquid Glass"] ? LensProfile.Liquid : Cur == Styles["iOS Glass"] ? LensProfile.Ios : LensProfile.Off;
+                }
+            }
+        }
+        static double LensWidth { get { return Clamp(C("material.lensWidth", ""), GlassProfile == LensProfile.Ios ? 12 : 18, 4, 32); } }
+        static double LensStrength { get { return Clamp(C("material.lensStrength", ""), 75, 0, 100); } }
+        static double LensTint { get { return Clamp(C("material.lensTint", ""), GlassProfile == LensProfile.Ios ? 45 : 6, 0, 100); } }
+        static LensSettings PanelLens(double scale)
+        {
+            var profile = GlassProfile;
+            if (profile == LensProfile.Off || !WantsGlass(Cur)) return default(LensSettings);
+            bool ios = profile == LensProfile.Ios;
+            // «Матовое стекло» остаётся матовым и с преломлением: без своего радиуса — заметное размытие (до 8 px рассчитывается на видеокарте), а не почти прозрачное
+            double blur = GlassRadius >= 0 ? GlassRadius : Material == "frost" ? 6 : ios ? 3.6 : 1.1;
+            return new LensSettings { Profile = profile, Width = (float)(LensWidth * scale),
+                Shift = (float)((ios ? 9 : 20) * LensStrength / 100 * scale), Blur = (int)Math.Round(Math.Min(48, blur * scale)) };
+        }
+        static float PanelFallbackBlur(double scale, LensSettings lens)
+        {
+            return lens.Profile == LensProfile.Off || GlassRadius >= 0 ? GlassBlurPixels(scale) : lens.Blur;
+        }
 
         static Brush MaterialFill(Sty style, bool glass)
         {
@@ -69,13 +100,17 @@ namespace FlowBar
             Color c = style.Bg;
             double strength = Clamp(C("material.diffusion", ""), 65, 0, 100) / 100;
             int alpha = Material == "frost" ? (int)(120 + strength * 100) : Material == "prism" ? (int)(40 + strength * 80) : c.A;
+            var profile = GlassProfile;
+            bool profileTint = glass && Material == "theme" && profile != LensProfile.Off;
+            if (profileTint) alpha = (int)Math.Round(255 * LensTint / 100);
             if (WantsGlass(style) && !glass) alpha = 242;
             c = MaterialTint(c);
             byte a = (byte)Math.Round(alpha * Opac);
             if (WantsGlass(style) && !glass) a = (byte)Math.Max(224, (int)a);
             var bg = Color.FromArgb(a, c.R, c.G, c.B);
             if (!glass) return new SolidColorBrush(bg);
-            var highlight = Color.FromArgb((byte)Math.Min(255, a + 20), (byte)Math.Min(255, c.R + 24), (byte)Math.Min(255, c.G + 24), (byte)Math.Min(255, c.B + 24));
+            int light = profileTint && profile == LensProfile.Liquid ? 6 : 20;
+            var highlight = Color.FromArgb((byte)Math.Min(255, a + light), (byte)Math.Min(255, c.R + 24), (byte)Math.Min(255, c.G + 24), (byte)Math.Min(255, c.B + 24));
             return new LinearGradientBrush(new GradientStopCollection { new GradientStop(highlight, 0), new GradientStop(bg, 0.55) }, 90);
         }
 
@@ -102,6 +137,16 @@ namespace FlowBar
             if (glass)
             {
                 var bottom = style == Styles["Liquid Glass"] ? Color.FromRgb(170, 231, 249) : Colors.White;
+                if (PanelLens(1).Enabled)
+                {
+                    var rim = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
+                    rim.GradientStops.Add(new GradientStop(Frozen(Colors.White, Edge(0x96)).Color, 0));
+                    rim.GradientStops.Add(new GradientStop(Frozen(bottom, Edge(0x29)).Color, 0.18));
+                    rim.GradientStops.Add(new GradientStop(Frozen(bottom, Edge(0x1B)).Color, 0.52));
+                    rim.GradientStops.Add(new GradientStop(Frozen(bottom, Edge(0x3D)).Color, 0.86));
+                    rim.GradientStops.Add(new GradientStop(Frozen(bottom, Edge(0x90)).Color, 1));
+                    return rim;
+                }
                 return new LinearGradientBrush(Color.FromArgb(Edge(0x86), 255, 255, 255), Frozen(bottom, Edge(0x26)).Color, 90);
             }
             return Frozen(style.Fg, Edge(style.LightText ? (byte)0x24 : (byte)0x1C));
@@ -124,6 +169,7 @@ namespace FlowBar
         bool UseSections { get { return Sections && !collapsed && !Flush && !VerticalBar; } }
         Canvas sectionSurface;
         bool sectionPrismPulse;
+        bool paintingSections;
         readonly List<Backdrop> sectionBackdrops = new List<Backdrop>();
         string sectionKey;
 
@@ -141,6 +187,15 @@ namespace FlowBar
         }
 
         void PaintSections(bool force = false)
+        {
+            // Creating a backdrop HWND can synchronously cause another WPF layout pass.
+            if (paintingSections) return;
+            paintingSections = true;
+            try { PaintSectionLayers(force); }
+            finally { paintingSections = false; }
+        }
+
+        void PaintSectionLayers(bool force)
         {
             if (sectionSurface == null || root == null || !root.IsLoaded) return;
             if (!UseSections)
@@ -216,8 +271,9 @@ namespace FlowBar
                 }
                 double sc = Scale;
                 if (i >= sectionBackdrops.Count) continue;
-                sectionBackdrops[i].Set(hwnd, windowRect.L + (int)Math.Round((origin.X + r.X) * sc), windowRect.T + (int)Math.Round((origin.Y + r.Y) * sc),
-                    (int)Math.Round(r.Width * sc), (int)Math.Round(r.Height * sc), radius * sc, IsVisible, GlassBlurPixels(sc));
+                var lens = PanelLens(sc);
+                sectionBackdrops[i].SetLens(hwnd, windowRect.L + (int)Math.Round((origin.X + r.X) * sc), windowRect.T + (int)Math.Round((origin.Y + r.Y) * sc),
+                    (int)Math.Round(r.Width * sc), (int)Math.Round(r.Height * sc), radius * sc, IsVisible, PanelFallbackBlur(sc, lens), lens, scr.Bounds, scr.DeviceName);
             }
             if (!glass && sectionBackdrops.Count > 0) ClearSectionBackdrops();
         }
@@ -298,10 +354,24 @@ namespace FlowBar
                     var open = Btn("Параметры прозрачности Windows", () => Launch("ms-settings:colors")); open.HorizontalAlignment = HorizontalAlignment.Left; open.Margin = new Thickness(0, 6, 0, 4);
                     c.Children.Add(open);
                 }
-                c.Children.Add(SetRow("Размытие фона", "Свой радиус меняет резкость реального фона под панелью и карточками.",
-                    Seg(new[] { "Системное", "Свой радиус" }, GlassRadius < 0 ? 0 : 1, i =>
+                var lenses = new[] { "auto", "off", "liquid", "ios" };
+                c.Children.Add(SetRow("Преломление фона", "Смещает фон вдоль скруглённой кромки панели.",
+                    Seg(new[] { "По теме", "Выключено", "Liquid Glass", "iOS Glass" }, Math.Max(0, Array.IndexOf(lenses, C("material.refraction", "auto"))), i =>
+                    { cfg["material.refraction"] = lenses[i]; refresh(); again(); })));
+                if (GlassProfile != LensProfile.Off)
+                {
+                    c.Children.Add(SetRow("Сила преломления", null, SliderRow(0, 100, LensStrength, 5, v => Math.Round(v) + "%",
+                        v => { cfg["material.lensStrength"] = Math.Round(v).ToString(); refresh(); }, "Сила преломления")));
+                    c.Children.Add(SetRow("Ширина преломления", null, SliderRow(4, 32, LensWidth, 1, v => Math.Round(v) + " px",
+                        v => { cfg["material.lensWidth"] = Math.Round(v).ToString(); refresh(); }, "Ширина преломления")));
+                    if (Material == "theme")
+                        c.Children.Add(SetRow("Тонировка фона", null, SliderRow(0, 100, LensTint, 1, v => Math.Round(v) + "%",
+                            v => { cfg["material.lensTint"] = Math.Round(v).ToString(); refresh(); }, "Тонировка фона")));
+                }
+                c.Children.Add(SetRow("Размытие фона", "Свой радиус меняет резкость фона под панелью и карточками.",
+                    Seg(new[] { GlassProfile == LensProfile.Off ? "Системное" : "По материалу", "Свой радиус" }, GlassRadius < 0 ? 0 : 1, i =>
                     {
-                        if (i == 0) cfg.Remove("material.blur"); else cfg["material.blur"] = "12";
+                        if (i == 0) cfg.Remove("material.blur"); else if (GlassRadius < 0) cfg["material.blur"] = "12";
                         refresh(); again();
                     })));
                 if (GlassRadius >= 0)
@@ -320,7 +390,7 @@ namespace FlowBar
             }
             c.Children.Add(CardActions(Btn("Сбросить материал", () =>
             {
-                foreach (var k in new[] { "material", "material.diffusion", "material.blur", "material.edge", "material.tint", "opacity" }) cfg.Remove(k);
+                foreach (var k in new[] { "material", "material.diffusion", "material.blur", "material.edge", "material.tint", "material.refraction", "material.lensStrength", "material.lensWidth", "material.lensTint", "opacity" }) cfg.Remove(k);
                 SaveCfg(); ClosePanels(); RebuildAll(); again();
             })));
 
@@ -441,7 +511,7 @@ namespace FlowBar
 
         Action<string> refreshPreview;
 
-        static readonly HashSet<string> LookKeys = new HashSet<string> { "style", "material", "material.edge", "material.tint", "material.diffusion", "material.blur", "accent", "opacity", "size", "pos", "width", "gap", "align", "widgets", "seq", "bar.sections", "appMax", "search", "edgeBtns" };
+        static readonly HashSet<string> LookKeys = new HashSet<string> { "style", "material", "material.edge", "material.tint", "material.diffusion", "material.blur", "material.refraction", "material.lensStrength", "material.lensWidth", "material.lensTint", "accent", "opacity", "size", "pos", "width", "gap", "align", "widgets", "seq", "bar.sections", "appMax", "search", "edgeBtns" };
         static bool IsAppearanceKey(string key)
         {
             var name = key.Split('@')[0];

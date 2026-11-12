@@ -3,6 +3,8 @@
 *.zip
 *.pdb
 watch/target/
+tools/GpuGlassProbe/bin/
+tools/GpuGlassProbe/obj/
 
 # снимки экрана и рабочие материалы: могут содержать личные окна и файлы
 *.png

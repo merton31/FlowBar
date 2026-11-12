@@ -662,6 +662,8 @@ namespace FlowBar
         {
             appGroups.Clear();
             foreach (var l in Lines("groups.txt")) { var p = l.Split('\t'); if (p[0] != "") appGroups[p[0]] = p.Skip(1).Where(x => x != "").ToList(); }
+            // пустые группы от прежних версий («Убрать из группы» оставлял пустую плитку) — убираем
+            foreach (var empty in appGroups.Where(kv => kv.Value.Count == 0).Select(kv => kv.Key).ToList()) { appGroups.Remove(empty); if (pinned != null) pinned.Remove("group:" + empty); }
         }
         static void SaveGroups() { SafeFile.WriteLines(F("groups.txt"), appGroups.Select(kv => kv.Key + "\t" + string.Join("\t", kv.Value))); }
         static string GroupsKey() { return string.Join("|", appGroups.Select(kv => kv.Key + ":" + string.Join(",", kv.Value))); }
@@ -683,6 +685,16 @@ namespace FlowBar
         static void AddToGroup(string path, string name)
         {
             AttachGroupMember(path, name);
+            SaveGroups(); SavePinned();
+        }
+        // название группы живёт в строке groups.txt и в pinned.txt: управляющие символы (табуляция, перевод строки при вставке) ломали бы файл
+        internal static string GroupName(string s) { var t = new string((s ?? "").Where(ch => !char.IsControl(ch)).ToArray()).Trim(); return t.Length > 32 ? t.Substring(0, 32).Trim() : t; }
+        // программа уходит из группы на панель; в группе осталась одна или ни одной — группа распадается, «папки» из одного значка не бывает
+        static void RemoveFromGroup(string name, string path)
+        {
+            List<string> ms; if (!appGroups.TryGetValue(name, out ms)) return;
+            ms.Remove(path); if (!pinned.Contains(path)) pinned.Add(path);
+            if (ms.Count <= 1) { Ungroup(name); return; }
             SaveGroups(); SavePinned();
         }
         static void Ungroup(string name)
@@ -757,7 +769,7 @@ namespace FlowBar
                 cell.MouseRightButtonUp += (s, e) =>
                 {
                     e.Handled = true; var cm = new ContextMenu();
-                    cm.Items.Add(Item("Убрать из группы", () => { members.Remove(path); if (!pinned.Contains(path)) pinned.Add(path); SaveGroups(); SavePinned(); if (panel != null) panel.Close(); }));
+                    cm.Items.Add(Item("Убрать из группы", () => { RemoveFromGroup(name, path); if (panel != null) panel.Close(); }));
                     cm.PlacementTarget = cell; cm.IsOpen = true;
                 };
                 grid.Children.Add(cell);
@@ -773,17 +785,41 @@ namespace FlowBar
                         grid.Children[i].BeginAnimation(OpacityProperty, animation);
                     }
                 };
-            body.Children.Add(CardHead("Название группы"));
-            var nameBox = new TextBox { Text = name, ToolTip = "Новое название — Enter" };
-            nameBox.KeyDown += (s, e) =>
+            // название группы — заголовок карточки: нажатие превращает его в поле ввода (Enter или уход — сохранить, Esc — отмена)
+            headEditor = head =>
             {
-                var nn = nameBox.Text.Trim();
-                if (e.Key != System.Windows.Input.Key.Enter || nn == "" || nn == name || appGroups.ContainsKey(nn)) return;
-                appGroups[nn] = members; appGroups.Remove(name);
-                int i = pinned.IndexOf("group:" + name); if (i >= 0) pinned[i] = "group:" + nn; Retag("p|group:" + name, "p|group:" + nn);
-                SaveGroups(); SavePinned(); if (panel != null) panel.Close();
+                head.Cursor = Cursors.IBeam; head.ToolTip = "Нажмите, чтобы переименовать";
+                head.MouseLeftButtonUp += (s, e) =>
+                {
+                    var par = head.Parent as Panel; if (par == null) return;
+                    var box = new TextBox { Text = name, MaxLength = 32, FontSize = head.FontSize, FontWeight = head.FontWeight, FontFamily = head.FontFamily, Margin = head.Margin,
+                        Padding = new Thickness(0, 0, 0, 1), Background = Brushes.Transparent, Foreground = Frozen(CardFg, 255), CaretBrush = Frozen(CardFg, 255), SelectionBrush = Accent,
+                        BorderBrush = Accent, BorderThickness = new Thickness(0, 0, 0, 2) };
+                    int at = par.Children.IndexOf(head); if (at < 0) return;
+                    par.Children.RemoveAt(at); par.Children.Insert(at, box); if (par is DockPanel) DockPanel.SetDock(box, DockPanel.GetDock(head));
+                    bool done = false;
+                    Action finish = () =>
+                    {
+                        if (done) return; done = true;
+                        var nn = GroupName(box.Text);
+                        if (nn != "" && nn != name && !appGroups.ContainsKey(nn))
+                        {
+                            appGroups[nn] = members; appGroups.Remove(name);
+                            int i = pinned.IndexOf("group:" + name); if (i >= 0) pinned[i] = "group:" + nn; Retag("p|group:" + name, "p|group:" + nn);
+                            SaveGroups(); SavePinned(); if (panel != null) panel.Close();
+                            return;
+                        }
+                        int p2 = par.Children.IndexOf(box); if (p2 >= 0) { par.Children.RemoveAt(p2); par.Children.Insert(p2, head); if (par is DockPanel) DockPanel.SetDock(head, DockPanel.GetDock(box)); } // пусто, то же или занятое имя — прежний заголовок
+                    };
+                    box.KeyDown += (o2, e2) =>
+                    {
+                        if (e2.Key == System.Windows.Input.Key.Enter) { e2.Handled = true; finish(); }
+                        else if (e2.Key == System.Windows.Input.Key.Escape) { e2.Handled = true; box.Text = name; finish(); }
+                    };
+                    box.LostKeyboardFocus += (o2, e2) => finish();
+                    box.Loaded += (o2, e2) => { box.Focus(); Keyboard.Focus(box); box.SelectAll(); };
+                };
             };
-            body.Children.Add(nameBox);
             body.Children.Add(CardActions(Btn("Разгруппировать", () => { if (panel != null) panel.Close(); Ungroup(name); })));
             ShowPanel(name, body, 340, null);
         }
@@ -1463,7 +1499,7 @@ namespace FlowBar
 
         PanelSampleSurface PreviewCapsule(Border scene, FrameworkElement child, bool glass)
         {
-            var capsule = new PanelSampleSurface(scene, glass ? PreviewScene(true) : null)
+            var capsule = new PanelSampleSurface(scene, glass ? PreviewScene(true) : null, glass ? PanelLens(1) : default(LensSettings))
             {
                 Child = child, Background = MaterialFill(Cur, glass), BorderBrush = MaterialEdge(Cur, glass, false),
                 BorderThickness = new Thickness(1), Padding = new Thickness(SizeKey == "XL" ? 4 : 6),
@@ -1522,17 +1558,53 @@ namespace FlowBar
         {
             readonly Border scene;
             readonly Brush softWallpaper;
-            public PanelSampleSurface(Border backdrop, Brush soft) { scene = backdrop; softWallpaper = soft; }
+            readonly LensSettings lens;
+            System.Drawing.Rectangle lastTarget, lastSource;
+            BitmapSource lensImage;
+            Brush lensSource;
+            public PanelSampleSurface(Border backdrop, Brush soft, LensSettings optics) { scene = backdrop; softWallpaper = soft; lens = optics; }
             protected override void OnRender(DrawingContext dc)
             {
                 if (softWallpaper != null && scene.ActualWidth > 0 && scene.ActualHeight > 0 && IsDescendantOf(scene))
                 {
                     var start = scene.TranslatePoint(new Point(), this);
-                    dc.PushClip(new RectangleGeometry(new Rect(RenderSize), CornerRadius.TopLeft, CornerRadius.TopLeft));
-                    dc.DrawRectangle(softWallpaper, null, new Rect(start, scene.RenderSize));
-                    dc.Pop();
+                    if (lens.Enabled && ActualWidth >= 1 && ActualHeight >= 1 && scene.Background != null)
+                        DrawLens(dc, start);
+                    else
+                    {
+                        dc.PushClip(new RectangleGeometry(new Rect(RenderSize), CornerRadius.TopLeft, CornerRadius.TopLeft));
+                        dc.DrawRectangle(softWallpaper, null, new Rect(start, scene.RenderSize));
+                        dc.Pop();
+                    }
                 }
                 base.OnRender(dc);
+            }
+
+            void DrawLens(DrawingContext dc, Point start)
+            {
+                var target = new System.Drawing.Rectangle((int)Math.Round(-start.X), (int)Math.Round(-start.Y),
+                    (int)Math.Ceiling(ActualWidth), (int)Math.Ceiling(ActualHeight));
+                var source = new System.Drawing.Rectangle(0, 0, (int)Math.Ceiling(scene.ActualWidth), (int)Math.Ceiling(scene.ActualHeight));
+                if (lensImage == null || target != lastTarget || source != lastSource || scene.Background != lensSource)
+                {
+                    var visual = new DrawingVisual();
+                    using (var painter = visual.RenderOpen()) painter.DrawRectangle(scene.Background, null, new Rect(scene.RenderSize));
+                    var capture = new RenderTargetBitmap(source.Width, source.Height, 96, 96, PixelFormats.Pbgra32);
+                    capture.Render(visual);
+                    var pixels = new int[source.Width * source.Height];
+                    capture.CopyPixels(pixels, source.Width * 4, 0);
+                    if (lens.Blur > 0)
+                    {
+                        var softened = new int[pixels.Length];
+                        GlassLensMap.Soften(pixels, new int[pixels.Length], softened, source.Width, source.Height, lens.Blur);
+                        pixels = softened;
+                    }
+                    var map = new GlassLensMap(target, source, source, CornerRadius.TopLeft, lens);
+                    map.Render(pixels);
+                    lensImage = BitmapSource.Create(target.Width, target.Height, 96, 96, PixelFormats.Pbgra32, null, map.Pixels, target.Width * 4);
+                    lensImage.Freeze(); lastTarget = target; lastSource = source; lensSource = scene.Background;
+                }
+                dc.DrawImage(lensImage, new Rect(RenderSize));
             }
         }
 

@@ -62,7 +62,15 @@ namespace FlowBar
         }
         static Color Fa(byte a) { var f = Cur.Fg; return Color.FromArgb(a, f.R, f.G, f.B); }
         // подложка модуля-карточки; на стекле — противоположная тексту (тёмная под светлым текстом, светлая под тёмным), чтобы надписи читались на любом фоне за панелью
-        static Color Surface { get { return GlassOn ? (Cur.LightText ? Color.FromArgb(0x40, 0, 0, 0) : Color.FromArgb(0xB0, 255, 255, 255)) : Fa(Cur.LightText ? (byte)0x19 : (byte)0x0C); } }
+        static Color Surface
+        {
+            get
+            {
+                if (!GlassOn) return Fa(Cur.LightText ? (byte)0x19 : (byte)0x0C);
+                if (!Cur.LightText) return Color.FromArgb(0xB0, 255, 255, 255);
+                return Color.FromArgb(GlassProfile == LensProfile.Liquid ? (byte)0x8C : (byte)0x40, 0, 0, 0);
+            }
+        }
         // запас лимита ИИ — зелёным, как на образце; ближе к лимиту — оранжевый и красный (LevelBrush)
         static readonly Brush AiOk = new SolidColorBrush(Color.FromRgb(0x30, 0xD1, 0x58));
         static Brush ChipEdge { get { return new SolidColorBrush(Fa(Cur.LightText ? (byte)0x16 : (byte)0x1A)); } } // тонкая рамка карточки
@@ -3344,8 +3352,9 @@ namespace FlowBar
             if (glassBg == null) { glassBg = Backdrop.Create(); if (glassBg == null) { ApplyStyle(); return; } } // материал недоступен — сплошная заливка
             N.RECT wr; N.GetWindowRect(hwnd, out wr);
             double sc = Scale; var o0 = root.TranslatePoint(new Point(0, 0), this);
-            glassBg.Set(hwnd, wr.L + (int)Math.Round(o0.X * sc), wr.T + (int)Math.Round(o0.Y * sc), (int)Math.Round(root.ActualWidth * sc), (int)Math.Round(root.ActualHeight * sc),
-                root.CornerRadius.TopLeft * sc, IsVisible && root.ActualWidth > 0, GlassBlurPixels(sc));
+            var lens = PanelLens(sc);
+            glassBg.SetLens(hwnd, wr.L + (int)Math.Round(o0.X * sc), wr.T + (int)Math.Round(o0.Y * sc), (int)Math.Round(root.ActualWidth * sc), (int)Math.Round(root.ActualHeight * sc),
+                root.CornerRadius.TopLeft * sc, IsVisible && root.ActualWidth > 0, PanelFallbackBlur(sc, lens), lens, scr.Bounds, scr.DeviceName, true);
         }
         void Place()
         {
