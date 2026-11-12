@@ -3,6 +3,8 @@
 *.zip
 *.pdb
 watch/target/
+tools/GpuGlassProbe/bin/
+tools/GpuGlassProbe/obj/
 
 # снимки экрана и рабочие материалы: могут содержать личные окна и файлы
 *.png
@@ -13,6 +15,7 @@ watch/target/
 !assets/preview/color.jpg
 !assets/FlowBar.ico
 !assets/logo.png
+!assets/elemental/*.png
 shots-*/
 
 # внутренние отчёты и планы (локальные пути, черновики)

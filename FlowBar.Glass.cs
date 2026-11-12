@@ -106,6 +106,8 @@ namespace FlowBar
         HwndSource host; WUC.Desktop.DesktopWindowTarget target; WUC.SpriteVisual vis; WUC.CompositionRoundedRectangleGeometry geo;
         WUC.CompositionBackdropBrush systemBrush, desktopBrush;
         WUC.CompositionEffectBrush customBrush;
+        GlassLensWindow lensWindow;
+        bool lensFailed;
         float lastBlur = float.NaN;
         bool shown;
 
@@ -164,7 +166,57 @@ namespace FlowBar
         // x, y, w, h — физические пиксели экрана; r — радиус углов в пикселях; подложка встаёт сразу под окно owner
         public void Set(IntPtr owner, int x, int y, int w, int h, double r, bool show, float blur = -1)
         {
+            SetLens(owner, x, y, w, h, r, show, blur, default(LensSettings), System.Drawing.Rectangle.Empty, null);
+        }
+
+        internal void SetLens(IntPtr owner, int x, int y, int w, int h, double r, bool show, float blur,
+            LensSettings lens, System.Drawing.Rectangle monitor, string device, bool preferGpu = false)
+        {
             if (host == null) return;
+            // сбой композиции не должен валить панель: объект Windows мог быть закрыт (смена видеорежима, перезапуск DWM) — стекла нет, заливка станет сплошной
+            try
+            {
+                if (!show || w < 1 || h < 1)
+                {
+                    if (lensWindow != null) lensWindow.Stop();
+                }
+                else if (UseLens(owner, new System.Drawing.Rectangle(x, y, w, h), monitor, r, lens, device, preferGpu))
+                {
+                    SetCore(lensWindow.StackBelow(owner), x, y, w, h, r, show, blur);
+                    return;
+                }
+                SetCore(owner, x, y, w, h, r, show, blur);
+            }
+            catch (Exception ex)
+            {
+                failedAt = DateTime.Now; lastError = ex.Message; comp = null; blurFactory = null; blurUnavailable = false;
+                Bar.Log(new Exception("Подложка стекла сломалась (host=" + (host != null) + ", shown=" + shown + ", " + w + "×" + h + "): темы рисуются сплошной поверхностью, новая попытка через минуту", ex));
+                Dispose();
+            }
+        }
+
+        bool UseLens(IntPtr owner, System.Drawing.Rectangle bounds, System.Drawing.Rectangle monitor, double radius, LensSettings lens, string device, bool preferGpu)
+        {
+            if (!lens.Enabled)
+            {
+                if (lensWindow != null) { lensWindow.Dispose(); lensWindow = null; }
+                lensFailed = false;
+                return false;
+            }
+            if (lensFailed) return false;
+            try
+            {
+                if (lensWindow == null) lensWindow = new GlassLensWindow();
+                lensWindow.PreferGpu = preferGpu;
+                if (lensWindow.Show(owner, bounds, monitor, radius, lens, device)) return true;
+            }
+            catch (Exception ex) { Bar.Log(new Exception("Преломление недоступно. Используется системное стекло.", ex)); }
+            if (lensWindow != null) { lensWindow.Dispose(); lensWindow = null; }
+            lensFailed = true;
+            return false;
+        }
+        void SetCore(IntPtr owner, int x, int y, int w, int h, double r, bool show, float blur)
+        {
             if (!show || w < 1 || h < 1) { if (shown) { ShowWindow(host.Handle, 0); shown = false; } return; }
             SetBlur(blur);
             var size = new Vector2(w, h);
@@ -201,8 +253,8 @@ namespace FlowBar
             }
         }
         // уход вместе с карточкой
-        public void Fade() { if (host != null && shown) Animate(1, 0, 120); }
-        public void Unfade() { if (host != null && shown) Animate(0, 1, 150); } // панель вернули, пока она уезжала
+        public void Fade() { if (lensWindow != null) lensWindow.Fade(0, 120); if (host != null && shown) try { Animate(1, 0, 120); } catch (Exception ex) { Bar.Log(ex); } }
+        public void Unfade() { if (lensWindow != null) lensWindow.Fade(1, 150); if (host != null && shown) try { Animate(0, 1, 150); } catch (Exception ex) { Bar.Log(ex); } } // панель вернули, пока она уезжала
         void Animate(float from, float to, int ms)
         {
             var a = comp.CreateScalarKeyFrameAnimation(); a.InsertKeyFrame(0f, from); a.InsertKeyFrame(1f, to); a.Duration = TimeSpan.FromMilliseconds(ms);
@@ -211,6 +263,7 @@ namespace FlowBar
 
         public void Dispose()
         {
+            if (lensWindow != null) { lensWindow.Dispose(); lensWindow = null; }
             if (host == null) return;
             try
             {
