@@ -2550,13 +2550,19 @@ namespace FlowBar
                 if (closed || dragging) return;
                 if (stickyPid == 0) { w.Close(); return; }
                 // карточка трея: после нажатия на значок программа выводит своё меню или окно — карточка остаётся, пока работают с этой программой
-                uint pid0 = stickyPid; var watch = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+                uint pid0 = stickyPid; var watch = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) }; var since = DateTime.Now;
                 watch.Tick += (o2, e2) =>
                 {
                     if (closed) { watch.Stop(); return; }
                     if (w.IsActive || stickyPid != pid0) { watch.Stop(); return; } // вернулись в карточку или нажали другой значок — дальше следит новый
+                    if ((DateTime.Now - since).TotalMilliseconds < 1500) return; // программа выводит меню не сразу: дать ей время
                     uint fp; var fgw = N.GetForegroundWindow(); N.GetWindowThreadProcessId(fgw, out fp);
-                    if (fp != pid0 && Cls(fgw) != "#32768") { watch.Stop(); stickyPid = 0; w.Close(); } // ушли в другую программу — закрыть
+                    // открыто любое меню (#32768) — карточка остаётся, даже если его окно у другого процесса
+                    if (fp != pid0 && Cls(fgw) != "#32768" && N.FindWindow("#32768", null) == IntPtr.Zero)
+                    {
+                        watch.Stop(); stickyPid = 0; w.Close();
+                        Info("карточка трея закрыта: впереди " + ExePathOf(fp) + ", окно «" + Cls(fgw) + "»");
+                    }
                 };
                 watch.Start();
             })); // из «…» модуль тянут на панель — карточка остаётся
