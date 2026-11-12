@@ -4225,6 +4225,10 @@ namespace FlowBar
             int shSkip; string shErr; var shBack = Bar.ReadShareCode(Bar.MakeShareCode(shr), out shSkip, out shErr);
             fails += check(shBack != null && shBack.Count == 4 && shBack["size"] == "L" && shBack["accent"] == "#4CC2FF" && shBack["view.cpu"] == "min" && !shBack.ContainsKey("wxCity") && !shBack.ContainsKey("cl.prevStatus") && !shBack.ContainsKey("align") && !shBack.Keys.Any(k => k.Contains("@")), "Settings code: round trip, private, invalid and per-monitor keys dropped");
             fails += check(Bar.ReadShareCode("мусор", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode("FBS1:AAAA", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode(new string('A', 200000), out shSkip, out shErr) == null && shErr.Contains("большой"), "Settings code: garbage and oversized text rejected");
+            // номера версий: буква в конце — мелкая правка и новее той же версии без буквы, но старее следующего номера
+            Version tv7, tv7a, tv8;
+            fails += check(Setup.TryParseTag("v1.6.7", out tv7) && Setup.TryParseTag("v1.6.7a", out tv7a) && Setup.TryParseTag("1.6.8", out tv8) && tv7 < tv7a && tv7a < tv8
+                && Setup.V3(tv7) == "1.6.7" && Setup.V3(tv7a) == "1.6.7a" && Setup.V3(new Version(1, 6, 7, 2)) == "1.6.7b" && !Setup.TryParseTag("v1.6.7ab", out tv7) && !Setup.TryParseTag("мусор", out tv7), "Version letters: 1.6.7 < 1.6.7a < 1.6.8, display and tag parsing");
             // ползунок-рогатка: мышь вправо — цель вправо, влево — влево, сильнее натяжение — дальше, края и шаг соблюдаются
             Func<double, double, double> aim = (pullX, tick) => { double tn; const double rail = 280; return Bar.ElasticSlider.ValueAt(10 + rail * 0.6 + Bar.ElasticSlider.Shot(new Vector(pullX, 0), rail, out tn), rail, 0, 100, false, tick, 60); };
             fails += check(aim(20, 0) > 60 && aim(60, 0) > aim(20, 0) && aim(-40, 0) < 60 && aim(500, 0) == 100 && aim(-500, 0) == 0 && Math.Abs(aim(20, 1) - Math.Round(aim(20, 1))) < 1e-9, "Slider aim: mouse right aims right, stronger pull aims farther, clamped, snaps to step");
