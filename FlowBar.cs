@@ -4229,9 +4229,9 @@ namespace FlowBar
             Version tv7, tv7a, tv8;
             fails += check(Setup.TryParseTag("v1.6.7", out tv7) && Setup.TryParseTag("v1.6.7a", out tv7a) && Setup.TryParseTag("1.6.8", out tv8) && tv7 < tv7a && tv7a < tv8
                 && Setup.V3(tv7) == "1.6.7" && Setup.V3(tv7a) == "1.6.7a" && Setup.V3(new Version(1, 6, 7, 2)) == "1.6.7b" && !Setup.TryParseTag("v1.6.7ab", out tv7) && !Setup.TryParseTag("мусор", out tv7), "Version letters: 1.6.7 < 1.6.7a < 1.6.8, display and tag parsing");
-            // ползунок-рогатка: мышь вправо — цель вправо, влево — влево, сильнее натяжение — дальше, края и шаг соблюдаются
+            // ползунок-рогатка: метка идёт за мышью один к одному (без ускорения), вправо — вправо, влево — влево, края и шаг соблюдаются
             Func<double, double, double> aim = (pullX, tick) => { double tn; const double rail = 280; return Bar.ElasticSlider.ValueAt(10 + rail * 0.6 + Bar.ElasticSlider.Shot(new Vector(pullX, 0), rail, out tn), rail, 0, 100, false, tick, 60); };
-            fails += check(aim(20, 0) > 60 && aim(60, 0) > aim(20, 0) && aim(-40, 0) < 60 && aim(500, 0) == 100 && aim(-500, 0) == 0 && Math.Abs(aim(20, 1) - Math.Round(aim(20, 1))) < 1e-9, "Slider aim: mouse right aims right, stronger pull aims farther, clamped, snaps to step");
+            fails += check(Math.Abs(aim(20, 0) - (60 + 20 / 2.8)) < 1e-6 && Math.Abs(aim(60, 0) - (60 + 60 / 2.8)) < 1e-6 && Math.Abs(aim(-40, 0) - (60 - 40 / 2.8)) < 1e-6 && aim(500, 0) == 100 && aim(-500, 0) == 0 && Math.Abs(aim(20, 1) - Math.Round(aim(20, 1))) < 1e-9, "Slider aim: marker moves 1:1 with the mouse (no acceleration), clamped, snaps to step");
             // запись на диск: сбой не бросает исключение, успех сбрасывает признак «уже предупредили»
             bool persisted = false; Bar.saveWarned = true; Bar.Persist("test", () => { throw new IOException("test"); }); Bar.Persist("test", () => { persisted = true; });
             fails += check(persisted && !Bar.saveWarned, "Persist: failure is swallowed, success resets the warning");

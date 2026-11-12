@@ -89,11 +89,12 @@ namespace FlowBar
                 return value;
             }
 
-            // смещение цели от якоря: мышь вправо — цель уходит вправо, влево — влево; чем сильнее натяжение, тем дальше
+            // смещение цели от якоря: ровно на столько же, на сколько сдвинута мышь (без ускорения), вправо — вправо, влево — влево.
+            // Натяжение нужно только для рисунка (дуга, цвет), на значение оно не влияет
             internal static double Shot(Vector pull, double rail, out double tension)
             {
                 tension = Math.Min(1, pull.Length / Math.Max(1, Math.Min(100, rail * 0.48)));
-                return pull.X * (0.65 + 1.15 * tension);
+                return pull.X;
             }
 
             protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
