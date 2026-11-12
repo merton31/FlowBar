@@ -708,7 +708,7 @@ namespace FlowBar
         }
         void GroupMenuItems(ContextMenu m, string path)
         {
-            var gm = new MenuItem { Header = "Добавить в группу" };
+            var gm = new MenuItem { Header = "Добавить в группу", Icon = new TextBlock { Text = MenuGlyph("Добавить в группу"), FontFamily = Icons, FontSize = 14, VerticalAlignment = VerticalAlignment.Center } };
             foreach (var g in appGroups.Keys.ToList()) { var gn = g; gm.Items.Add(Item(gn, () => AddToGroup(path, gn))); }
             if (appGroups.Count > 0) gm.Items.Add(new Separator());
             gm.Items.Add(Item("Новая группа", () => NewGroup(path)));
@@ -1961,6 +1961,8 @@ namespace FlowBar
             c.Children.Add(CheckRow("Работать с правами администратора", (Setup.Elevated ? "Сейчас с правами. " : "Сейчас без прав. ")
                 + "Нужно, только чтобы панель переключала окна программ, запущенных от администратора. Перетаскивать файлы из Проводника на панель Windows при этом не даёт. Действует после перезапуска FlowBar.",
                 C("admin", "0") == "1", v => { cfg["admin"] = v ? "1" : "0"; SaveCfg(); }));
+            c.Children.Add(CheckRow("Экономить память при её нехватке", "Когда свободной оперативной памяти мало (меньше " + LowMemText() + "), панель чаще сбрасывает занятую память и не держит кадры тем после закрытия настроек. Когда памяти снова хватает, всё возвращается.",
+                C("memsaver", "1") == "1", v => { cfg["memsaver"] = v ? "1" : "0"; SaveCfg(); }));
             c.Children.Add(SSub("Закрепления"));
             var imp = Btn("Перенести закреплённые с панели Windows", () => { foreach (var p in WindowsPins()) if (!pinned.Contains(p)) pinned.Add(p); SavePinned(); });
             var pick = Btn("Закрепить программу…", () => Primary.ShowPinPicker());

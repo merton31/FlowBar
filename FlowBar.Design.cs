@@ -3115,7 +3115,7 @@ namespace FlowBar
                 EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.ClosedEvent, new RoutedEventHandler((s, e) => menusOpen = Math.Max(0, menusOpen - 1)));
                 EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent, new RoutedEventHandler((s, e) => { if (s == e.OriginalSource) GuardMenu((ContextMenu)s); }));
             }
-            hideT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+            hideT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) }; // такт мельче паузы ухода (200 мс), иначе пауза выходит с запасом
             hideT.Tick += (s, e) => AutoHideTick(); hideT.Start();
         }
         // Меню закрывается кликом в другом месте и уходом в другую программу.
@@ -3175,7 +3175,7 @@ namespace FlowBar
             if ((dragging || sDragging) && (GetAsyncKeyState(0x01) & 0x8000) != 0) r.Add("перетаскивание");
             if (editMode) r.Add("правка панели");
             if (guarded != null && guarded.IsOpen) r.Add("меню");
-            if (IsKeyboardFocusWithin && IsActive) r.Add("фокус клавиатуры");
+            if (IsKeyboardFocusWithin && IsActive && N.GetForegroundWindow() == hwnd) r.Add("фокус клавиатуры"); // признаки WPF залипают, когда окно ушло назад без события: в журнале «фокус клавиатуры» при foreground=Chrome
             if (toast != null && primary) r.Add("уведомление");
             return string.Join(", ", r);
         }
@@ -3206,14 +3206,55 @@ namespace FlowBar
             if (why != "" && !near) { if (blockedSince == DateTime.MinValue) blockedSince = DateTime.Now; if ((DateTime.Now - blockedSince).TotalSeconds > 4 && why != loggedWhy) { loggedWhy = why; Info("автоскрытие не срабатывает: " + why + "; foreground=" + Cls(N.GetForegroundWindow())); } }
             else { blockedSince = DateTime.MinValue; loggedWhy = ""; }
             if (why != "" || near) return;
-            if ((DateTime.Now - lastUse).TotalMilliseconds < 250) return; // короткая пауза: проход мыши мимо края не прячет панель
+            if ((DateTime.Now - lastUse).TotalMilliseconds < 200) return; // короткая пауза: проход мыши мимо края не прячет панель
             autoHidden = true; ApplyVis();
         }
-        bool sliding; // панель уезжает за край
+        // Раз в минуту, пока панель не занята: сборка мусора и сброс рабочего набора. Холодные страницы уходят из занятой памяти (было 300–400 МБ, горячие остаются ~50 МБ и подгружаются сами)
+        [DllImport("psapi.dll")] static extern bool EmptyWorkingSet(IntPtr process);
+        static DispatcherTimer trimT; static bool lowMem; static int trimTick;
+        // Нехватка памяти: свободно меньше 10% от всей (но не меньше 1,5 ГБ). Выход из режима — когда свободно в 1,5 раза больше порога, чтобы не дёргаться на границе
+        static double LowMemGb() { var m = new N.MEMSTAT { Len = (uint)Marshal.SizeOf(typeof(N.MEMSTAT)) }; return N.GlobalMemoryStatusEx(ref m) ? Math.Max(1.5, m.TotalPhys / 1073741824.0 * 0.1) : 1.5; }
+        static string LowMemText() { return LowMemGb().ToString("0.#", CultureInfo.CurrentCulture) + " ГБ"; }
+        static void StartTrim()
+        {
+            if (trimT != null) return;
+            trimT = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+            trimT.Tick += (s, e) =>
+            {
+                var m = new N.MEMSTAT { Len = (uint)Marshal.SizeOf(typeof(N.MEMSTAT)) };
+                if (C("memsaver", "1") == "1" && N.GlobalMemoryStatusEx(ref m))
+                {
+                    double free = m.AvailPhys / 1073741824.0, limit = LowMemGb();
+                    bool low = lowMem ? free < limit * 1.5 : free < limit;
+                    if (low != lowMem) { lowMem = low; Info("память: " + (low ? "мало свободной (" : "хватает (") + free.ToString("0.0") + " ГБ) — режим экономии " + (low ? "включён" : "выключен")); }
+                }
+                else lowMem = false;
+                if (!lowMem && ++trimTick % 3 != 0) return; // обычно раз в минуту, при нехватке памяти — раз в 20 секунд
+                if (settings != null && settings.IsVisible || bars.Any(b => b.sliding || b.preview != null || b.panel != null && b.panel.IsVisible)) return; // не во время анимации и открытых карточек
+                try
+                {
+                    if (lowMem) ThemeCapsule.ReleaseArtwork();
+                    System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                    GC.Collect(); EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+                }
+                catch (Exception ex) { Log(ex); }
+            };
+            trimT.Start();
+        }
+        bool sliding, slideHooked; // панель уезжает за край
+        void SlideGlass(object s, EventArgs e)
+        {
+            var tt = frame == null ? null : frame.RenderTransform as TranslateTransform;
+            if (!sliding || tt == null) { slideHooked = false; CompositionTarget.Rendering -= SlideGlass; return; }
+            int d = (int)Math.Round((double)tt.GetValue(VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty) * MonScale), dx = VerticalBar ? d : 0, dy = VerticalBar ? 0 : d;
+            if (glassBg != null) glassBg.Shift(dx, dy);
+            foreach (var sb in sectionBackdrops) sb.Shift(dx, dy);
+        }
         void FinishSlide()
         {
             if (!sliding) return;
             sliding = false; Visibility = Visibility.Hidden;
+            if (glassBg != null) glassBg.Shift(0, 0); foreach (var sb in sectionBackdrops) sb.Shift(0, 0); // подложка уже прозрачна — возвращаем на место к следующему показу
             frame.BeginAnimation(OpacityProperty, null);
             var tt = frame.RenderTransform as TranslateTransform; if (tt != null) tt.BeginAnimation(VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty, null);
         }
@@ -3232,21 +3273,22 @@ namespace FlowBar
             if (hide)
             {
                 if (Visibility != Visibility.Visible || sliding) return;
-                sliding = true; slideAt = DateTime.Now; if (glassBg != null) glassBg.Fade(); foreach (var sb in sectionBackdrops) sb.Fade();
-                var o = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200));
+                sliding = true; slideAt = DateTime.Now; if (glassBg != null) glassBg.Fade(260); foreach (var sb in sectionBackdrops) sb.Fade(260);
+                if (!slideHooked && (glassBg != null || sectionBackdrops.Count > 0)) { slideHooked = true; CompositionTarget.Rendering += SlideGlass; }
+                var o = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(260)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut } }; // 260/220 мс — столько же в Backdrop.Fade/Unfade
                 o.Completed += (s, e) => FinishSlide(); // успели вернуть мышь — sliding уже сброшен, ничего не делаем
-                // со стеклом — только затухание: подложка размытия — отдельное окно, за движением панели она не едет и оставалась мутным пятном
-                if (!GlassOn) tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
+                // подложка размытия — отдельное окно: её двигает SlideGlass по текущему значению этой же анимации
+                tt.BeginAnimation(axis, new DoubleAnimation(0, away, TimeSpan.FromMilliseconds(260)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut } });
                 frame.BeginAnimation(OpacityProperty, o);
             }
             else
             {
                 if (Visibility == Visibility.Visible && !sliding) return;
-                double from = sliding ? (double)tt.GetValue(axis) : away, op = sliding ? frame.Opacity : 0;
-                if (sliding) { if (glassBg != null) glassBg.Unfade(); foreach (var sb in sectionBackdrops) sb.Unfade(); }
+                double op = sliding ? frame.Opacity : 0; // появление — только проявление на месте, без выезда снизу
+                if (sliding) { if (glassBg != null) { glassBg.Shift(0, 0); glassBg.Unfade(220); } foreach (var sb in sectionBackdrops) { sb.Shift(0, 0); sb.Unfade(220); } }
                 sliding = false; Visibility = Visibility.Visible;
-                if (!GlassOn) tt.BeginAnimation(axis, new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } }); else tt.BeginAnimation(axis, null);
-                frame.BeginAnimation(OpacityProperty, new DoubleAnimation(op, 1, TimeSpan.FromMilliseconds(180)));
+                tt.BeginAnimation(axis, null);
+                frame.BeginAnimation(OpacityProperty, new DoubleAnimation(op, 1, TimeSpan.FromMilliseconds(220)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
             }
         }
 

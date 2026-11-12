@@ -1051,7 +1051,7 @@ namespace FlowBar
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
-            LoadThemeFiles();
+            LoadThemeFiles(); StartTrim();
             rememberedAppearance = SnapshotAppearance();
             LogHideSource();
             pinned = Lines("pinned.txt");
@@ -1168,7 +1168,8 @@ namespace FlowBar
             try { using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion")) { int bn; int.TryParse(k.GetValue("CurrentBuild") as string, out bn); win = ((k.GetValue("ProductName") as string) ?? "").Replace("Windows 10", bn >= 22000 ? "Windows 11" : "Windows 10") + " " + k.GetValue("DisplayVersion") + ", сборка " + bn + "." + k.GetValue("UBR"); } } catch { }
             sb.Append("FlowBar " + Setup.VersionText + (Setup.IsInstalledCopy ? "" : " (запущен не из папки установки)") + "; " + win + "; права администратора: " + (Setup.Elevated ? "да" : "нет")
                 + "; панель Windows скрывается: " + (HideTb ? "да" : C("hideTaskbar", "1") == "1" ? "нет — сторож не запустился" : "нет — выключено") + "; свой трей: " + (Bar.C("ownTray", "1") == "1" ? Tray.Icons.Count + " значков" : "выключен")
-                + "; стекло: " + (!WantsGlass(Cur) ? "не выбрано" : Backdrop.Why == null ? "работает" : "нет — " + Backdrop.Why) + "\r\n");
+                + "; стекло: " + (!WantsGlass(Cur) ? "не выбрано" : Backdrop.Why == null ? "работает" : "нет — " + Backdrop.Why)
+                + "; память: " + (Process.GetCurrentProcess().WorkingSet64 >> 20) + " МБ занято, куча " + (GC.GetTotalMemory(false) >> 20) + " МБ\r\n");
             foreach (var b in bars.ToList())
                 try { sb.Append("монитор " + b.scr.DeviceName + (b.scr.Primary ? " (основной)" : "") + ": " + b.scr.Bounds.Width + "×" + b.scr.Bounds.Height + " в " + b.scr.Bounds.X + "," + b.scr.Bounds.Y + ", масштаб " + Math.Round(b.MonScale * 100) + "%; панель " + Math.Round(b.Left) + "," + Math.Round(b.Top) + " " + Math.Round(b.ActualWidth) + "×" + Math.Round(b.ActualHeight) + (b.IsVisible ? "" : " скрыта") + "\r\n"); }
                 catch { }
@@ -1738,7 +1739,7 @@ namespace FlowBar
             if (msg == ShellHookMsg && primary)
             {
                 int code = w.ToInt32();
-                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); }
+                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); if (IsConsent(l)) BringConsent(l); }
                 else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
                 // активное окно сменилось — подложка переезжает сразу, а не при опросе раз в секунду
                 if (code == 4 || code == 0x8004) Dispatcher.BeginInvoke(new Action(() => All(b => b.RefreshApps())));
@@ -1751,6 +1752,18 @@ namespace FlowBar
             return IntPtr.Zero;
         }
 
+        // Окно подтверждения UAC (consent.exe), если Windows не вывела его вперёд, а лишь мигает кнопкой на скрытой панели Windows — человек его не видит. Выводим вперёд сами.
+        static bool IsConsent(IntPtr h)
+        {
+            try { uint pid; N.GetWindowThreadProcessId(h, out pid); return string.Equals(Process.GetProcessById((int)pid).ProcessName, "consent", StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+        static void BringConsent(IntPtr h)
+        {
+            Info("UAC: окно подтверждения мигает, а не показано — вывожу вперёд");
+            N.ShowWindow(h, 9 /* SW_RESTORE */); N.SetForegroundWindow(h);
+            if (N.GetForegroundWindow() != h) { N.keybd_event(0x12, 0, 0, UIntPtr.Zero); N.keybd_event(0x12, 0, 2, UIntPtr.Zero); N.SetForegroundWindow(h); } // «тычок» Alt даёт право вывести окно вперёд
+        }
         IntPtr backTo;
         void FocusBar()
         {
@@ -2105,7 +2118,7 @@ namespace FlowBar
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
             ClosePreview(); previewPinned = pinned; TipHide(true);
-            var windows = ws.Where(item => N.IsWindow(item.H)).Take(6).ToList();
+            var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
             const double padding = 8, margin = 4;
             double available = scr.Bounds.Width / MonScale - 2 * (padding + 5);

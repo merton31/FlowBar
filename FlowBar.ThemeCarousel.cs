@@ -119,13 +119,18 @@ namespace FlowBar
                 System.Windows.Automation.AutomationProperties.SetName(this, label + (subtitle == null ? "" : ", " + subtitle));
             }
 
-            static readonly Lazy<Task<Dictionary<ThemeMotif, ImageSource[]>>> artwork =
-                new Lazy<Task<Dictionary<ThemeMotif, ImageSource[]>>>(() => Task.Run(() =>
+            static Lazy<Task<Dictionary<ThemeMotif, ImageSource[]>>> artwork = NewArtwork();
+            static Lazy<Task<Dictionary<ThemeMotif, ImageSource[]>>> NewArtwork()
+            {
+                return new Lazy<Task<Dictionary<ThemeMotif, ImageSource[]>>>(() => Task.Run(() =>
                 {
                     var result = new Dictionary<ThemeMotif, ImageSource[]>();
                     foreach (ThemeMotif kind in Enum.GetValues(typeof(ThemeMotif))) result.Add(kind, LoadImages(kind));
                     return result;
                 }));
+            }
+            // режим экономии памяти: кадры (~21 МБ) не держатся после закрытия настроек, при следующем открытии загрузятся снова
+            public static void ReleaseArtwork() { artwork = NewArtwork(); }
 
             public static Task WarmArtwork() { return artwork.Value; }
 
