@@ -1550,6 +1550,17 @@ namespace FlowBar
             var p = ExePath(pid);
             return p != null && ShellHosts.Contains(System.IO.Path.GetFileName(p).ToLowerInvariant());
         }
+        // Пуск и поиск открыты (клавиша Win, Win+S): окно оболочки на переднем плане. Пересчёт только при смене окна — проверка идёт 20 раз в секунду
+        static IntPtr shellFgWnd; static bool shellFgOpen;
+        static bool ShellFlyoutCached() { var f = N.GetForegroundWindow(); if (f != shellFgWnd) { shellFgWnd = f; shellFgOpen = ShellFlyoutOpen(); } return shellFgOpen; }
+        // окно оболочки открыто на экране этой панели (центр окна внутри экрана)
+        bool ShellFlyoutHere()
+        {
+            if (!ShellFlyoutCached()) return false;
+            N.RECT r; if (!N.GetWindowRect(shellFgWnd, out r)) return true;
+            int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2; var b = scr.Bounds;
+            return cx >= b.Left && cx < b.Right && cy >= b.Top && cy < b.Bottom;
+        }
         // Повторное нажатие на ту же кнопку закрывает открытое ею окно Windows, а не открывает снова
         static void ShellToggle(params byte[] keys)
         {
@@ -1607,23 +1618,41 @@ namespace FlowBar
             new[] { "Открыть Spotify", "\uE8D6" }, new[] { "Открыть", "\uE8E5" }, new[] { "Показать в папке", "\uE838" }, new[] { "Параметры", "\uE713" }, new[] { "Настройки", "\uE713" }, new[] { "Каталог", "\uE71D" },
             new[] { "Убрать с панели", "\uE738" }, new[] { "Размер", "\uE740" }, new[] { "Оставлять видимым", "\uE7B3" }, new[] { "Микшер", "\uE9E9" }, new[] { "Обновить", "\uE72C" }, new[] { "Диспетчер задач", "\uE9D9" },
             new[] { "Устройство вывода", "\uE7F5" }, new[] { "Без звука", "\uE74F" }, new[] { "Список сетей", "\uE701" }, new[] { "Состояние сети", "\uE774" }, new[] { "Сети Wi-Fi", "\uE701" }, new[] { "Устройства Bluetooth", "\uE702" },
-            new[] { "Быстрые настройки", "\uE9E9" }, new[] { "Перенести на этот экран", "\uE7F4" }, new[] { "Свернуть панель", "\uE73F" }, new[] { "Заблокировать", "\uE72E" } };
+            new[] { "Быстрые настройки", "\uE9E9" }, new[] { "Перенести на этот экран", "\uE7F4" }, new[] { "Свернуть", "\uE73F" }, new[] { "Развернуть", "\uE740" },
+            new[] { "Заблокировать", "\uE72E" }, new[] { "Разблокировать", "\uE785" }, new[] { "Расположение панели", "\uE8A9" }, new[] { "Виджет на панели", "\uE71D" },
+            new[] { "Оформление", "\uE771" }, new[] { "Выход", "\uE8BB" }, new[] { "Включить звук", "\uE767" }, new[] { "Сбросить", "\uE72C" },
+            new[] { "Окна (", "\uE737" }, new[] { "Не скрывать", "\uE7B3" } };
         static string MenuGlyph(string header) { foreach (var g in MenuGlyphs) if (header.StartsWith(g[0])) return g[1]; return null; }
         // шапка меню программы: её значок и название
-        static FrameworkElement MenuHead(ImageSource icon, string name)
+        static FrameworkElement MenuHead(ImageSource icon, string name, string detail)
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(9, 6, 12, 6), IsHitTestVisible = false };
             if (icon != null) { var img = new Image { Source = icon, Width = 20, Height = 20, Margin = new Thickness(0, 0, 9, 0) }; RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality); sp.Children.Add(img); }
-            sp.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.SemiBold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 240, TextTrimming = TextTrimming.CharacterEllipsis });
+            var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            labels.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.SemiBold, FontSize = 13, MaxWidth = 250, TextTrimming = TextTrimming.CharacterEllipsis });
+            if (!string.IsNullOrEmpty(detail)) labels.Children.Add(new TextBlock { Text = detail, FontSize = 11, Opacity = 0.72, Margin = new Thickness(0, 2, 0, 0) });
+            sp.Children.Add(labels);
             return sp;
+        }
+        static MenuItem MenuBranch(string header)
+        {
+            var it = new MenuItem { Header = header };
+            var gl = MenuGlyph(header);
+            if (gl != null) it.Icon = new TextBlock { Text = gl, FontFamily = Icons, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
+            return it;
+        }
+        static void MenuSection(ItemsControl menu, params object[] entries)
+        {
+            var items = entries.Where(x => x != null).ToArray();
+            if (items.Length == 0) return;
+            if (menu.Items.Count > 0) menu.Items.Add(new Separator());
+            foreach (var item in items) menu.Items.Add(item);
         }
         static MenuItem Item(string header, Action a, bool? check = null)
         {
-            var it = new MenuItem { Header = header };
+            var it = MenuBranch(header);
             if (check.HasValue) { it.IsCheckable = true; it.IsChecked = check.Value; }
-            var gl = MenuGlyph(header);
-            if (gl != null) it.Icon = new TextBlock { Text = gl, FontFamily = Icons, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
-            if (header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
+            if (header.StartsWith("Закрыть окна") || header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
             // сначала снять перехват мыши: действие может надолго занять панель (запуск программы с правами администратора, например
             // Диспетчера задач), а с включённым перехватом каждое движение мыши во всей системе ждало бы панель
             it.Click += (s, e) => { CloseGuarded(); a(); };
@@ -1795,7 +1824,7 @@ namespace FlowBar
         void Reserve()
         {
             if (hwnd == IntPtr.Zero) return;
-            bool want = !DemoMode && C("reserve", "1") == "1" && !AutoHide;
+            bool want = !DemoMode && !AutoHide; // постоянная панель — окна обрезаются по ней, скрываемая — окна на весь экран (отдельного выключателя нет)
             int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
             if (VerticalBar) h = (int)Math.Ceiling((SideWidth + Gap) * MonScale);
             var key = want + "|" + PositionKey + "|" + h + "|" + scr.Bounds;
@@ -1831,7 +1860,7 @@ namespace FlowBar
             if (hwnd == IntPtr.Zero) return;
             var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
             var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
-            if (!(C("reserve", "1") == "1" && !AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); } return; }
+            if (!(!AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); } return; }
             int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
             if (VerticalBar)
             {
@@ -2086,37 +2115,64 @@ namespace FlowBar
         void AppMenu(ContextMenu m, string path, List<Win> ws, bool isPinned)
         {
             ClosePreview();
-            var shown = ws.Count > 0 ? ws : Elsewhere(path);
+            var shown = ws.Concat(Elsewhere(path)).Where(w => N.IsWindow(w.H))
+                .GroupBy(w => w.H).Select(g => g.First()).OrderBy(w => w.Mon != mon).ToList();
+            var local = shown.Where(w => w.Mon == mon).ToList();
+            var closable = local.Count > 0 ? local : shown;
             var hp = path ?? (shown.Count > 0 ? shown[0].Path : null);
-            if (hp != null) { m.Items.Add(MenuHead(IconFor(hp) ?? IconFor(Target(hp)), PinName(hp))); m.Items.Add(new Separator()); }
+            if (hp != null)
+            {
+                string detail = shown.Count == 0 ? null : "Окна: " + shown.Count + " · " + (local.Count == shown.Count ? "на этом экране" :
+                    local.Count == 0 ? "на других экранах" : local.Count + " здесь, " + (shown.Count - local.Count) + " на других");
+                m.Items.Add(MenuHead(IconFor(hp) ?? IconFor(Target(hp)), PinName(hp), detail));
+            }
+            var windows = MenuBranch("Окна (" + shown.Count + ")");
             foreach (var w in shown)
             {
-                var h = w.H; var title = TitleOf(h); bool far = w.Mon != mon;
-                var tx = new TextBlock { Text = (title.Length > 48 ? title.Substring(0, 48) + "…" : title) + (far ? "  · другой экран" : ""), VerticalAlignment = VerticalAlignment.Center, MaxWidth = 300, TextTrimming = TextTrimming.CharacterEllipsis };
-                MenuItem wi = null;
-                var x = Cross("Закрыть окно «" + title + "»", () => { N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); if (wi != null) wi.Visibility = Visibility.Collapsed; });
-                x.Width = 20; x.Height = 20; x.Margin = new Thickness(10, -2, -4, -2); x.PreviewMouseLeftButtonUp += (s, e) => e.Handled = true; x.PreviewMouseLeftButtonDown += (s, e) => { e.Handled = true; x.Invoke(); };
-                var dp = new DockPanel(); DockPanel.SetDock(x, Dock.Right); dp.Children.Add(x); dp.Children.Add(tx);
-                wi = new MenuItem { Header = dp, Icon = new TextBlock { Text = "\uE737", FontFamily = Icons, FontSize = 13, VerticalAlignment = VerticalAlignment.Center } };
-                wi.Click += (s, e) => ActivateWin(h);
-                m.Items.Add(wi);
-            }
-            if (shown.Count > 0) m.Items.Add(new Separator());
-            if (path != null) m.Items.Add(Item("Открыть новое окно", () => Launch(path)));
-            // при закреплении/откреплении значок остаётся на своём месте
-            if (isPinned) m.Items.Add(Item("Открепить", () => { Retag("p|" + path, "r|" + Key(Target(path))); pinned.Remove(path); SavePinned(); }));
-            if (isPinned && path != null) GroupMenuItems(m, path);
-            else if (path != null) m.Items.Add(Item("Закрепить", () => { Retag("r|" + Key(path), "p|" + path); pinned.Add(path); SavePinned(); }));
-            if (ws.Count > 0)
-            {
-                m.Items.Add(new Separator());
-                m.Items.Add(Item(ws.Count > 1 ? "Закрыть все окна" : "Закрыть окно", () => { foreach (var w in ws) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
-                m.Items.Add(Item("Завершить процесс", () =>
+                var h = w.H;
+                var title = TitleOf(h);
+                if (string.IsNullOrWhiteSpace(title)) title = PinName(w.Path);
+                var label = title + (w.Mon != mon ? " · другой экран" : "");
+                var wi = Item("Окна (", () => { if (N.IsWindow(h)) ActivateWin(h); });
+                var titleLine = new TextBlock { Text = title, MaxWidth = 255, TextTrimming = TextTrimming.CharacterEllipsis };
+                var close = Cross("Закрыть окно «" + title + "»", () =>
                 {
-                    foreach (var pid in ws.Select(w => w.Pid).Distinct())
-                        try { Process.GetProcessById((int)pid).Kill(); } catch (Exception ex) { MessageBox.Show(ex.Message, "FlowBar"); }
-                }));
+                    CloseGuarded();
+                    if (N.IsWindow(h)) N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero);
+                });
+                close.Width = close.Height = 20; close.Margin = new Thickness(8, 0, 0, 0);
+                close.PreviewMouseLeftButtonDown += (s, e) => e.Handled = true;
+                close.PreviewMouseLeftButtonUp += (s, e) => { e.Handled = true; close.Invoke(); };
+                var row = new DockPanel(); DockPanel.SetDock(close, Dock.Right); row.Children.Add(close);
+                row.Children.Add(w.Mon == mon ? (UIElement)titleLine : VS(titleLine,
+                    new TextBlock { Text = "Другой экран", FontSize = 10.5, Opacity = 0.72, Margin = new Thickness(0, 2, 0, 0) }));
+                wi.Header = row;
+                wi.ToolTip = label;
+                System.Windows.Automation.AutomationProperties.SetName(wi, label);
+                windows.Items.Add(wi);
             }
+            MenuSection(m, windows.Items.Count == 1 ? TakeOnlyMenuItem(windows) : windows.Items.Count > 1 ? windows : null,
+                path == null ? null : Item(shown.Count == 0 ? "Открыть" : "Открыть новое окно", () => Launch(path)));
+            // при закреплении/откреплении значок остаётся на своём месте
+            if (path != null)
+                MenuSection(m, isPinned
+                    ? Item("Открепить", () => { Retag("p|" + path, "r|" + Key(Target(path))); pinned.Remove(path); SavePinned(); })
+                    : Item("Закрепить", () => { Retag("r|" + Key(path), "p|" + path); pinned.Add(path); SavePinned(); }),
+                    isPinned ? GroupMenuItem(path) : null);
+            if (closable.Count > 0)
+            {
+                string closeLabel = closable.Count == 1 ? "Закрыть окно" : "Закрыть окна (" + closable.Count + ")";
+                if (local.Count != shown.Count) closeLabel += local.Count == 0 ? " на других экранах" : " здесь";
+                MenuSection(m, Item(closeLabel, () =>
+                    { foreach (var w in closable) if (N.IsWindow(w.H)) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
+            }
+        }
+
+        static MenuItem TakeOnlyMenuItem(MenuItem parent)
+        {
+            var item = (MenuItem)parent.Items[0];
+            parent.Items.Clear();
+            return item;
         }
 
         // ---------- миниатюры окон ----------
@@ -2492,7 +2548,8 @@ namespace FlowBar
             if (bs != null)
             {
                 var end = bs.Value.AddHours(5); var block = msgs.Where(m => m.T >= bs.Value).ToList();
-                body.Children.Add(line("Началось в " + bs.Value.ToString("HH:mm") + " · сброс в " + end.ToString("HH:mm") + " (через " + Until(end - now) + ")"));
+                body.Children.Add(line("Началось ≈ в " + bs.Value.ToString("HH:mm") + " · сброс ≈ в " + end.ToString("HH:mm") + " (через " + Until(end - now) + ")"));
+                body.Children.Add(line("Это оценка по журналам Claude Code. Настоящее окно считает аккаунт: в нём ещё чат на claude.ai и другие устройства, поэтому время может отличаться на десятки минут и больше. Точное время даёт «Подключить проценты»."));
                 body.Children.Add(Meter((now - bs.Value).TotalMinutes / 3, 310));
                 body.Children.Add(line("Токены: " + Tok(block.Sum(m => m.Weight)) + "  (ввод " + Tok(block.Sum(m => m.In)) + " · вывод " + Tok(block.Sum(m => m.Out)) +
                     " · запись кэша " + Tok(block.Sum(m => m.CacheW)) + ")\nЧтение кэша: " + Tok(block.Sum(m => m.CacheR)) + " · ответов: " + block.Count));
@@ -2792,6 +2849,8 @@ namespace FlowBar
             var b = new Press { Invoke = a, CornerRadius = new CornerRadius(8), Padding = new Thickness(14, 7, 14, 7), Margin = new Thickness(0, 0, 8, 0), Cursor = Cursors.Hand, Child = t,
                 Background = primary ? (Brush)new SolidColorBrush(AccentColor) : new SolidColorBrush(Color.FromArgb(0x1C, fg.R, fg.G, fg.B)) };
             if (primary) t.Foreground = Frozen(OnAccent, 255);
+            // сброс и отмена — контурные кнопки: заливка у главного действия («Применить»), у них только тонкая рамка
+            if (!primary && (text.StartsWith("Сбросить") || text.StartsWith("Отмена") || text == "Раскладка по умолчанию")) { b.Background = Brushes.Transparent; b.BorderBrush = Frozen(fg, 110); b.BorderThickness = new Thickness(1); b.Padding = new Thickness(13, 6, 13, 6); }
             System.Windows.Automation.AutomationProperties.SetName(b, text);
             b.MouseEnter += (s, e) => b.Opacity = 0.85; b.MouseLeave += (s, e) => b.Opacity = 1;
             b.MouseLeftButtonUp += (s, e) => a();
@@ -4221,9 +4280,9 @@ namespace FlowBar
             fails += check(Bar.IsLowMem(3.0, 3.2, false) && !Bar.IsLowMem(3.3, 3.2, false) && Bar.IsLowMem(4.0, 3.2, true) && !Bar.IsLowMem(4.9, 3.2, true), "Memory saver: switches on below limit, off only above limit x1.5");
             var noWid = Bar.ParseLayout(Bar.NoWidgets, new[] { "zzz-new" });
             fails += check(noWid.Count > 10 && noWid.Where(x => x.Key != "zzz-new").All(x => !x.Value), "First install layout: every widget hidden, only shortcuts");
-            var shr = new Dictionary<string, string> { { "style", "Midnight" }, { "size", "L" }, { "wxCity", "Сухум" }, { "cl.prevStatus", "powershell -File x" }, { "accent", "#4CC2FF" }, { "align", "diagonal" }, { "view.cpu", "min" }, { "view.net@\\\\.\\DISPLAY2", "min" } };
+            var shr = new Dictionary<string, string> { { "style", "Midnight" }, { "size", "L" }, { "wxCity", "Сухум" }, { "cl.prevStatus", "powershell -File x" }, { "accent", "#4CC2FF" }, { "align", "diagonal" }, { "view.cpu", "min" }, { "view.net@\\\\.\\DISPLAY2", "min" }, { "menus", "glass" }, { "sliders", "bogus" } };
             int shSkip; string shErr; var shBack = Bar.ReadShareCode(Bar.MakeShareCode(shr), out shSkip, out shErr);
-            fails += check(shBack != null && shBack.Count == 4 && shBack["size"] == "L" && shBack["accent"] == "#4CC2FF" && shBack["view.cpu"] == "min" && !shBack.ContainsKey("wxCity") && !shBack.ContainsKey("cl.prevStatus") && !shBack.ContainsKey("align") && !shBack.Keys.Any(k => k.Contains("@")), "Settings code: round trip, private, invalid and per-monitor keys dropped");
+            fails += check(shBack != null && shBack.Count == 5 && shBack["menus"] == "glass" && !shBack.ContainsKey("sliders") && shBack["size"] == "L" && shBack["accent"] == "#4CC2FF" && shBack["view.cpu"] == "min" && !shBack.ContainsKey("wxCity") && !shBack.ContainsKey("cl.prevStatus") && !shBack.ContainsKey("align") && !shBack.Keys.Any(k => k.Contains("@")), "Settings code: round trip, private, invalid and per-monitor keys dropped");
             fails += check(Bar.ReadShareCode("мусор", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode("FBS1:AAAA", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode(new string('A', 200000), out shSkip, out shErr) == null && shErr.Contains("большой"), "Settings code: garbage and oversized text rejected");
             // номера версий: буква в конце — мелкая правка и новее той же версии без буквы, но старее следующего номера
             Version tv7, tv7a, tv8;
@@ -4232,6 +4291,23 @@ namespace FlowBar
             // ползунок-рогатка: метка идёт за мышью один к одному (без ускорения), вправо — вправо, влево — влево, края и шаг соблюдаются
             Func<double, double, double> aim = (pullX, tick) => { double tn; const double rail = 280; return Bar.ElasticSlider.ValueAt(10 + rail * 0.6 + Bar.ElasticSlider.Shot(new Vector(pullX, 0), rail, out tn), rail, 0, 100, false, tick, 60); };
             fails += check(Math.Abs(aim(20, 0) - (60 + 20 / 2.8)) < 1e-6 && Math.Abs(aim(60, 0) - (60 + 60 / 2.8)) < 1e-6 && Math.Abs(aim(-40, 0) - (60 - 40 / 2.8)) < 1e-6 && aim(500, 0) == 100 && aim(-500, 0) == 0 && Math.Abs(aim(20, 1) - Math.Round(aim(20, 1))) < 1e-9, "Slider aim: marker moves 1:1 with the mouse (no acceleration), clamped, snaps to step");
+            // волна меню: кадр полной волны на 3600 квадратов (программная отрисовка — верхняя оценка; без кистей по уровням было около 23 мс, сейчас около 3 мс)
+            double waveMs = double.NaN; try { waveMs = Bar.MenuMotion.BenchFrameMs(true); } catch (Exception ex) { Bar.Log(ex); }
+            fails += check(!double.IsNaN(waveMs) && waveMs < 12, "Menu wave frame renders in " + (double.IsNaN(waveMs) ? "?" : Math.Round(waveMs, 1).ToString()) + " ms (limit 12)");
+            // шаблон переключателя разбирается без ошибок: опечатка в XAML иначе всплыла бы только при открытии настроек
+            fails += check(Bar.SwitchTemplate() != null, "Switch template parses");
+            // поиск по настройкам: слова запроса, регистр, пустой запрос, ничего не найдено, разделы индекса существуют
+            var sk1 = Bar.SearchSettings("ЗВУК"); var sk2 = Bar.SearchSettings("прозрач"); var sk3 = Bar.SearchSettings("рогатка ползунки");
+            var skInfl = Bar.SearchSettings("преломление"); // склонение: находит и «Сила преломления», и «Ширина преломления»
+            var okSections = new[] { "look", "bar", "monitors", "widgets", "connect", "auto", "notify", "general" };
+            fails += check(skInfl.Any(e => e[2] == "Сила преломления") && skInfl.Any(e => e[2] == "Ширина преломления") && skInfl.Any(e => e[2] == "Преломление фона"), "Settings search: Russian word forms");
+            fails += check(sk1.Any(e => e[2] == "Звук") && sk1.Any(e => e[2] == "Микшер по нажатию на громкость") && sk2.Any(e => e[2] == "Плотность заливки панели") && sk3.Count > 0 && sk3[0][2] == "Ползунки"
+                && Bar.SearchSettings("  ").Count == 0 && Bar.SearchSettings("несуществующееслово").Count == 0 && Bar.SearchSettings("настройки").Count <= 12
+                && Bar.SettingsIndex.All(e => okSections.Contains(e[0]) && e[1].Length > 0 && e[2].Length > 0), "Settings search: words, case, empty, no match, index sections valid");
+            // число, набранное в поле справа от ползунка: цифры из текста, границы и шаг
+            double pt1, pt2, pt3, pt4, pt5;
+            fails += check(Bar.ParseTyped("56%", 30, 100, 1, out pt1) && pt1 == 56 && Bar.ParseTyped("7", 30, 100, 1, out pt2) && pt2 == 30 && Bar.ParseTyped("500", 30, 100, 1, out pt3) && pt3 == 100
+                && Bar.ParseTyped("56,5 px", 0, 100, 1, out pt4) && pt4 == 57 && Bar.ParseTyped("52", 0, 100, 5, out pt5) && pt5 == 50 && !Bar.ParseTyped("нет", 0, 100, 1, out pt1) && !Bar.ParseTyped("", 0, 100, 1, out pt1), "Typed slider value: digits, clamp, step, junk rejected");
             // запись на диск: сбой не бросает исключение, успех сбрасывает признак «уже предупредили»
             bool persisted = false; Bar.saveWarned = true; Bar.Persist("test", () => { throw new IOException("test"); }); Bar.Persist("test", () => { persisted = true; });
             fails += check(persisted && !Bar.saveWarned, "Persist: failure is swallowed, success resets the warning");

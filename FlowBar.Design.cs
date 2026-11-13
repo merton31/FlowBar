@@ -902,7 +902,7 @@ namespace FlowBar
             s.ClHas = Directory.Exists(ClaudeUsage.Root);
             var bs = ClaudeUsage.BlockStart(claude.Msgs, now);
             s.ClS = bs == null ? "—" : Tok(claude.Msgs.Where(m => m.T >= bs.Value).Sum(m => m.Weight));
-            s.ClReset = bs == null ? "—" : Until(bs.Value.AddHours(5) - now);
+            s.ClReset = bs == null ? "—" : "≈" + Until(bs.Value.AddHours(5) - now); // оценка по журналам Claude Code: точное время знает только аккаунт
             var week = claude.Msgs.Where(m => m.T >= now.AddDays(-7)).Sum(m => m.Weight);
             s.ClW = week == 0 ? "—" : Tok(week);
             var cb = ClaudeBridge.Read(); s.ClBridge = cb != null;
@@ -1302,42 +1302,45 @@ namespace FlowBar
         static void ApplyMenuTheme()
         {
             Func<Color, byte, string> hex = (c, a) => string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", a, c.R, c.G, c.B);
-            string bg = hex(CardBg, 0xFA), fg = hex(CardFg, 0xFF), edge = hex(CardFg, 0x22), hover = hex(CardFg, 0x16), acc = hex(AccentColor, 0xFF);
-            const string ns = "xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' ";
+            bool glass = C("menus", "matte") == "glass";
+            string bg = hex(CardBg, glass ? (byte)0xCC : (byte)0xFA), edge = hex(CardFg, 0x26), hover = hex(CardFg, 0x19), acc = hex(AccentColor, 0xFF);
+            string danger = CardFg.R + CardFg.G + CardFg.B > 380 ? "#FFA496" : "#AC3024";
+            const string ns = "xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' ";
             // поверхность меню: тень — отдельный слой позади, без эффекта на тексте
             Func<string, string> surface = inner =>
-                "<Grid Margin='4,2,14,16'><Grid.RenderTransform><TranslateTransform/></Grid.RenderTransform><Grid.Triggers><EventTrigger RoutedEvent='FrameworkElement.Loaded'><BeginStoryboard><Storyboard>" +
-                "<DoubleAnimation Storyboard.TargetProperty='Opacity' From='0' To='1' Duration='0:0:0.11'/><DoubleAnimation Storyboard.TargetProperty='RenderTransform.Y' From='6' To='0' Duration='0:0:0.16' DecelerationRatio='0.8'/>" +
-                "</Storyboard></BeginStoryboard></EventTrigger></Grid.Triggers>" +
-                "<Border CornerRadius='10' Background='" + bg + "'><Border.Effect><DropShadowEffect BlurRadius='16' ShadowDepth='4' Direction='270' Opacity='0.35'/></Border.Effect></Border>" +
-                "<Border CornerRadius='10' Background='" + bg + "' BorderBrush='" + edge + "' BorderThickness='1' Padding='4'>" + inner + "</Border></Grid>";
+                "<Grid Name='MotionSurface' Margin='3,2,10,12'>" +
+                (glass ? "" : "<Border CornerRadius='11' Background='" + bg + "' IsHitTestVisible='False'><Border.Effect><DropShadowEffect BlurRadius='12' ShadowDepth='3' Direction='270' Opacity='0.27'/></Border.Effect></Border>") +
+                "<Border CornerRadius='11' Background='" + bg + "' BorderBrush='" + edge + "' BorderThickness='1' Padding='4'>" + inner + "</Border></Grid>";
+            const string menuList = "<ScrollViewer VerticalScrollBarVisibility='Auto' HorizontalScrollBarVisibility='Disabled' MaxHeight='400'><ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/></ScrollViewer>";
             var menuT = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='ContextMenu'>" +
-                surface("<ScrollViewer VerticalScrollBarVisibility='Auto'><ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/></ScrollViewer>") + "</ControlTemplate>");
+                surface(menuList) + "</ControlTemplate>");
             var itemT = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='MenuItem'>" +
                 "<Grid SnapsToDevicePixels='True'>" +
-                "<Border Name='Bd' CornerRadius='7' Background='Transparent' Padding='9,7,10,7' MinWidth='200'><Grid>" +
-                "<Grid.ColumnDefinitions><ColumnDefinition Width='27'/><ColumnDefinition Width='*'/><ColumnDefinition Width='18'/></Grid.ColumnDefinitions>" +
+                "<Border Name='Bd' CornerRadius='6' Background='Transparent' Padding='9,5,9,5' MinHeight='31' MinWidth='184'><Grid>" +
+                "<Grid.ColumnDefinitions><ColumnDefinition Width='23'/><ColumnDefinition Width='*'/><ColumnDefinition Width='15'/></Grid.ColumnDefinitions>" +
                 "<TextBlock Name='Chk' Text='&#xE73E;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='12' Foreground='" + acc + "' VerticalAlignment='Center' Visibility='Collapsed'/>" +
                 "<ContentPresenter Name='Ico' ContentSource='Icon' VerticalAlignment='Center' HorizontalAlignment='Left' Opacity='0.78'/>" +
                 "<ContentPresenter Grid.Column='1' ContentSource='Header' RecognizesAccessKey='True' VerticalAlignment='Center'/>" +
                 "<TextBlock Name='Arrow' Grid.Column='2' Text='&#xE76C;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='9' Opacity='0.7' HorizontalAlignment='Right' VerticalAlignment='Center' Visibility='Collapsed'/>" +
                 "</Grid></Border>" +
-                "<Popup Name='PART_Popup' Placement='Right' HorizontalOffset='-4' VerticalOffset='-7' AllowsTransparency='True' Focusable='False' PopupAnimation='Fade' " +
+                "<Popup Name='PART_Popup' Placement='Right' HorizontalOffset='-5' VerticalOffset='-6' AllowsTransparency='True' Focusable='False' " +
                 "IsOpen='{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}'>" +
-                surface("<ItemsPresenter KeyboardNavigation.DirectionalNavigation='Cycle' Grid.IsSharedSizeScope='True'/>") + "</Popup>" +
+                surface(menuList) + "</Popup>" +
                 "</Grid><ControlTemplate.Triggers>" +
                 "<Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Bd' Property='Background' Value='" + hover + "'/></Trigger>" +
                 "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Chk' Property='Visibility' Value='Visible'/><Setter TargetName='Ico' Property='Visibility' Value='Collapsed'/></Trigger>" +
-                "<Trigger Property='Tag' Value='danger'><Setter Property='Foreground' Value='#F0705F'/></Trigger>" +
+                "<Trigger Property='Tag' Value='danger'><Setter Property='Foreground' Value='" + danger + "'/></Trigger>" +
                 "<Trigger Property='Role' Value='SubmenuHeader'><Setter TargetName='Arrow' Property='Visibility' Value='Visible'/></Trigger>" +
                 "<Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger>" +
                 "</ControlTemplate.Triggers></ControlTemplate>");
             var font = new FontFamily("Segoe UI Variable Text, Segoe UI");
             var cm = new Style(typeof(ContextMenu));
             cm.Setters.Add(new Setter(Control.TemplateProperty, menuT)); cm.Setters.Add(new Setter(ContextMenu.HasDropShadowProperty, true)); // HasDropShadow — прозрачное окно меню под свою тень
+            cm.Setters.Add(new Setter(MenuMotion.EnabledProperty, true));
             cm.Setters.Add(new Setter(Control.ForegroundProperty, Frozen(CardFg, 255))); cm.Setters.Add(new Setter(Control.FontFamilyProperty, font)); cm.Setters.Add(new Setter(Control.FontSizeProperty, 13.0));
             var mi = new Style(typeof(MenuItem));
             mi.Setters.Add(new Setter(Control.TemplateProperty, itemT)); mi.Setters.Add(new Setter(Control.ForegroundProperty, Frozen(CardFg, 255)));
+            mi.Setters.Add(new Setter(MenuMotion.EnabledProperty, true));
             mi.Setters.Add(new Setter(Control.FontFamilyProperty, font)); mi.Setters.Add(new Setter(Control.FontSizeProperty, 13.0));
             var sep = new Style(typeof(Separator));
             sep.Setters.Add(new Setter(Control.TemplateProperty, System.Windows.Markup.XamlReader.Parse("<ControlTemplate " + ns + "TargetType='Separator'><Border Height='1' Margin='9,5,9,5' Background='" + edge + "'/></ControlTemplate>")));
@@ -1492,7 +1495,12 @@ namespace FlowBar
             b.Base = wide ? Surface : Color.FromArgb(0, Cur.Fg.R, Cur.Fg.G, Cur.Fg.B); b.Background = new SolidColorBrush(b.Base);
             if (wide) { b.BorderThickness = new Thickness(1); b.BorderBrush = ChipEdge; }
             if (click != null) b.Invoke = () => { anchor = b; anchorAt = DateTime.Now; click(); };
-            if (menu != null) b.Menu = x => { var cm = new ContextMenu(); menu(cm); if (cm.Items.Count > 0) { cm.PlacementTarget = x; cm.IsOpen = true; } };
+            if (menu != null) b.Menu = x =>
+            {
+                var cm = new ContextMenu { PlacementTarget = x };
+                menu(cm);
+                if (cm.Items.Count > 0) cm.IsOpen = true;
+            };
             bool xl = SizeKey == "XL"; // у XL поля карточек плотнее, как на образце: восемь блоков помещаются в одну строку
             if (wide) { b.MinWidth = th; b.Padding = new Thickness(Math.Round(th * (xl ? 0.16 : 0.26)), 0, Math.Round(th * (xl ? 0.19 : 0.3)), 0); } else b.Width = Math.Min(th, IconPx + 22); // у XL плитка значка уже высоты, как на образце
             if (tip != null) { b.ToolTip = tip; System.Windows.Automation.AutomationProperties.SetName(b, tip.Split('\n')[0]); }
@@ -1525,8 +1533,7 @@ namespace FlowBar
             if (menu != null) b.MouseRightButtonUp += (s, e) =>
             {
                 e.Handled = true;
-                var m = new ContextMenu(); menu(m);
-                if (m.Items.Count > 0) { m.PlacementTarget = b; m.IsOpen = true; }
+                b.Menu(b);
             };
             return b;
         }
@@ -1535,17 +1542,19 @@ namespace FlowBar
         {
             return m =>
             {
-                if (extra != null) { extra(m); if (m.Items.Count > 0) m.Items.Add(new Separator()); }
-                if (Variants.Contains(id))
+                if (extra != null) extra(m);
+                var placement = MenuBranch("Виджет на панели");
+                if (Variants.Contains(id) && !VerticalBar)
                 {
                     // размер этого модуля на этой панели (у «Своей раскладки» другой экран не затрагивается); не зависит от S/M/L всей панели
-                    var vm = new MenuItem { Header = "Размер" }; var cur = C(MK("view." + id), primary || MonMode != "own" ? "" : C("view." + id, ""));
+                    var vm = MenuBranch("Размер"); var cur = CM("view." + id, id == "conn" ? "min" : "");
                     for (int i = 0; i < ViewKeys.Length; i++) { var k = ViewKeys[i]; vm.Items.Add(Item(ViewNames[i], () => { cfg[MK("view." + id)] = k; MarkCustom(); SaveCfg(); RebuildAll(); RestyleWindows(); }, cur == k)); }
-                    m.Items.Add(vm);
+                    placement.Items.Add(vm);
                 }
-                if (id != "clock") m.Items.Add(Item("Оставлять видимым", () => { cfg[MK("keep." + id)] = Keep(id) ? "0" : "1"; MarkCustom(); SaveCfg(); RebuildAll(); }, Keep(id)));
-                if (id != "clock") m.Items.Add(Item("Убрать с панели", () => SetVisible(id, false)));
-                m.Items.Add(Item("Каталог виджетов…", () => ShowCatalog(this)));
+                if (id != "clock" && !VerticalBar)
+                    placement.Items.Add(Item("Не скрывать в «Ещё»", () => { cfg[MK("keep." + id)] = Keep(id) ? "0" : "1"; MarkCustom(); SaveCfg(); RebuildAll(); }, Keep(id)));
+                if (id != "clock") placement.Items.Add(Item("Убрать с панели", () => SetVisible(id, false)));
+                if (placement.Items.Count > 0) MenuSection(m, placement.Items.Count == 1 ? TakeOnlyMenuItem(placement) : placement);
             };
         }
         void SetVisible(string id, bool on)
@@ -1642,7 +1651,12 @@ namespace FlowBar
                         var bar = new FillBar(bw, Math.Max(3, Math.Round(th / 14))); // на XL — заметная полоса, как на образце
                         var top = new DockPanel { Width = bw }; DockPanel.SetDock(pctT, Dock.Right); top.Children.Add(pctT); DockPanel.SetDock(dIcon, Dock.Left); top.Children.Add(dIcon); top.Children.Add(head);
                         UIElement content = v == 0 ? VS(free, Mg(bar, 0, 3 * f)) : VS(top, HS(free, Mg(of, 4 * f, 2 * f, 0, 0)), Mg(bar, 0, 2 * f));
-                        var t = Tile(content, "Накопитель", act(ShowStorage), menu(m => { m.Items.Add(Item("Открыть диск", () => Launch(s.Disk + "\\"))); m.Items.Add(Item("Параметры хранилища", () => Launch("ms-settings:storagesense"))); }), true);
+                        var t = Tile(content, "Накопитель", act(ShowStorage), menu(m =>
+                        {
+                            var disk = s.Disk;
+                            if (!string.IsNullOrEmpty(disk)) m.Items.Add(Item("Открыть диск", () => Launch(disk + "\\")));
+                            m.Items.Add(Item("Параметры хранилища", () => Launch("ms-settings:storagesense")));
+                        }), true);
                         up.Add(() =>
                         {
                             double used = s.DiskTotal > 0 ? 1 - s.DiskFree / s.DiskTotal : double.NaN;
@@ -1782,7 +1796,22 @@ namespace FlowBar
                             mg.SizeChanged += (o, e) => prog.Resize(mg.ActualWidth - 4);
                             mediaContent = mg;
                         }
-                        var t = Tile(mediaContent, "Музыка — подробности", act(ShowMusic), menu(m => { m.Items.Add(Item("Только Spotify", () => { cfg["media.spotifyOnly"] = SpotifyOnly ? "0" : "1"; SaveCfg(); mediaPick = null; lastMedia = null; UpdateMedia(); }, SpotifyOnly)); m.Items.Add(Item("Открыть Spotify", OpenSpotify)); m.Items.Add(Item("Микшер громкости", () => Launch("sndvol.exe"))); m.Items.Add(Item("Без звука", () => Keys(0xAD))); }), true);
+                        var t = Tile(mediaContent, "Музыка — подробности", act(ShowMusic), menu(m =>
+                        {
+                            var sessions = s.HasMedia && !s.Remote ? PlayerSessions(s) : null;
+                            if (sessions != null && sessions.Count > 0)
+                            {
+                                if (v >= 2)
+                                {
+                                    bool mute = sessions.Any(x => !x.Muted);
+                                    m.Items.Add(Item(mute ? "Без звука — плеер" : "Включить звук плеера", () =>
+                                        { foreach (var session in PlayerSessions(s)) session.SetMute(mute); All(b => b.Render()); }));
+                                }
+                                m.Items.Add(Item("Микшер FlowBar", ShowAppMixer));
+                            }
+                            if (SpotifyOnly || !s.HasMedia) m.Items.Add(Item("Открыть Spotify", OpenSpotify));
+                            m.Items.Add(Item("Только Spotify", () => { cfg["media.spotifyOnly"] = SpotifyOnly ? "0" : "1"; SaveCfg(); mediaPick = null; lastMedia = null; UpdateMedia(); }, SpotifyOnly));
+                        }), true);
                         t.Padding = new Thickness(4, 0, 6 * f, 0);
                         if (live) t.MouseWheel += (o, e) => { byte k = (byte)(e.Delta > 0 ? 0xAF : 0xAE); Keys(k); Keys(k); e.Handled = true; };
                         ImageSource shown = null; bool first = true; string shownTrack = null;
@@ -1819,7 +1848,7 @@ namespace FlowBar
                         Action toggle = () => { PomoNext(); All(b => b.Render()); };
                         var btn = RoundBtn("\uE768", th - 14, true, act(toggle), "Старт или следующий этап", CRed);
                         var t = Tile(HS(v == 0 ? (UIElement)big : VS(cap, big), Mg(btn, (v == 0 ? 8 : 12) * f)), "Фокус: клик — старт или следующий этап, ПКМ — сброс", act(toggle),
-                            menu(m => m.Items.Add(Item("Сбросить", () => { PomoReset(); All(b => b.Render()); }))), true);
+                            menu(m => { if (pomoMode != 0 || pomoRound != 0) m.Items.Add(Item("Сбросить фокус", () => { PomoReset(); All(b => b.Render()); })); }), true);
                         var red = new SolidColorBrush(CRed); var edge = t.BorderBrush;
                         up.Add(() =>
                         {
@@ -1867,7 +1896,8 @@ namespace FlowBar
                         var block = new Border { Width = bd, Height = bd, CornerRadius = new CornerRadius(bd / 4), Background = Accent, Child = VS(wd, day), VerticalAlignment = VerticalAlignment.Center };
                         double ew = (v >= 2 ? 184 : 140) * f;
                         var title = Wd(L("", 11 * f, true), ew); var when = Wd(L("", 10 * f, false, 0.72), v == 0 ? 78 * f : ew);
-                        var t = Tile(HS(block, Mg(v == 0 ? (FrameworkElement)when : VS(title, when), 8 * f)), null, act(ShowCalendar), menu(m => m.Items.Add(Item("Обновить календари", UpdateCalendars))), true);
+                        var t = Tile(HS(block, Mg(v == 0 ? (FrameworkElement)when : VS(title, when), 8 * f)), null, act(ShowCalendar),
+                            menu(m => { if (!calBusy && calFeeds != null && calFeeds.Count > 0) m.Items.Add(Item("Обновить календари", UpdateCalendars)); }), true);
                         t.Padding = new Thickness(4, 0, 10 * f, 0); t.BorderThickness = new Thickness(1.5); t.BorderBrush = ChipEdge;
                         up.Add(() =>
                         {
@@ -1906,7 +1936,10 @@ namespace FlowBar
                         var temp = L("", 13 * f, true); var city = Wd(L("", 9.5 * f, false, 0.72), 96 * f); var desc = L("", 9.5 * f, false, 0.72);
                         var rainTime = L("", 9.5 * f, false, 0.78);
                         UIElement content = v == 0 ? HS(hostG, Mg(VS(temp, rainTime), 6 * f)) : v == 1 ? HS(hostG, Mg(VS(temp, city), 7 * f)) : HS(hostG, Mg(VS(HS(temp, Mg(desc, 6 * f)), city), 7 * f));
-                        var t = Tile(content, "Погода", act(ShowWeather), menu(m => m.Items.Add(Item("Обновить", UpdateWeather))), true);
+                        var t = Tile(content, "Погода", act(ShowWeather), menu(m =>
+                        {
+                            if (!wxBusy && C("wxLat", "") != "") m.Items.Add(Item("Обновить погоду", UpdateWeather));
+                        }), true);
                         string kind = null;
                         up.Add(() =>
                         {
@@ -1950,7 +1983,7 @@ namespace FlowBar
                         {
                             m.Items.Add(Item("Циферблат", () => { cfg["clock.analog"] = analog ? "0" : "1"; SaveCfg(); RebuildAll(); }, analog));
                             m.Items.Add(Item("Перекидные цифры", () => { cfg["clock.flip"] = flip ? "0" : "1"; SaveCfg(); RebuildAll(); }, flip));
-                            m.Items.Add(Item("Время на плашке", () => { cfg["clock.plate"] = plate ? "0" : "1"; SaveCfg(); RebuildAll(); }, plate));
+                            if (!flip) m.Items.Add(Item("Время на плашке", () => { cfg["clock.plate"] = plate ? "0" : "1"; SaveCfg(); RebuildAll(); }, plate));
                             m.Items.Add(Item("Дуга светового дня", () => { cfg["clock.daylight"] = daylight == null ? "1" : "0"; SaveCfg(); RebuildAll(); }, daylight != null));
                             var zm = new MenuItem { Header = "Второй часовой пояс" };
                             foreach (var z in Zones) { var zz = z; zm.Items.Add(Item(z[1], () => { if (zz[0] == "") cfg.Remove("clock.tz2"); else cfg["clock.tz2"] = zz[0]; SaveCfg(); RebuildAll(); }, tz == z[0])); }
@@ -1995,7 +2028,11 @@ namespace FlowBar
                     {
                         var g = G("");
                         var t = Tile(g, "Корзина", act(() => Launch("shell:RecycleBinFolder")),
-                            menu(m => { m.Items.Add(Item("Открыть корзину", () => Launch("shell:RecycleBinFolder"))); m.Items.Add(Item("Очистить корзину…", () => { N.SHEmptyRecycleBin(hwnd, null, 0); UpdateBin(); })); m.Items.Add(Item("Спрашивать перед удалением", () => { cfg["binConfirm"] = C("binConfirm", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("binConfirm", "1") == "1")); })); // Windows сам спросит подтверждение
+                            menu(m =>
+                            {
+                                if (s.BinItems > 0) m.Items.Add(Item("Очистить корзину…", () => { N.SHEmptyRecycleBin(hwnd, null, 0); UpdateBin(); }));
+                                m.Items.Add(Item("Спрашивать перед удалением", () => { cfg["binConfirm"] = C("binConfirm", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("binConfirm", "1") == "1"));
+                            })); // Windows сам спросит подтверждение
                         if (live)
                         {
                             t.AllowDrop = true; t.Drop += BinDrop;
@@ -2013,7 +2050,7 @@ namespace FlowBar
                         up.Add(() =>
                         {
                             g.Opacity = s.BinItems > 0 ? 1 : 0.55; // пустая корзина — приглушённый значок
-                            t.ToolTip = s.BinItems <= 0 ? "Корзина пуста\nПеретащите файлы сюда, чтобы удалить" : "Корзина: " + s.BinItems + " шт., " + Bytes(s.BinBytes) + "\nКлик — открыть · ПКМ — очистить · перетащите файлы, чтобы удалить";
+                            t.ToolTip = s.BinItems < 0 ? "Корзина" : s.BinItems == 0 ? "Корзина пуста\nПеретащите файлы сюда, чтобы удалить" : "Корзина: " + s.BinItems + " шт., " + Bytes(s.BinBytes) + "\nКлик — открыть · ПКМ — очистить · перетащите файлы, чтобы удалить";
                         });
                         return t;
                     }
@@ -2081,7 +2118,19 @@ namespace FlowBar
                         var name = L("", 10 * f, false, 0.72); var pct = L("", 10.5 * f, true);
                         var top = new DockPanel { Width = bw }; if (v > 0) { DockPanel.SetDock(pct, Dock.Right); top.Children.Add(pct); top.Children.Add(name); } // в мини-виде процент стоит у значка
                         UIElement content = v == 0 ? HS(mb, Mg(pct, 4 * f, 0, 4 * f, 0)) : HS(mb, Mg(VS(top, volume), 6 * f));
-                        var t = Tile(content, "Громкость", act(() => { if (C("widget.mixer", "1") == "1") ShowAppMixer(); else ShowQuick(); }), menu(m => { var dm = new MenuItem { Header = "Устройство вывода" }; DeviceItems(dm); if (dm.Items.Count > 1) m.Items.Add(dm); m.Items.Add(Item("Звук при изменении громкости", () => { cfg["volBeep"] = C("volBeep", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("volBeep", "1") == "1")); m.Items.Add(Item("Микшер Flowbar", ShowAppMixer)); m.Items.Add(Item("Микшер Windows", () => Launch("sndvol.exe"))); m.Items.Add(Item("Параметры звука", () => Launch("ms-settings:sound"))); }), true);
+                        var t = Tile(content, "Громкость", act(() => { if (C("widget.mixer", "1") == "1") ShowAppMixer(); else ShowQuick(); }), menu(m =>
+                        {
+                            var outputs = MenuBranch("Устройство вывода"); DeviceItems(outputs);
+                            if (outputs.Items.Count > 1) m.Items.Add(outputs);
+                            bool mixerOnClick = C("widget.mixer", "1") == "1";
+                            m.Items.Add(mixerOnClick ? Item("Быстрые настройки", ShowQuick) : Item("Микшер FlowBar", ShowAppMixer));
+                            var sound = MenuBranch("Параметры звука");
+                            if (!double.IsNaN(s.Vol))
+                                sound.Items.Add(Item("Звук при изменении громкости", () => { cfg["volBeep"] = C("volBeep", "1") == "1" ? "0" : "1"; SaveCfg(); }, C("volBeep", "1") == "1"));
+                            sound.Items.Add(Item("Микшер Windows", () => Launch("sndvol.exe")));
+                            sound.Items.Add(Item("Открыть параметры Windows", () => Launch("ms-settings:sound")));
+                            m.Items.Add(sound);
+                        }), true);
                         bool syncing = false;
                         if (live && v > 0)
                         {
@@ -3076,19 +3125,16 @@ namespace FlowBar
         ContextMenu BarMenu()
         {
             var m = new ContextMenu();
-            m.Items.Add(Item(collapsed ? "Развернуть панель" : "Свернуть в значок", () => SetCollapsed(!collapsed)));
-            m.Items.Add(Item("Во всю ширину", () => { cfg["width"] = FullWidth ? "fit" : "full"; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows(); }, FullWidth));
+            MenuSection(m, Item("Настройки FlowBar…", () => ShowSettings(null)), Item("Каталог виджетов…", () => ShowCatalog(this)));
+            var layout = MenuBranch("Расположение панели");
+            layout.Items.Add(Item(collapsed ? "Развернуть панель" : "Свернуть в значок", () => SetCollapsed(!collapsed)));
+            if (!VerticalBar && !collapsed)
+                layout.Items.Add(Item("Во всю ширину", () => { cfg["width"] = FullWidth ? "fit" : "full"; SaveCfg(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows(); }, FullWidth));
             if (UseSections && (SecExtra(1) + SecExtra(2) > 0 || C("secorder@" + scr.DeviceName, "0,1,2") != "0,1,2" || C("secmap@" + scr.DeviceName, "") != ""))
-                m.Items.Add(Item("Вернуть секции на место", () => { cfg.Remove(SecKey(1)); cfg.Remove(SecKey(2)); cfg.Remove("secorder@" + scr.DeviceName); cfg.Remove("secmap@" + scr.DeviceName); SaveCfg(); Compose(); }));
-            m.Items.Add(new Separator());
-            m.Items.Add(Item("Диспетчер задач", () => Launch("taskmgr.exe")));
-            m.Items.Add(Item("Настройки FlowBar…", () => ShowSettings(null)));
-            m.Items.Add(Item("Каталог виджетов…", () => ShowCatalog(this)));
-            m.Items.Add(Item("Оформление…", () => ShowSettings("look")));
-            m.Items.Add(Item("Закрепить программу…", () => Primary.ShowPinPicker()));
-            m.Items.Add(Item("Заблокировать расположение значков", () => { cfg["lock"] = Locked ? "0" : "1"; SaveCfg(); }, Locked));
-            m.Items.Add(new Separator());
-            m.Items.Add(Item("Выход", () => { ExitWhy = "пункт «Выход» в меню панели"; Application.Current.Shutdown(); }));
+                layout.Items.Add(Item("Вернуть секции на место", () => { cfg.Remove(SecKey(1)); cfg.Remove(SecKey(2)); cfg.Remove("secorder@" + scr.DeviceName); cfg.Remove("secmap@" + scr.DeviceName); SaveCfg(); Compose(); }));
+            layout.Items.Add(Item(Locked ? "Разблокировать значки" : "Заблокировать значки", () => { cfg["lock"] = Locked ? "0" : "1"; SaveCfg(); }));
+            MenuSection(m, layout, Item("Закрепить программу…", () => Primary.ShowPinPicker()), Item("Диспетчер задач", () => Launch("taskmgr.exe")));
+            MenuSection(m, Item("Выход из FlowBar", () => { ExitWhy = "пункт «Выход» в меню панели"; Application.Current.Shutdown(); }));
             return m;
         }
 
@@ -3118,14 +3164,23 @@ namespace FlowBar
         [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(N.POINT p);
         [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
         static ContextMenu guarded; static DispatcherTimer menuT; static IntPtr menuFg, mouseHook; static LLProc hookProc;
+        static readonly System.ComponentModel.DependencyPropertyDescriptor MenuOpenProperty =
+            System.ComponentModel.DependencyPropertyDescriptor.FromProperty(ContextMenu.IsOpenProperty, typeof(ContextMenu));
         static void GuardMenu(ContextMenu m)
         {
+            if (guarded == m) return;
+            if (guarded != null && guarded != m) CloseGuarded();
             guarded = m;
+            MenuOpenProperty.AddValueChanged(m, GuardedMenuChanged);
             menuFg = N.GetForegroundWindow(); // фокус не забираем: активация окна меню снимает у него захват мыши, и WPF сразу закрывает меню
             // перехват мыши — только пока меню открыто: видит каждое нажатие, даже самое быстрое
             if (mouseHook == IntPtr.Zero) { hookProc = MouseLL; mouseHook = SetWindowsHookEx(14 /* WH_MOUSE_LL */, hookProc, GetModuleHandle(null), 0); }
             if (menuT == null) { menuT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) }; menuT.Tick += (s, e) => MenuTick(); }
             menuT.Start();
+        }
+        static void GuardedMenuChanged(object sender, EventArgs e)
+        {
+            if (sender == guarded && !guarded.IsOpen) CloseGuarded();
         }
         static IntPtr MouseLL(int code, IntPtr w, IntPtr l)
         {
@@ -3136,15 +3191,21 @@ namespace FlowBar
                 var h = GetAncestor(WindowFromPoint(p), 2 /* GA_ROOT */); var src = h == IntPtr.Zero ? null : HwndSource.FromHwnd(h);
                 // мимо меню и его подменю (всплывающие окна FlowBar) — закрыть; сам клик проходит дальше как обычно
                 if (src == null || src.RootVisual == null || src.RootVisual.GetType().Name != "PopupRoot")
-                    Application.Current.Dispatcher.BeginInvoke(new Action(() => CloseGuarded()));
+                {
+                    var menu = guarded;
+                    Application.Current.Dispatcher.BeginInvoke(new Action(() => { if (guarded == menu) CloseGuarded(); }));
+                }
             }
             return CallNextHookEx(mouseHook, code, w, l);
         }
         static void CloseGuarded()
         {
-            if (guarded != null) guarded.IsOpen = false;
+            var menu = guarded;
             guarded = null; if (menuT != null) menuT.Stop();
             if (mouseHook != IntPtr.Zero) { UnhookWindowsHookEx(mouseHook); mouseHook = IntPtr.Zero; }
+            if (menu == null) return;
+            MenuOpenProperty.RemoveValueChanged(menu, GuardedMenuChanged);
+            if (menu.IsOpen) menu.IsOpen = false;
         }
         static void MenuTick()
         {
@@ -3167,6 +3228,7 @@ namespace FlowBar
             if (guarded != null && guarded.IsOpen) r.Add("меню");
             if (IsKeyboardFocusWithin && IsActive && N.GetForegroundWindow() == hwnd) r.Add("фокус клавиатуры"); // признаки WPF залипают, когда окно ушло назад без события: в журнале «фокус клавиатуры» при foreground=Chrome
             if (toast != null && primary) r.Add("уведомление");
+            if (ShellFlyoutHere()) r.Add("меню Пуск или поиск"); // пока Пуск или поиск открыты — панель не прячется
             return string.Join(", ", r);
         }
         bool InUse { get { return UseWhy() != ""; } }
@@ -3186,7 +3248,7 @@ namespace FlowBar
             N.POINT p; N.GetCursorPos(out p); var b = scr.Bounds;
             bool atEdge = VerticalBar ? p.Y >= b.Top && p.Y < b.Bottom && (LeftBar ? p.X <= b.Left + 1 && p.X >= b.Left : p.X >= b.Right - 2 && p.X < b.Right)
                                       : p.X >= b.Left && p.X < b.Right && (IsTop ? p.Y <= b.Top + 1 : p.Y >= b.Bottom - 2);
-            if (autoHidden) { if (atEdge) { autoHidden = false; lastUse = DateTime.Now; ApplyVis(); } return; }
+            if (autoHidden) { if (atEdge || ShellFlyoutHere()) { autoHidden = false; lastUse = DateTime.Now; ApplyVis(); } return; } // край экрана или Пуск/поиск (клавиша Win) — панель выезжает
             // состояния разошлись: окно видно, хотя по записи скрыто, — убираем (иначе панель висела и не реагировала на уход мыши)
             if (Visibility == Visibility.Hidden && hwnd != IntPtr.Zero && N.IsWindowVisible(hwnd)) { Info("автоскрытие: окно видно при Visibility=Hidden, прячу"); N.ShowWindow(hwnd, 0); }
             if (sliding && (DateTime.Now - slideAt).TotalMilliseconds > 500) { Info("автоскрытие: анимация ухода не завершилась, завершаю"); FinishSlide(); }
