@@ -1053,7 +1053,7 @@ namespace FlowBar
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
-            LoadThemeFiles(); StartTrim();
+            LoadThemeFiles(); StartTrim(); if (!DemoMode) MigrateAutoStart();
             rememberedAppearance = SnapshotAppearance();
             LogHideSource();
             // первая установка (настроек ещё нет): только ярлыки программ, все виджеты выключены — добавляются в каталоге. --demo остаётся с виджетами для сверки вида
@@ -1747,14 +1747,29 @@ namespace FlowBar
 
 
 
+        // Автозапуск: задание планировщика «при входе» (стартует раньше программ из автозагрузки и успевает занять трей), раздел Run — запасной путь, если задание создать не вышло
+        static bool RunKeySet { get { using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) return k != null && k.GetValue("FlowBar") != null; } }
+        static void RunKeyClear() { using (var k = Registry.CurrentUser.CreateSubKey(RunKey)) k.DeleteValue("FlowBar", false); }
+        static string AutoStartExe { get { return Setup.IsInstalledCopy ? Setup.InstalledExe : Assembly.GetExecutingAssembly().Location; } }
         static bool AutoStart
         {
-            get { using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) return k != null && k.GetValue("FlowBar") != null; }
+            get { return RunKeySet || Setup.LogonTaskExists(); }
             set
             {
-                using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
-                    if (value) k.SetValue("FlowBar", "\"" + Assembly.GetExecutingAssembly().Location + "\""); else k.DeleteValue("FlowBar", false);
+                if (value)
+                {
+                    if (Setup.MakeLogonTask(AutoStartExe)) RunKeyClear();
+                    else using (var k = Registry.CurrentUser.CreateSubKey(RunKey)) k.SetValue("FlowBar", "\"" + AutoStartExe + "\"");
+                }
+                else { Setup.RemoveLogonTask(); RunKeyClear(); }
             }
+        }
+        // старый автозапуск (раздел Run) переводим на задание планировщика один раз; не вышло — остаётся как был
+        static void MigrateAutoStart()
+        {
+            if (C("logonTaskTried", "") == "1" || !RunKeySet) return;
+            cfg["logonTaskTried"] = "1"; SaveCfg();
+            System.Threading.Tasks.Task.Run(() => { try { if (Setup.LogonTaskExists() || Setup.MakeLogonTask(AutoStartExe)) { RunKeyClear(); Info("автозапуск переведён на задание планировщика «" + Setup.LogonTask + "»"); } } catch (Exception ex) { Log(ex); } });
         }
 
         // ---------- стиль и позиция ----------
@@ -4294,6 +4309,12 @@ namespace FlowBar
             // волна меню: кадр полной волны на 3600 квадратов (программная отрисовка — верхняя оценка; без кистей по уровням было около 23 мс, сейчас около 3 мс)
             double waveMs = double.NaN; try { waveMs = Bar.MenuMotion.BenchFrameMs(true); } catch (Exception ex) { Bar.Log(ex); }
             fails += check(!double.IsNaN(waveMs) && waveMs < 12, "Menu wave frame renders in " + (double.IsNaN(waveMs) ? "?" : Math.Round(waveMs, 1).ToString()) + " ms (limit 12)");
+            // задание автозапуска: XML корректен, путь с «&» экранирован, вход пользователя, без повышения прав
+            string tx = Setup.LogonTaskXml("S-1-5-21-1-2-3-1001", @"C:\Program Files\Fl&wBar\FlowBar.exe"); var txDoc = new System.Xml.XmlDocument(); bool txOk = true; try { txDoc.LoadXml(tx.Substring(tx.IndexOf("<Task"))); } catch (Exception) { txOk = false; }
+            fails += check(txOk && tx.Contains("<LogonTrigger>") && tx.Contains("<RunLevel>LeastPrivilege</RunLevel>") && tx.Contains("Fl&amp;wBar") && !tx.Contains("<Delay>"), "Autostart task XML: valid, logon trigger, no elevation, no delay, path escaped");
+            // перезапуск ради значка трея: только обычные программы, не магазинные, не сам FlowBar, файл должен существовать
+            fails += check(Bar.CanRestartForTray(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "notepad.exe")) && !Bar.CanRestartForTray(@"C:\Program Files\WindowsApps\X\app.exe")
+                && !Bar.CanRestartForTray(null) && !Bar.CanRestartForTray(@"C:\nope\missing.exe") && !Bar.CanRestartForTray(Setup.InstalledExe.Replace("FlowBar.exe", "FlowBar.exe")), "Tray restart: only plain existing programs, never Store apps or FlowBar");
             // шаблон переключателя разбирается без ошибок: опечатка в XAML иначе всплыла бы только при открытии настроек
             fails += check(Bar.SwitchTemplate() != null, "Switch template parses");
             // поиск по настройкам: слова запроса, регистр, пустой запрос, ничего не найдено, разделы индекса существуют

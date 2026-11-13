@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.6.8.0")]
-[assembly: AssemblyFileVersion("1.6.8.0")]
+[assembly: AssemblyVersion("1.6.9.0")]
+[assembly: AssemblyFileVersion("1.6.9.0")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
@@ -207,6 +207,37 @@ namespace FlowBar
             }
             catch (Exception ex) { Bar.Log(ex); }
         }
+
+        // Автозапуск «при входе в Windows» заданием планировщика без задержки. Программы из автозагрузки (раздел Run) стартуют позже и часто раньше FlowBar,
+        // а те, что добавили значок трея до него, на сигнал «добавь значок заново» не отвечают и остаются без меню. Задание успевает занять трей первым.
+        public const string LogonTask = "FlowBarLogon";
+        internal static string LogonTaskXml(string sid, string exe)
+        {
+            Func<string, string> x = System.Security.SecurityElement.Escape;
+            return "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
+                + "<RegistrationInfo><Description>FlowBar: запуск при входе в Windows</Description></RegistrationInfo>\r\n"
+                + "<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + x(sid) + "</UserId></LogonTrigger></Triggers>\r\n"
+                + "<Principals><Principal id=\"Author\"><UserId>" + x(sid) + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\r\n"
+                + "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
+                + "<StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>\r\n"
+                + "<Actions Context=\"Author\"><Exec><Command>\"" + x(exe) + "\"</Command><WorkingDirectory>" + x(Path.GetDirectoryName(exe)) + "</WorkingDirectory></Exec></Actions>\r\n</Task>\r\n";
+        }
+        public static bool LogonTaskExists() { try { return Schtasks("/Query /TN " + LogonTask) == 0; } catch { return false; } }
+        public static bool MakeLogonTask(string exe)
+        {
+            try
+            {
+                string sid; using (var id = System.Security.Principal.WindowsIdentity.GetCurrent()) sid = id.User.Value;
+                var f = Path.Combine(Path.GetTempPath(), "flowbar-logon.xml");
+                File.WriteAllText(f, LogonTaskXml(sid, exe), System.Text.Encoding.Unicode);
+                int rc = Schtasks("/Create /F /TN " + LogonTask + " /XML \"" + f + "\"");
+                try { File.Delete(f); } catch { }
+                if (rc != 0) Bar.Log(new Exception("schtasks /Create " + LogonTask + ": код " + rc));
+                return rc == 0;
+            }
+            catch (Exception ex) { Bar.Log(ex); return false; }
+        }
+        public static void RemoveLogonTask() { try { Schtasks("/Delete /F /TN " + LogonTask); } catch (Exception ex) { Bar.Log(ex); } }
 
         // Резервная копия личных данных перед обновлением: всё, кроме кэша, журнала и самих копий. Хранятся 5 последних.
         public static string Backup(string src, string root, string fromVer)
