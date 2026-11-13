@@ -918,7 +918,7 @@ namespace FlowBar
             if (badge != null) { var bt = Txt(badge, 10, false); bt.Opacity = 0.55; DockPanel.SetDock(bt, Dock.Right); dp.Children.Add(bt); }
             dp.Children.Add(Txt(text, 12.5, sel));
             var b = new Press { Child = dp, Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 1, 0, 1), CornerRadius = new CornerRadius(8), Cursor = Cursors.Hand, Invoke = a, Opacity = dim ? 0.5 : 1 };
-            var ac = AccentColor; b.Base = sel ? Color.FromArgb(0x30, ac.R, ac.G, ac.B) : Colors.Transparent; b.Background = new SolidColorBrush(b.Base);
+            b.Base = sel ? Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B) : Colors.Transparent; b.Background = new SolidColorBrush(b.Base); // выбранный — ступень поверхности, акцент — только линия слева
             if (sel) { var bar = new Rectangle { Width = 3, Height = 16, RadiusX = 1.5, RadiusY = 1.5, Fill = Accent, Margin = new Thickness(-12, 0, 9, 0) }; DockPanel.SetDock(bar, Dock.Left); dp.Children.Insert(0, bar); }
             System.Windows.Automation.AutomationProperties.SetName(b, text);
             b.MouseEnter += (s, e) => { if (!sel) b.Background = Frozen(CardFg, 0x12); }; b.MouseLeave += (s, e) => b.Background = new SolidColorBrush(b.Base);
@@ -986,7 +986,7 @@ namespace FlowBar
             {
                 cats.Children.Clear(); grid.Children.Clear(); detail.Children.Clear();
                 var tb = catTarget ?? this;
-                countT.Text = all.Count + " модулей · на панели " + all.Count(d => d[0] == "clock" || tb.Layout().Any(x => x.Key == d[0] && x.Value));
+                countT.Text = all.Count + " " + Pl(all.Count, "модуль", "модуля", "модулей") + " · на панели " + all.Count(d => d[0] == "clock" || tb.Layout().Any(x => x.Key == d[0] && x.Value));
                 foreach (var c in Categories)
                 {
                     var key = c[0]; int n = key == "all" ? all.Count : all.Count(d => d[4] == key);
@@ -1020,7 +1020,7 @@ namespace FlowBar
             var el = MakeWidget(id, DemoState(st), false, tmp) as FrameworkElement;
             foreach (var a in tmp) try { a(); } catch { }
             var host = new Grid { Height = h };
-            host.Children.Add(new Border { CornerRadius = new CornerRadius(10), Background = new LinearGradientBrush(Color.FromRgb(0x1A, 0x22, 0x33), Color.FromRgb(0x2E, 0x1E, 0x30), 20) });
+            host.Children.Add(new Border { CornerRadius = new CornerRadius(10), Background = new LinearGradientBrush(Color.FromRgb(0x1C, 0x1D, 0x20), Color.FromRgb(0x2A, 0x2B, 0x30), 20) }); // нейтральная подложка: цветным остаётся сам мини-виджет
             if (el != null)
             {
                 el.IsHitTestVisible = false; var ss = Cur;
@@ -1043,13 +1043,14 @@ namespace FlowBar
             FrameworkElement quick;
             if (fixedW) quick = Txt("всегда", 10, false);
             else if (!avail) { var q = Txt("Подключить", 10, true); q.Foreground = Accent; quick = Act(q, "Как подключить " + d[1], () => Primary.ShowSettings("connect")); }
-            else quick = RoundBtn(shown ? "" : "", 24, !shown, () => { tb.SetVisible(id, !shown); rerender(); }, shown ? "Убрать с панели" : "Добавить на панель");
+            else quick = RoundBtn(shown ? "" : "", 24, false, () => { tb.SetVisible(id, !shown); rerender(); }, shown ? "Убрать с панели" : "Добавить на панель");
+            { var rb = quick as Press; if (rb != null && avail && !fixedW && !shown) { rb.Base = Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B); rb.Background = new SolidColorBrush(rb.Base); } } // «+» — нейтральный круг, а не оранжевый на каждой карточке
             quick.Opacity = fixedW ? 0.5 : 1; quick.VerticalAlignment = VerticalAlignment.Center; DockPanel.SetDock(quick, Dock.Right); line.Children.Add(quick);
             var name = Txt(d[1], 12, true); name.TextTrimming = TextTrimming.CharacterEllipsis; name.VerticalAlignment = VerticalAlignment.Center; line.Children.Add(name);
             body.Children.Add(line);
             var stT = Txt(fixedW ? "На панели" : !avail ? "Недоступно на этом компьютере" : shown ? "Добавлен" : "", 10, false); stT.Opacity = 0.55; stT.Margin = new Thickness(2, 1, 0, 0); stT.Height = 14; body.Children.Add(stT);
-            var card = new Border { Width = 146, Margin = new Thickness(4), Padding = new Thickness(8), CornerRadius = new CornerRadius(12), Background = Frozen(CardFg, sel ? (byte)0x12 : (byte)0x07), BorderThickness = new Thickness(sel ? 1.5 : 1),
-                BorderBrush = sel ? Accent : Frozen(CardFg, shown && !fixedW ? (byte)0x30 : (byte)0x12), Child = body, Cursor = Cursors.Hand };
+            var card = new Border { Width = 146, Margin = new Thickness(4), Padding = new Thickness(8), CornerRadius = new CornerRadius(12), Background = Frozen(CardFg, sel ? (byte)0x12 : (byte)0x07), BorderThickness = new Thickness(1),
+                BorderBrush = Frozen(CardFg, sel ? (byte)0x66 : shown && !fixedW ? (byte)0x30 : (byte)0x12), Child = body, Cursor = Cursors.Hand };
             System.Windows.Automation.AutomationProperties.SetName(card, d[1] + (shown ? ", на панели" : avail ? "" : ", недоступно"));
             // клик — подробности справа; перетаскивание — на панель
             Point? down = null;
@@ -1107,15 +1108,16 @@ namespace FlowBar
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
             var box = new Border { CornerRadius = new CornerRadius(10), Background = Frozen(CardFg, 0x0E), Padding = new Thickness(3), Child = sp, HorizontalAlignment = HorizontalAlignment.Left };
-            var selectedBackground = Frozen(AccentColor, 255);
-            var selectedForeground = Frozen(OnAccent, 255);
+            // выбранный вариант — ступень поверхности и тонкая линия акцента снизу, а не оранжевая заливка: акцент остаётся для главного действия
+            var selectedBackground = Frozen(CardFg, 0x22);
+            var selectedLine = Frozen(AccentColor, 255);
             Action<int, bool> paint = (index, selected) =>
             {
                 var button = (Press)sp.Children[index];
                 var text = (TextBlock)button.Child;
                 button.Background = selected ? selectedBackground : Brushes.Transparent;
-                if (selected) text.Foreground = selectedForeground;
-                else text.ClearValue(TextBlock.ForegroundProperty);
+                button.BorderThickness = new Thickness(0, 0, 0, 2); button.BorderBrush = selected ? selectedLine : Brushes.Transparent;
+                text.ClearValue(TextBlock.ForegroundProperty);
                 text.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
                 System.Windows.Automation.AutomationProperties.SetName(button, labels[index] + (selected ? ", выбрано" : ""));
             };
@@ -1159,7 +1161,7 @@ namespace FlowBar
         {
             var sp = VS(Txt(label, 12.5, false));
             if (hint != null) { var h = Txt(hint, 11, false); h.Opacity = 0.65; h.TextWrapping = TextWrapping.Wrap; sp.Children.Add(h); }
-            var cb = new CheckBox { Content = sp, IsChecked = value, Margin = new Thickness(0, 8, 0, 4), VerticalContentAlignment = VerticalAlignment.Top };
+            var cb = new CheckBox { Content = sp, IsChecked = value, Template = CheckTemplate(), FocusVisualStyle = null, Margin = new Thickness(0, 8, 0, 4), VerticalContentAlignment = VerticalAlignment.Top };
             System.Windows.Automation.AutomationProperties.SetName(cb, label);
             cb.Checked += (s, e) => set(true); cb.Unchecked += (s, e) => set(false); // переключение мышью, клавиатурой и экранным диктором
             return cb;
@@ -1171,6 +1173,29 @@ namespace FlowBar
             if (!m.Success || !double.TryParse(m.Value.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)) return false;
             if (step > 0) v = min + Math.Round((v - min) / step, MidpointRounding.AwayFromZero) * step;
             value = Math.Max(min, Math.Min(max, v)); return true;
+        }
+        // русское склонение по числу: 1 модуль, 2–4 модуля, 5–20 модулей, 21 модуль, 111 модулей
+        internal static string Pl(int n, string one, string few, string many)
+        {
+            int a = Math.Abs(n) % 100, b = a % 10;
+            return a >= 11 && a <= 14 ? many : b == 1 ? one : b >= 2 && b <= 4 ? few : many;
+        }
+        // Флажок в стиле окна вместо белого системного квадрата: рамка в цвет текста, включённый — заливка акцентом и галочка
+        internal static ControlTemplate CheckTemplate()
+        {
+            Func<Color, byte, string> hex = (c, a) => string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", a, c.R, c.G, c.B);
+            string edge = hex(CardFg, 0x80), acc = hex(AccentColor, 0xFF), onAcc = hex(OnAccent, 0xFF);
+            return (ControlTemplate)System.Windows.Markup.XamlReader.Parse(
+                "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' TargetType='CheckBox'>" +
+                "<Grid Background='Transparent'><Grid.ColumnDefinitions><ColumnDefinition Width='Auto'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>" +
+                "<Border Name='Box' Width='16' Height='16' CornerRadius='4' BorderThickness='1' BorderBrush='" + edge + "' Background='Transparent' VerticalAlignment='Top' Margin='0,2,10,0'>" +
+                "<TextBlock Name='Tick' Text='&#xE73E;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='10' Foreground='" + onAcc + "' HorizontalAlignment='Center' VerticalAlignment='Center' Visibility='Collapsed'/></Border>" +
+                "<ContentPresenter Grid.Column='1' VerticalAlignment='Center'/></Grid>" +
+                "<ControlTemplate.Triggers>" +
+                "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Box' Property='Background' Value='" + acc + "'/><Setter TargetName='Box' Property='BorderBrush' Value='" + acc + "'/><Setter TargetName='Tick' Property='Visibility' Value='Visible'/></Trigger>" +
+                "<Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Box' Property='BorderBrush' Value='" + acc + "'/></Trigger>" +
+                "<Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.5'/></Trigger>" +
+                "</ControlTemplate.Triggers></ControlTemplate>");
         }
         // Строка-переключатель настроек: название и пояснение слева, переключатель на правой оси карточки (там же, где числа у ползунков).
         // Флажок (CheckRow) остаётся для списков с множественным выбором и вложенных мест.
@@ -1657,7 +1682,7 @@ namespace FlowBar
             row.Children.Add(new Ellipse { Width = 14, Height = 14, Fill = new SolidColorBrush(st.Ac), Margin = new Thickness(0, 0, 6, 0) });
             foreach (var w in new[] { 26.0, 18, 34 }) row.Children.Add(new Border { Width = w, Height = 16, CornerRadius = new CornerRadius(8), Background = new SolidColorBrush(Color.FromArgb(0x26, st.Fg.R, st.Fg.G, st.Fg.B)), Margin = new Thickness(0, 0, 5, 0) });
             cap.Child = row;
-            var backdrop = new Border { Height = 56, CornerRadius = new CornerRadius(10), Background = new LinearGradientBrush(Color.FromRgb(0x4A, 0x5F, 0x8C), Color.FromRgb(0x8C, 0x5F, 0x7A), 20), Child = cap };
+            var backdrop = new Border { Height = 56, CornerRadius = new CornerRadius(10), Background = new LinearGradientBrush(Color.FromRgb(0x1C, 0x1D, 0x20), Color.FromRgb(0x2A, 0x2B, 0x30), 20), Child = cap };
             var label = Txt(name, 11.5, sel); label.Margin = new Thickness(2, 8, 0, 0);
             var b = new Press { Width = 168, Padding = new Thickness(6), Margin = new Thickness(0, 0, 10, 10), CornerRadius = new CornerRadius(12), Child = VS(backdrop, label), Cursor = Cursors.Hand, Invoke = pick, BorderThickness = new Thickness(2) };
             b.BorderBrush = sel ? Accent : Brushes.Transparent; b.Background = Frozen(CardFg, sel ? (byte)0x10 : (byte)0x06);
@@ -1697,7 +1722,8 @@ namespace FlowBar
             bool searching = false, suppress = false;
             var navLayer = new Grid(); nav.Children.Add(navLayer);
             var selection = new Border { Height = 38, VerticalAlignment = VerticalAlignment.Top, CornerRadius = new CornerRadius(9), IsHitTestVisible = false, RenderTransform = new TranslateTransform() };
-            var navList = new StackPanel(); navLayer.Children.Add(selection); navLayer.Children.Add(navList);
+            var selectionBar = new Rectangle { Width = 3, Height = 16, RadiusX = 1.5, RadiusY = 1.5, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 11, 0, 0), IsHitTestVisible = false, RenderTransform = selection.RenderTransform };
+            var navList = new StackPanel(); navLayer.Children.Add(selection); navLayer.Children.Add(selectionBar); navLayer.Children.Add(navList);
             var navSide = new Border { Child = nav, BorderThickness = new Thickness(0, 0, 1, 0) };
             DockPanel.SetDock(navSide, Dock.Left); dock.Children.Add(navSide);
             var content = new StackPanel { Margin = new Thickness(26, 24, 24, 30), MaxWidth = 720 };
@@ -1718,7 +1744,7 @@ namespace FlowBar
                 w.Background = Frozen(CardBg, 255); w.Foreground = Frozen(CardFg, 255);
                 navSide.Background = Frozen(CardFg, 0x08); navSide.BorderBrush = Frozen(CardFg, 0x22);
                 previewFooter.BorderBrush = Frozen(CardFg, 0x22);
-                selection.Background = Frozen(AccentColor, 0x36);
+                selection.Background = Frozen(CardFg, 0x16); selectionBar.Fill = Frozen(AccentColor, 255); // выбранный раздел — ступень поверхности и тонкая линия акцента слева
                 searchHint.Foreground = Frozen(CardFg, 255); StyleInputs(searchBox, CardFg);
             };
             Action<string> go = null;
