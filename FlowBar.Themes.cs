@@ -87,7 +87,7 @@ namespace FlowBar
         // ---------- код настроек ----------
         // Короткий текст «FBS1:…»: по нему вид и поведение панели переносятся на другой компьютер. Берутся только разрешённые настройки —
         // без города, путей к программам, ссылок и команд. При вставке каждое значение проверяется, неподходящее пропускается.
-        static readonly string[] ShareKeys = { "style", "accent", "size", "pos", "align", "width", "gap", "opacity", "material", "motion", "autohide", "bar.sections", "appMax", "winMode", "apps.progress", "apps.stack", "hideTaskbar", "memsaver", "volBeep", "clock.daylight", "cur.from", "cur.to", "cur.amount", "widgets", "preset.custom" };
+        static readonly string[] ShareKeys = { "style", "accent", "size", "pos", "align", "width", "gap", "opacity", "material", "motion", "sliders", "menus", "autohide", "bar.sections", "appMax", "winMode", "apps.progress", "apps.stack", "hideTaskbar", "memsaver", "volBeep", "clock.daylight", "cur.from", "cur.to", "cur.amount", "widgets", "preset.custom" };
         // ключ с «@» — настройка конкретного монитора (имя устройства), на другом компьютере она ничего не значит
         static bool ShareKey(string k) { return k.Length <= 60 && !k.Contains("@") && System.Text.RegularExpressions.Regex.IsMatch(k, @"^[\w.\-]+$") && (ShareKeys.Contains(k) || k.StartsWith("view.") || k.StartsWith("keep.") || k.StartsWith("material.")); }
         static bool ShareValue(string k, string v)
@@ -102,6 +102,8 @@ namespace FlowBar
                 case "align": return v == "left" || v == "center" || v == "right";
                 case "width": return v == "fit" || v == "wide" || v == "full";
                 case "pos": return v == "bottom" || v == "top" || v == "left" || v == "right";
+                case "sliders": return v == "plain" || v == "sling";
+                case "menus": return v == "matte" || v == "glass";
             }
             return true;
         }

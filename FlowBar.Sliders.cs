@@ -9,6 +9,8 @@ namespace FlowBar
 {
     partial class Bar
     {
+        // «Обычные» — значение идёт за мышью сразу; «Рогатка» (по умолчанию) — оттянуть и отпустить. Меняется в «Оформление → Движение»
+        static bool PlainSliders { get { return C("sliders", "sling") == "plain"; } }
         // Штатный Slider сохраняет клавиатуру, UI Automation и команды PART_Track.
         // Рисунок ручки отделён от положения значения и никогда не меняет раскладку.
         internal sealed class ElasticSlider : Slider
@@ -101,6 +103,14 @@ namespace FlowBar
             {
                 if (!IsEnabled || !CaptureMouse()) return;
                 Focus();
+                if (PlainSliders)
+                {
+                    // обычный ползунок: значение идёт за мышью сразу, без натяжения
+                    StopSettling(); dragging = true; tension = 0;
+                    if (DragStarted != null) DragStarted();
+                    aimedValue = ValueForPosition(e.GetPosition(this).X); SetCurrentValue(ValueProperty, aimedValue);
+                    InvalidateVisual(); e.Handled = true; return;
+                }
                 StartPull(e.GetPosition(this));
                 e.Handled = true;
             }
@@ -120,6 +130,7 @@ namespace FlowBar
             {
                 base.OnMouseMove(e);
                 if (!dragging || !IsMouseCaptured) return;
+                if (PlainSliders) { aimedValue = ValueForPosition(e.GetPosition(this).X); SetCurrentValue(ValueProperty, aimedValue); e.Handled = true; return; }
                 PullTo(e.GetPosition(this));
                 e.Handled = true;
             }
@@ -144,6 +155,7 @@ namespace FlowBar
             protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
             {
                 if (!dragging) { base.OnMouseLeftButtonUp(e); return; }
+                if (PlainSliders) { dragging = false; ReleaseMouseCapture(); if (DragEnded != null) DragEnded(); InvalidateVisual(); e.Handled = true; return; }
                 PullTo(e.GetPosition(this));
                 FinishPull();
                 e.Handled = true;

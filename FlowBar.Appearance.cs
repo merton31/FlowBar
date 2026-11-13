@@ -413,11 +413,15 @@ namespace FlowBar
 
             c.Children.Add(SSub("Предпросмотр и движение"));
             c.Children.Add(SetRow("Обои предпросмотра", null, Seg(SceneNames, SceneIndex, i => { cfg["preview.scene"] = i.ToString(); SaveCfg(); preview(null); })));
-            c.Children.Add(CheckRow("Сравнивать темы перед применением", "Нажмите на тему, затем подтвердите выбор в нижнем предпросмотре.", CompareThemes,
+            c.Children.Add(SwitchRow("Сравнивать темы перед применением", "Нажмите на тему, затем подтвердите выбор в нижнем предпросмотре.", CompareThemes,
                 v => { cfg["preview.compare"] = v ? "1" : "0"; candidateTheme = null; SaveCfg(); again(); }));
             var motions = new[] { "off", "soft", "full" };
             c.Children.Add(SetRow("Движение", null, Seg(new[] { "Без движения", "Мягкое", "Выразительное" },
                 Math.Max(0, Array.IndexOf(motions, C("motion", "soft"))), i => { cfg["motion"] = motions[i]; SaveCfg(); refreshThemes(); })));
+            c.Children.Add(SetRow("Ползунки", "«Обычные» — точный выбор с мгновенным откликом; «Рогатка» — выразительный жест: оттянуть и отпустить.",
+                Seg(new[] { "Обычные", "Рогатка" }, PlainSliders ? 0 : 1, i => { cfg["sliders"] = i == 0 ? "plain" : "sling"; SaveCfg(); })));
+            c.Children.Add(SetRow("Меню", "«Матовые» — плотная подложка, текст читается на любом фоне; «Стекло» — подложка полупрозрачна и пропускает цвет панели.",
+                Seg(new[] { "Матовые", "Стекло" }, C("menus", "matte") == "glass" ? 1 : 0, i => { cfg["menus"] = i == 1 ? "glass" : "matte"; SaveCfg(); ApplyAppTheme(); })));
             int example = 0;
             var sampleLabel = Txt("Уведомление", 12, true);
             var sample = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 8, 12, 8), Background = Frozen(AccentColor, 0x30), Child = sampleLabel, HorizontalAlignment = HorizontalAlignment.Left };
@@ -764,13 +768,13 @@ namespace FlowBar
                 for (int i = 0; i < labels.Length; i++)
                 {
                     int index = i;
-                    menu.Items.Add(Item((index == selected ? "✓  " : "    ") + labels[index], () =>
+                    menu.Items.Add(Item(labels[index], () =>
                     {
                         selected = index;
                         ((TextBlock)button.Child).Text = labels[index] + "  ▾";
                         AutomationProperties.SetName(button, labels[index]);
                         changed(index);
-                    }));
+                    }, index == selected));
                 }
                 menu.IsOpen = true;
             };
