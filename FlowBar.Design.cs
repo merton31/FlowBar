@@ -682,6 +682,9 @@ namespace FlowBar
             public List<Tuple<string, string, double, double>> Disks = new List<Tuple<string, string, double, double>>();
             public bool HasBat, Charging; public double Bat = double.NaN; public int BatSec = -1;
             public bool HasMedia, Playing, Remote; public string Title, Artist, App; public ImageSource Cover; public double Pos = double.NaN, Dur = double.NaN;
+            public string Album;
+            public int CoverDirection = 1;
+            public string MusicTrack { get { return HasMedia ? App + "\u0001" + Artist + "\u0001" + Title : null; } }
             public string NextTodo; public int TodoDone, TodoTotal;
             public string Note;
             public int PomoMode, PomoRound; public TimeSpan PomoLeft = TimeSpan.FromMinutes(25);
@@ -706,6 +709,7 @@ namespace FlowBar
         {
             var s = Demo(); s.ClBridge = true; s.ClP5 = 34; s.ClR5 = "2ч 13м"; s.ClPW = 18; s.CxData = true; s.Cx5 = 48; s.CxW = 21; s.Cx5Reset = "3ч 5м"; s.CxWReset = "4д 6ч";
             s.DiskFree = 21; s.DiskTotal = 281; s.Cpu = 36; s.Ram = 73; s.Temp = 73; // числа образца target-widgets s.ScreenSec = 5 * 3600 + 48 * 60; s.Title = "Golden Hour Drive"; s.Artist = "Nova Lane"; s.Pos = 70; s.Dur = 214;
+            s.Cover = DemoMusicCover(0); s.Album = DemoMusicAlbum(0); s.CanNext = s.CanPrev = s.CanSeek = true;
             return s;
         }
         // правдоподобные числа для превью в каталоге — там они подписаны «пример»
@@ -1028,6 +1032,20 @@ namespace FlowBar
 
         static DateTime mediaBusySince, silentSince = DateTime.MinValue; static MC.GlobalSystemMediaTransportControlsSession hooked;
         static bool mediaAgain, wantPlaying; static bool? titleWas; static DateTime titleAt, wantUntil;
+        static string skipFrom;
+        static int skipDirection;
+        static DateTime skipUntil;
+
+        static void PublishMusicTrack(Snap s, string oldTrack)
+        {
+            if (s.MusicTrack != oldTrack)
+            {
+                s.CoverDirection = oldTrack != null && oldTrack == skipFrom && DateTime.UtcNow < skipUntil ? skipDirection : 1;
+                skipFrom = null;
+            }
+            RememberMusicTrack(s);
+            All(b => { b.Render(); if (b.musicPanel == b.panel && b.panelTick != null) b.panelTick(); });
+        }
         // null — окна Spotify нет (свёрнут в трей): остаётся состояние от Windows
         static bool? SpotifyTitlePlaying()
         {
@@ -1047,15 +1065,16 @@ namespace FlowBar
             {
                 if (mediaMgr == null) { mediaMgr = await MC.GlobalSystemMediaTransportControlsSessionManager.RequestAsync(); mediaMgr.SessionsChanged += (a, b) => KickMedia(); mediaMgr.CurrentSessionChanged += (a, b) => KickMedia(); hooked = null; }
                 var ss = PickSession(); var s = live; bool wasPlaying = s.Playing, wasRemote = s.Remote;
+                var oldTrack = s.MusicTrack;
                 if (ss != null && !ReferenceEquals(ss, hooked)) { hooked = ss; ss.PlaybackInfoChanged += (a, b) => KickMedia(); ss.MediaPropertiesChanged += (a, b) => { lastMedia = null; KickMedia(); }; } // пауза, перемотка и смена трека — сразу, а не при следующем опросе
                 s.Sessions = mediaMgr.GetSessions().Where(x => !SpotifyOnly || IsSpotify(x.SourceAppUserModelId)).Select(x => Tuple.Create(x.SourceAppUserModelId, AppTitle(x.SourceAppUserModelId))).ToList();
                 { var sp = System.Diagnostics.Process.GetProcessesByName("Spotify"); spotifyUp = sp.Length > 0; foreach (var x in sp) x.Dispose(); }
                 if (ss == null)
                 {
-                    bool was = s.HasMedia; string wasKey = s.Title + "\u0001" + s.Artist;
-                    s.Cover = null; s.Pos = s.Dur = double.NaN; lastMedia = null;
+                    bool hadCover = s.Cover != null;
+                    s.Cover = null; s.Album = null; s.Pos = s.Dur = double.NaN; lastMedia = null;
                     if (!SpotifyByTitle(s)) { s.HasMedia = s.Playing = false; s.Title = s.Artist = null; }
-                    if (was != s.HasMedia || wasPlaying != s.Playing || wasKey != s.Title + "\u0001" + s.Artist) All(b => b.Render());
+                    if (hadCover || oldTrack != s.MusicTrack || wasPlaying != s.Playing) PublishMusicTrack(s, oldTrack);
                     return;
                 }
                 var info = ss.GetPlaybackInfo();
@@ -1071,7 +1090,6 @@ namespace FlowBar
                 bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => { var id = (uint)pr.Id; pr.Dispose(); return id; }))) : null;
                 if (here == false) { if (silentSince == DateTime.MinValue) silentSince = DateTime.Now; } else silentSince = DateTime.MinValue;
                 s.Remote = here == false && (DateTime.Now - silentSince).TotalSeconds > 3;
-                s.App = ss.SourceAppUserModelId;
                 try
                 {
                     var tl = ss.GetTimelineProperties();
@@ -1081,12 +1099,16 @@ namespace FlowBar
                 }
                 catch { s.Pos = s.Dur = double.NaN; }
                 var p = await ss.TryGetMediaPropertiesAsync();
-                var key = s.App + "\u0001" + p.Artist + "\u0001" + p.Title;
+                var key = ss.SourceAppUserModelId + "\u0001" + p.Artist + "\u0001" + p.Title;
                 if (key == lastMedia) { if (wasPlaying != s.Playing || wasRemote != s.Remote) All(b => b.Render()); return; }
                 lastMedia = key;
-                s.Title = p.Title; s.Artist = p.Artist; s.HasMedia = !string.IsNullOrEmpty(p.Title);
-                s.Cover = p.Thumbnail == null ? null : await LoadImage(p.Thumbnail);
-                All(b => b.Render());
+                ImageSource art = null;
+                try { if (p.Thumbnail != null) art = await LoadImage(p.Thumbnail); }
+                catch (Exception ex) { Log(ex); }
+                s.App = ss.SourceAppUserModelId; s.Title = p.Title; s.Artist = p.Artist; s.Album = p.AlbumTitle;
+                s.HasMedia = !string.IsNullOrEmpty(p.Title);
+                s.Cover = s.HasMedia ? art : null;
+                PublishMusicTrack(s, oldTrack);
             }
             catch (Exception ex) { Log(ex); var s = live; s.MediaError = ex.Message; s.HasMedia = s.Playing = false; s.Cover = null; lastMedia = null; } // источник сломался — не держим старую обложку
             finally { mediaBusy = false; if (mediaAgain) { mediaAgain = false; Dispatcher.BeginInvoke(new Action(UpdateMedia)); } }
@@ -1134,8 +1156,14 @@ namespace FlowBar
         }
         static async void MediaCmd(string cmd, double frac = 0)
         {
+            if (DemoMode) { DemoMusicCommand(cmd, frac); return; }
             var s = PickSession();
             if (s == null && SpotifyOnly && !spotifyUp) { if (cmd == "toggle") OpenSpotify(); return; } // Spotify не запущен — ▶ открывает его
+            if (cmd == "next" || cmd == "prev")
+            {
+                skipFrom = live.MusicTrack; skipDirection = cmd == "prev" ? -1 : 1;
+                skipUntil = DateTime.UtcNow.AddSeconds(3);
+            }
             if (s == null) { if (cmd == "toggle") Keys(0xB3); else if (cmd == "next") Keys(0xB0); else if (cmd == "prev") Keys(0xB1); return; }
             try
             {
@@ -1754,8 +1782,7 @@ namespace FlowBar
                 case "media":
                     {
                         double cd = th - 8;
-                        var cover = new Border { Width = cd, Height = cd, CornerRadius = new CornerRadius(Math.Max(6, cd / 4)), VerticalAlignment = VerticalAlignment.Center };
-                        var note = G("", cd * 0.42); note.Opacity = 0.7; cover.Child = note;
+                        var cover = new MusicArt(cd, Math.Max(6, cd / 4)) { VerticalAlignment = VerticalAlignment.Center };
                         double tf = f > 1.3 ? 1.1 : f; // у XL шрифт крупнее, а место под название — как у L: музыка не вытесняет соседей
                         var title = Wd(L("", 11 * f, true), (v >= 2 ? 150 : 110) * tf); var artist = Wd(L("", 9.5 * f, false, 0.72), (v >= 2 ? 150 : 110) * tf);
                         var prog = new FillBar((v >= 2 ? 150 : 110) * tf, Math.Max(2.5, Math.Round(th / 24)));
@@ -1814,11 +1841,8 @@ namespace FlowBar
                         }), true);
                         t.Padding = new Thickness(4, 0, 6 * f, 0);
                         if (live) t.MouseWheel += (o, e) => { byte k = (byte)(e.Delta > 0 ? 0xAF : 0xAE); Keys(k); Keys(k); e.Handled = true; };
-                        ImageSource shown = null; bool first = true; string shownTrack = null;
                         up.Add(() =>
                         {
-                            var track = s.HasMedia ? s.Title + "\n" + s.Artist : "";
-                            if (shownTrack != null && track != shownTrack) Soft(texts); shownTrack = track;
                             playG.Text = s.Playing ? "\uE769" : "\uE768";
                             Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
                             if (muteB != null)
@@ -1831,13 +1855,7 @@ namespace FlowBar
                             artist.Text = s.HasMedia ? (s.Remote ? "На другом устройстве" : string.IsNullOrEmpty(s.Artist) ? AppTitle(s.App) : s.Artist) : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Запустите музыку";
                             prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN); prog.Squeeze(s.HasMedia && !s.Playing);
                             if (ring != null) ring.Set(s.HasMedia && !double.IsNaN(s.Dur) && s.Dur > 0 ? s.Pos / s.Dur : 0, "");
-                            if (first || s.Cover != shown)
-                            {
-                                if (!first) Soft(cover);
-                                first = false; shown = s.Cover;
-                                if (s.Cover != null) { cover.Background = new ImageBrush(s.Cover) { Stretch = Stretch.UniformToFill }; cover.Child = null; }
-                                else { var ac = AccentColor; cover.Background = new LinearGradientBrush(Color.FromArgb(0x60, ac.R, ac.G, ac.B), Color.FromArgb(0x20, ac.R, ac.G, ac.B), 45); cover.Child = note; }
-                            }
+                            cover.SetTrack(s.MusicTrack, s.Cover, s.CoverDirection);
                             t.ToolTip = s.HasMedia ? (string.IsNullOrEmpty(s.Artist) ? "" : s.Artist + " — ") + s.Title + "\nКолесо — громкость, клик — подробности" : "Ничего не играет";
                         });
                         return t;
