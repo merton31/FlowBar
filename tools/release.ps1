@@ -3,7 +3,16 @@ param([Parameter(Mandatory)][string]$Version)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $gh = 'C:\Program Files\GitHub CLI\gh.exe'
-$tmp = Join-Path $env:TEMP "flowbar-release-$Version"
+# Выпуск берёт локальный FlowBar.exe, а тег ставится на main: проверяем, что это один и тот же код и что самопроверка проходит
+& git -C $root fetch origin main --quiet
+if (& git -C $root status --porcelain --untracked-files=no) { throw "есть незакоммиченные изменения — закоммитьте или уберите их перед выпуском" }
+if ((& git -C $root rev-parse HEAD) -ne (& git -C $root rev-parse origin/main)) { throw "HEAD не совпадает с origin/main — слейте PR и обновите main (git pull)" }
+$exeFile = Get-Item (Join-Path $root 'FlowBar.exe')
+$newest = Get-ChildItem $root -Filter '*.cs' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($newest.LastWriteTime -gt $exeFile.LastWriteTime) { throw "FlowBar.exe собран раньше, чем изменён $($newest.Name) — запустите build.ps1" }
+$selftest = & $exeFile.FullName --selftest 2>&1 | Out-String
+if ($selftest -match '(?m)^FAIL') { throw "самопроверка не прошла:`n$selftest" }
+$tmp =Join-Path $env:TEMP "flowbar-release-$Version"
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 $dir = New-Item -ItemType Directory -Force (Join-Path $tmp 'FlowBar')
 foreach ($f in 'FlowBar.exe', 'FlowBar.exe.config', 'flowbar-watch.exe', 'Как пользоваться.txt') {
