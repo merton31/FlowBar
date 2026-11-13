@@ -322,9 +322,21 @@ namespace FlowBar
         public class Missed { public string Exe, Name; public ImageSource Image; }
         public static List<Missed> MissedApps(IEnumerable<string> haveExe)
         {
-            var have = new HashSet<string>(haveExe.Where(x => x != null).Select(x => System.IO.Path.GetFileName(x).ToLowerInvariant()));
-            var running = new Dictionary<string, string>();
-            foreach (var p in System.Diagnostics.Process.GetProcesses()) { try { var path = Bar.ExePathOf((uint)p.Id); if (path != null) running[System.IO.Path.GetFileName(path).ToLowerInvariant()] = path; } catch { } finally { p.Dispose(); } }
+            // по полному пути, а не по имени файла: два разных python.exe — это две разные программы
+            var have = new HashSet<string>(haveExe.Where(x => x != null).Select(x => x.ToLowerInvariant()));
+            var running = new Dictionary<string, List<string>>();
+            foreach (var p in System.Diagnostics.Process.GetProcesses())
+            {
+                try
+                {
+                    var path = Bar.ExePathOf((uint)p.Id); if (path == null) continue;
+                    var key = System.IO.Path.GetFileName(path).ToLowerInvariant(); List<string> l;
+                    if (!running.TryGetValue(key, out l)) running[key] = l = new List<string>();
+                    if (!l.Contains(path, StringComparer.OrdinalIgnoreCase)) l.Add(path);
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
             var res = new List<Missed>(); var seen = new HashSet<string>();
             using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\NotifyIconSettings"))
             {
@@ -333,9 +345,12 @@ namespace FlowBar
                     using (var s = k.OpenSubKey(sub))
                     {
                         var exe = s == null ? null : s.GetValue("ExecutablePath") as string; if (exe == null) continue;
-                        var fn = System.IO.Path.GetFileName(exe).ToLowerInvariant(); string full;
-                        if (have.Contains(fn) || seen.Contains(fn) || !running.TryGetValue(fn, out full) || fn == "explorer.exe" || fn == "flowbar.exe" || fn == "powershell.exe") continue;
-                        seen.Add(fn);
+                        var fn = System.IO.Path.GetFileName(exe).ToLowerInvariant(); List<string> paths;
+                        if (fn == "explorer.exe" || fn == "flowbar.exe" || fn == "powershell.exe" || !running.TryGetValue(fn, out paths)) continue;
+                        // запись реестра может начинаться с «{GUID папки}», поэтому её путь не сравниваем: берём запущенные программы с таким именем, у которых значка ещё нет
+                        var full = paths.FirstOrDefault(x => !have.Contains(x.ToLowerInvariant()) && !seen.Contains(x.ToLowerInvariant()));
+                        if (full == null) continue;
+                        seen.Add(full.ToLowerInvariant());
                         ImageSource img = null; var png = s.GetValue("IconSnapshot") as byte[];
                         if (png != null) try { var bi = new BitmapImage(); bi.BeginInit(); bi.CacheOption = BitmapCacheOption.OnLoad; bi.StreamSource = new System.IO.MemoryStream(png); bi.EndInit(); bi.Freeze(); img = bi; } catch { img = null; }
                         res.Add(new Missed { Exe = full, Name = (s.GetValue("InitialTooltip") as string) ?? "", Image = img });

@@ -101,7 +101,7 @@ namespace FlowBar
                 memV.Text = Gb(s.RamUsed) + " из " + Gb(s.RamTotal);
                 netV.Text = "↓ " + RateRu(s.Rx) + "   ↑ " + RateRu(s.Tx); hist();
                 tmpV.Text = double.IsNaN(s.Temp) ? "— (" + (s.TempNote ?? "нет данных") + ")" : Math.Round(s.Temp) + " °C · " + (s.TempNote ?? "");
-                upV.Text = Until(TimeSpan.FromMilliseconds(Environment.TickCount & int.MaxValue));
+                upV.Text = Until(TimeSpan.FromMilliseconds((double)GetTickCount64()));
                 status.Text = "Обновлено " + DateTime.Now.ToString("HH:mm:ss") + " · данные раз в секунду. Температура — датчик платы (ACPI), не ядра процессора.";
             };
             tick();
@@ -663,13 +663,17 @@ namespace FlowBar
         }
 
         // Перезапуск подходит только обычной программе с exe-файлом: приложения из магазина Windows (папка WindowsApps) так не запустить, а FlowBar не трогаем
+        // Не трогаем и «хозяев» чужих программ: python.exe, node.exe, java.exe запускают много разных приложений — закрылись бы все сразу
+        static readonly string[] RestartHosts = { "python.exe", "pythonw.exe", "py.exe", "node.exe", "java.exe", "javaw.exe", "dotnet.exe", "cmd.exe", "pwsh.exe", "powershell.exe", "wscript.exe", "cscript.exe", "rundll32.exe", "svchost.exe", "explorer.exe" };
         internal static bool CanRestartForTray(string exe)
         {
             return !string.IsNullOrEmpty(exe) && exe.IndexOf("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) < 0
-                && !string.Equals(System.IO.Path.GetFileName(exe), "FlowBar.exe", StringComparison.OrdinalIgnoreCase) && File.Exists(exe);
+                && !string.Equals(System.IO.Path.GetFileName(exe), "FlowBar.exe", StringComparison.OrdinalIgnoreCase)
+                && !RestartHosts.Contains(System.IO.Path.GetFileName(exe).ToLowerInvariant()) && File.Exists(exe);
         }
-        // Закрыть программу и запустить снова: при запуске она добавит значок уже FlowBar. Сначала вежливо (CloseMainWindow), через 2 с — принудительно.
-        // Закрыть не вышло (служба, права) — заново не запускаем, чтобы не получить вторую копию.
+        // Закрыть программу и запустить снова: при запуске она добавит значок уже FlowBar. Просим окно закрыться и ждём до 10 с: если программа
+        // спрашивает «Сохранить?», окно ещё открыто — её не убиваем, чтобы не потерять несохранённое. Принудительно — только если окон у неё нет
+        // (спряталась в трей), спрашивать нечего. Закрыть не вышло — заново не запускаем, чтобы не получить вторую копию.
         static void RestartForTray(string exe)
         {
             Action<string, bool> say = (text, force) => { if (Primary != null) Primary.Notify("Значок трея", text, force, ""); };
@@ -680,16 +684,21 @@ namespace FlowBar
                 {
                     var procs = Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(exe)).Where(p => { try { return string.Equals(ExePathOf((uint)p.Id), exe, StringComparison.OrdinalIgnoreCase); } catch { return false; } }).ToList();
                     foreach (var p in procs) try { p.CloseMainWindow(); } catch { }
-                    int left = 0;
-                    foreach (var p in procs)
+                    Func<List<Process>> alive = () => procs.Where(p => { try { return !p.HasExited; } catch { return false; } }).ToList();
+                    Func<List<Process>, bool> noWindows = l => l.All(p => { try { p.Refresh(); return p.MainWindowHandle == IntPtr.Zero; } catch { return true; } });
+                    for (int ms = 0; ms < 10000; ms += 250)
                     {
-                        try { if (!p.WaitForExit(2000)) { p.Kill(); p.WaitForExit(3000); } } catch { }
-                        try { if (!p.HasExited) left++; } catch { }
+                        var rest = alive(); if (rest.Count == 0) break;
+                        if (ms >= 2000 && noWindows(rest)) break; // окон нет — ждать нечего
+                        System.Threading.Thread.Sleep(250);
                     }
-                    bool closed = procs.Count > 0 && left == 0;
+                    var left = alive();
+                    if (left.Count > 0 && noWindows(left)) foreach (var p in left) try { p.Kill(); p.WaitForExit(3000); } catch { }
+                    left = alive();
+                    bool closed = procs.Count > 0 && left.Count == 0;
                     Application.Current.Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        if (!closed) { say(procs.Count == 0 ? "Программа уже не запущена." : "Не удалось закрыть программу — перезапустите её вручную.", true); return; }
+                        if (!closed) { say(procs.Count == 0 ? "Программа уже не запущена." : "Программа не закрылась — возможно, спрашивает про сохранение. Закройте её сами и нажмите «Перезапустить» ещё раз.", true); return; }
                         Start(exe, null, System.IO.Path.GetDirectoryName(exe));
                     }));
                 }

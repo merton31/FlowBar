@@ -113,13 +113,14 @@ namespace FlowBar
                         using (var p = new NamedPipeServerStream(Pipe, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.None))
                         {
                             p.WaitForConnection();
-                            using (new Timer(_ => { try { p.Dispose(); } catch { } }, null, 5000, Timeout.Infinite)) // клиент молчит дольше 5 с — отключаем, канал свободен для других
+                            using (var guard = new Timer(_ => { try { p.Dispose(); } catch { } }, null, 5000, Timeout.Infinite)) // клиент молчит дольше 5 с — отключаем, канал свободен для других
                             {
                             var rd = new StreamReader(p, utf8); var wr = new StreamWriter(p, utf8) { AutoFlush = true };
                             KeyValuePair<bool, string> r;
                             try
                             {
                                 var rq = js.Deserialize<Dictionary<string, object>>(rd.ReadLine() ?? "{}");
+                                guard.Change(Timeout.Infinite, Timeout.Infinite); // запрос получен: если интерфейс занят дольше 5 с, канал не рвём — иначе действие выполнится, а агент получит ошибку и повторит его
                                 var tool = rq["tool"] as string; var args = rq["args"] as Dictionary<string, object> ?? new Dictionary<string, object>();
                                 r = (KeyValuePair<bool, string>)Application.Current.Dispatcher.Invoke(new Func<KeyValuePair<bool, string>>(() => Bar.AgentCall(tool, args)));
                             }

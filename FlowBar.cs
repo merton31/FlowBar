@@ -1877,10 +1877,17 @@ namespace FlowBar
         static void WorkAreaChanged() { SendNotifyMessage(new IntPtr(0xFFFF), 0x1A /* WM_SETTINGCHANGE */, new IntPtr(0x2F), null); }
         void EnsureWorkArea()
         {
-            if (hwnd == IntPtr.Zero) return;
+            if (hwnd == IntPtr.Zero || DemoMode) return; // пример для сверки (--demo) рабочую область не трогает: убитый процесс не вернул бы её, и окна оставались бы без полосы внизу
             var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
             var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
-            if (!(!AutoHide && HideTb)) { if (workSet) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); } return; }
+            if (!(!AutoHide && HideTb))
+            {
+                // скрываемая панель: окна на весь экран. Область, оставшаяся от прежнего запуска (убитый процесс, сбой), возвращается целиком, а не только если её поставили мы
+                bool stale = AutoHide && HideTb && !workSet && (cur.L != m.L || cur.T != m.T || cur.R != m.R || cur.B != m.B);
+                if (stale) Info("рабочая область " + scr.DeviceName + " урезана до " + cur.L + "," + cur.T + "–" + cur.R + "," + cur.B + " при скрываемой панели — возвращаем экран целиком");
+                if (workSet || stale) { workSet = false; SystemParametersInfo(0x2F /* SPI_SETWORKAREA */, 0, ref m, 0); WorkAreaChanged(); }
+                return;
+            }
             int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
             if (VerticalBar)
             {
@@ -2513,6 +2520,7 @@ namespace FlowBar
             var inv = CultureInfo.InvariantCulture;
             return n < 1000 ? n.ToString(inv) : n < 1000000 ? (n / 1000.0).ToString("0", inv) + "K" : (n / 1000000.0).ToString("0.0", inv) + "M";
         }
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern ulong GetTickCount64(); // 32-битный TickCount обнуляется через 24,9 дня
         public static string Until(TimeSpan t)
         {
             if (t < TimeSpan.Zero) t = TimeSpan.Zero;
@@ -3393,6 +3401,7 @@ namespace FlowBar
         }
 
         // ---------- календари iCal ----------
+        internal static bool IsFeedUrl(string url) { Uri u; return Uri.TryCreate(FeedUrl(url), UriKind.Absolute, out u) && u.Scheme == "https"; } // http не берём: закрытый адрес календаря ушёл бы открытым текстом
         static string FeedUrl(string feed) { var u = feed.Split('\t')[0].Trim(); return u.StartsWith("webcal://", StringComparison.OrdinalIgnoreCase) ? "https://" + u.Substring(9) : u; }
         static string FeedName(string feed)
         {
@@ -3822,8 +3831,8 @@ namespace FlowBar
             input.KeyDown += async (s, e) =>
             {
                 if (e.Key != System.Windows.Input.Key.Enter) return;
-                var url = input.Text.Trim(); Uri u;
-                if (!Uri.TryCreate(url.StartsWith("webcal://", StringComparison.OrdinalIgnoreCase) ? "https://" + url.Substring(9) : url, UriKind.Absolute, out u) || (u.Scheme != "https" && u.Scheme != "http"))
+                var url = input.Text.Trim();
+                if (!IsFeedUrl(url))
                 { status.Text = "Нужна ссылка вида https://… или webcal://…"; return; }
                 if (calFeeds.Any(x => FeedUrl(x) == FeedUrl(url))) { status.Text = "Этот календарь уже подключён"; return; }
                 calFeeds.Add(url); SaveFeeds(); input.Text = ""; status.Text = "Загрузка…";
@@ -4072,6 +4081,9 @@ namespace FlowBar
         {
             bool created;
             var mtx = new System.Threading.Mutex(true, Bar.DemoMode ? "FlowBar_demo_instance" : "FlowBar_single_instance", out created);
+            // перезапуск после сбоя: старый процесс ещё умирает и держит мьютекс (из другого потока его не отпустить) — ждём, пока ОС его освободит
+            if (!created && Environment.GetCommandLineArgs().Contains("--afterfail"))
+                try { created = mtx.WaitOne(8000); } catch (System.Threading.AbandonedMutexException) { created = true; }
             if (!created) return 0;
             // с правами администратора сообщения от обычных процессов (Проводник, команды --open, установщик новой версии) иначе не доходят
             foreach (var m in new[] { "FlowBarOpen", "FlowBarShot", "FlowBarAppBar", "TaskbarCreated" }) ChangeWindowMessageFilter(N.RegisterWindowMessage(m), 1);
@@ -4089,7 +4101,8 @@ namespace FlowBar
                     if (!File.Exists(mark) || (DateTime.Now - File.GetLastWriteTime(mark)).TotalSeconds > 60)
                     {
                         File.WriteAllText(mark, DateTime.Now.ToString("s"));
-                        mtx.ReleaseMutex(); Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "--fromshell") { UseShellExecute = true });
+                        Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "--fromshell --afterfail") { UseShellExecute = true });
+                        Process.GetCurrentProcess().Kill(); // без окна сбоя Windows (оно держит блокировку секундами): новая копия получает её сразу
                     }
                 }
                 catch { }
@@ -4319,7 +4332,12 @@ namespace FlowBar
             fails += check(txOk && tx.Contains("<LogonTrigger>") && tx.Contains("<RunLevel>LeastPrivilege</RunLevel>") && tx.Contains("Fl&amp;wBar") && !tx.Contains("<Delay>"), "Autostart task XML: valid, logon trigger, no elevation, no delay, path escaped");
             // перезапуск ради значка трея: только обычные программы, не магазинные, не сам FlowBar, файл должен существовать
             fails += check(Bar.CanRestartForTray(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "notepad.exe")) && !Bar.CanRestartForTray(@"C:\Program Files\WindowsApps\X\app.exe")
-                && !Bar.CanRestartForTray(null) && !Bar.CanRestartForTray(@"C:\nope\missing.exe") && !Bar.CanRestartForTray(Setup.InstalledExe.Replace("FlowBar.exe", "FlowBar.exe")), "Tray restart: only plain existing programs, never Store apps or FlowBar");
+                && !Bar.CanRestartForTray(null) && !Bar.CanRestartForTray(@"C:\nope\missing.exe") && !Bar.CanRestartForTray(Setup.InstalledExe.Replace("FlowBar.exe", "FlowBar.exe"))
+                && !Bar.CanRestartForTray(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")), "Tray restart: only plain existing programs, never Store apps, FlowBar or shared hosts (python, node, cmd)");
+            // календарь: только https и webcal; http, чужие схемы и мусор — нет
+            fails += check(Bar.IsFeedUrl("https://example.com/a.ics") && Bar.IsFeedUrl("webcal://example.com/a.ics") && Bar.IsFeedUrl("WEBCAL://example.com/a.ics") && !Bar.IsFeedUrl("http://example.com/a.ics") && !Bar.IsFeedUrl("ftp://example.com/a.ics") && !Bar.IsFeedUrl("example.com") && !Bar.IsFeedUrl(""), "Calendar feed link: https and webcal only");
+            // время работы Windows: 64-битный счётчик, не обнуляется через 24,9 дня (32-битный TickCount & int.MaxValue давал «0м» на 25-й день)
+            fails += check(unchecked((uint)Bar.GetTickCount64() - (uint)Environment.TickCount) < 2000u && Bar.Until(TimeSpan.FromMilliseconds(30.0 * 86400000)) == "30д 0ч" && Bar.Until(TimeSpan.FromMilliseconds((double)(25UL * 86400000))) == "25д 0ч", "Uptime: 64-bit tick count, 30 days shown as 30д 0ч");
             // склонение: 1 модуль, 2–4 модуля, 5–20 и 11–14 модулей, 21 модуль, 102 модуля, 111 модулей
             fails += check(Bar.Pl(1, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(2, "модуль", "модуля", "модулей") == "модуля" && Bar.Pl(5, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(11, "модуль", "модуля", "модулей") == "модулей"
                 && Bar.Pl(14, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(21, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(31, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(102, "модуль", "модуля", "модулей") == "модуля" && Bar.Pl(111, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(0, "модуль", "модуля", "модулей") == "модулей", "Russian plural forms");

@@ -213,7 +213,7 @@ namespace FlowBar
                 internal readonly Window window;
                 readonly Tile[] tiles;
                 readonly Stopwatch watch = new Stopwatch();
-                readonly DispatcherTimer timer;
+                TimeSpan lastRender;
                 readonly bool full;
                 readonly double duration;
                 readonly Point source;
@@ -244,7 +244,6 @@ namespace FlowBar
                     this.start = start;
                     end = reveal == null ? 0 : 1;
                     duration = full ? 0.44 : 0.32; // полное раскрытие 0,44 с, частичное и закрытие 0,32 с (было 0,58 и 0,42)
-                    timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
                     bool sideways = edge.Height > 0;
                     bool reverse = sideways ? source.X > sheet.Left + sheet.Width / 2 : source.Y > sheet.Top + sheet.Height / 2;
                     var near = sideways ? new Point(reverse ? 1 : 0, 0.5) : new Point(0.5, reverse ? 1 : 0);
@@ -290,7 +289,6 @@ namespace FlowBar
                         AllowsTransparency = true, Background = Brushes.Transparent, ShowActivated = false,
                         ShowInTaskbar = false, Topmost = true
                     };
-                    timer.Tick += Frame;
                     window.SourceInitialized += (s, e) =>
                     {
                         var h = new WindowInteropHelper(window).Handle;
@@ -299,7 +297,7 @@ namespace FlowBar
                     };
                     window.Closed += (s, e) =>
                     {
-                        timer.Stop();
+                        CompositionTarget.Rendering -= OnRendering;
                         if (reveal != null)
                         {
                             reveal.OpacityMask = null;
@@ -314,6 +312,13 @@ namespace FlowBar
                     FrameworkElement reveal, FrameworkElement closing = null, Action remember = null, BitmapSource snapshot = null,
                     int closingDepth = 0)
                 {
+                    // Меню панели растёт от всей её ширины; окно эффекта по объединению с кромкой на широкой панели закрывало бы пол-экрана и
+                    // каждый кадр перерисовывало миллионы пикселей. Берём только часть кромки вокруг меню.
+                    if (edge.Height == 0 && edge.Width > sheet.Width + 120 * scale)
+                    {
+                        double l = Math.Max(edge.Left, sheet.Left - 60 * scale), r = Math.Min(edge.Right, sheet.Right + 60 * scale);
+                        edge = new Rect(l, edge.Top, Math.Max(0, r - l), 0);
+                    }
                     double from = reveal == null ? 1 : 0;
                     // При закрытии всей цепочки дочерние события не перекрывают волну родительского меню.
                     if (reveal == null && current != null && current.reveal == null &&
@@ -348,13 +353,22 @@ namespace FlowBar
                         reveal.Opacity = 1;
                     }
                     burst.watch.Start();
-                    burst.timer.Start();
+                    CompositionTarget.Rendering += burst.OnRendering;
                     return true;
                 }
 
                 public static void StopCurrent()
                 {
                     if (current != null) current.window.Close();
+                }
+
+                // кадр — по событию отрисовки WPF (60 в секунду): DispatcherTimer на 16 мс упирался в шаг системного таймера и давал около 40
+                void OnRendering(object sender, EventArgs e)
+                {
+                    var rt = ((RenderingEventArgs)e).RenderingTime;
+                    if (rt == lastRender) return; // WPF иногда зовёт событие дважды за один кадр
+                    lastRender = rt;
+                    Frame(sender, e);
                 }
 
                 void Frame(object sender, EventArgs e)

@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.6.9.1")]
-[assembly: AssemblyFileVersion("1.6.9.1")]
+[assembly: AssemblyVersion("1.6.9.2")]
+[assembly: AssemblyFileVersion("1.6.9.2")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
@@ -294,7 +294,10 @@ namespace FlowBar
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
             Directory.CreateDirectory(dir);
             var zip = Path.Combine(dir, r.Asset);
-            using (var wc = new System.Net.WebClient()) { wc.Headers.Add("User-Agent", "FlowBar"); wc.DownloadFile(r.Url, zip); }
+            // WebClient не имеет таймаута на чтение: при обрыве сети загрузка висела бы вечно
+            var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(r.Url);
+            rq.UserAgent = "FlowBar"; rq.Timeout = 30000; rq.ReadWriteTimeout = 30000;
+            using (var rs = rq.GetResponse()) using (var src = rs.GetResponseStream()) using (var dst = File.Create(zip)) src.CopyTo(dst);
             if (r.Sha256 == null) throw new Exception("GitHub не прислал контрольную сумму архива — обновление не установлено");
             {
                 string got; using (var sha = System.Security.Cryptography.SHA256.Create()) using (var fs = File.OpenRead(zip)) got = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "").ToLowerInvariant();
