@@ -109,6 +109,7 @@ namespace FlowBar
                     demoCardData[i] = demo = new MusicTrackCardData("demo:" + i, null, DemoTrackTitles[i], s.Artist, DemoMusicAlbum(i), DemoMusicCover(i));
                 return demo;
             }
+            if (direction > 0) { var queued = spotifyNext; if (queued != null && queued.ForKey == s.MusicTrack) return queued.Card; } // настоящая очередь Spotify точнее истории
             int next = musicHistoryAt + direction;
             return musicHistory.Count > 0 && musicHistory[musicHistoryAt].Key == s.MusicTrack && next >= 0 && next < musicHistory.Count ? musicHistory[next] : null;
         }

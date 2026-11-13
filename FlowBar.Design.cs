@@ -1043,7 +1043,9 @@ namespace FlowBar
                 s.CoverDirection = oldTrack != null && oldTrack == skipFrom && DateTime.UtcNow < skipUntil ? skipDirection : 1;
                 skipFrom = null;
             }
+            if (s.MusicTrack != oldTrack) NoteTrackChange();
             RememberMusicTrack(s);
+            PollSpotifyNext(s);
             All(b => { b.Render(); if (b.musicPanel == b.panel && b.panelTick != null) b.panelTick(); });
         }
         // null — окна Spotify нет (свёрнут в трей): остаётся состояние от Windows
@@ -1090,7 +1092,7 @@ namespace FlowBar
                 bool? here = s.Playing ? Audio.Playing(new HashSet<uint>(System.Diagnostics.Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(ss.SourceAppUserModelId.Contains("!") ? "Spotify" : ss.SourceAppUserModelId)).Select(pr => { var id = (uint)pr.Id; pr.Dispose(); return id; }))) : null;
                 if (here == false) { if (silentSince == DateTime.MinValue) silentSince = DateTime.Now; } else silentSince = DateTime.MinValue;
                 s.Remote = here == false && (DateTime.Now - silentSince).TotalSeconds > 3;
-                try
+                if (!(peekBusy && peekOriginal != null)) try
                 {
                     var tl = ss.GetTimelineProperties();
                     double dur = (tl.EndTime - tl.StartTime).TotalSeconds, pos = tl.Position.TotalSeconds;
@@ -1100,11 +1102,17 @@ namespace FlowBar
                 catch { s.Pos = s.Dur = double.NaN; }
                 var p = await ss.TryGetMediaPropertiesAsync();
                 var key = ss.SourceAppUserModelId + "\u0001" + p.Artist + "\u0001" + p.Title;
-                if (key == lastMedia) { if (wasPlaying != s.Playing || wasRemote != s.Remote) All(b => b.Render()); return; }
+                if (key == lastMedia) { PollSpotifyNext(s); MaybePeekSkip(s); if (wasPlaying != s.Playing || wasRemote != s.Remote) All(b => b.Render()); return; }
                 lastMedia = key;
                 ImageSource art = null;
                 try { if (p.Thumbnail != null) art = await LoadImage(p.Thumbnail); }
                 catch (Exception ex) { Log(ex); }
+                if (peekBusy && peekOriginal != null)
+                {
+                    // проход «вперёд–назад»: следующий трек только запоминаем, на экран он не попадает; возврат на исходный — завершает проход
+                    if (key != peekOriginal) { PeekRecord(new MusicTrackCardData(key, ss.SourceAppUserModelId, p.Title, p.Artist, p.AlbumTitle, art)); return; }
+                    if (peekObserved != null) peekBack = true;
+                }
                 s.App = ss.SourceAppUserModelId; s.Title = p.Title; s.Artist = p.Artist; s.Album = p.AlbumTitle;
                 s.HasMedia = !string.IsNullOrEmpty(p.Title);
                 s.Cover = s.HasMedia ? art : null;
@@ -1156,6 +1164,8 @@ namespace FlowBar
         }
         static async void MediaCmd(string cmd, double frac = 0)
         {
+            if (peekBusy && !peekIssuing && (cmd == "next" || cmd == "prev" || cmd == "toggle")) { peekQueued.Add(Tuple.Create(cmd, frac)); return; } // идёт проход: нажатие выполнится сразу после него
+            if (cmd == "next" && !DemoMode && !peekBusy && PeekInterceptNow(live)) { RunSeamlessForward(live); return; } // проход без повтора: звук выключен до возврата на нужный трек
             if (DemoMode) { DemoMusicCommand(cmd, frac); return; }
             var s = PickSession();
             if (s == null && SpotifyOnly && !spotifyUp) { if (cmd == "toggle") OpenSpotify(); return; } // Spotify не запущен — ▶ открывает его
@@ -1792,7 +1802,19 @@ namespace FlowBar
                         Press prevB = RoundBtn("\uE892", nd, false, act(() => MediaCmd("prev")), "Предыдущий трек"), nextB = RoundBtn("\uE893", nd, false, act(() => MediaCmd("next")), "Следующий трек");
                         foreach (var rb0 in new[] { prevB, nextB }) { rb0.Base = Fa(0x16); rb0.Background = new SolidColorBrush(rb0.Base); } // светлые круги, как на образце
                         var body = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-                        body.Children.Add(cover);
+                        // обложка следующего трека выглядывает из-за текущей; место занято всегда (вид от «Мини»), чтобы панель не дёргалась при смене трека
+                        Border peek = null; Image peekImage = null;
+                        if (v >= 1)
+                        {
+                            double pk = Math.Round(cd * 0.78), shift = Math.Round(cd * 0.58);
+                            peekImage = new Image { Stretch = Stretch.UniformToFill, Width = pk, Height = pk, Clip = new RectangleGeometry(new Rect(0, 0, pk, pk), Math.Max(5, pk / 4), Math.Max(5, pk / 4)) };
+                            peek = new Border { Width = pk, Height = pk, Child = peekImage, Opacity = 0.62, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(shift, 0, 0, 0), Visibility = Visibility.Hidden };
+                            cover.HorizontalAlignment = HorizontalAlignment.Left;
+                            var coverStack = new Grid { Width = shift + pk, VerticalAlignment = VerticalAlignment.Center };
+                            coverStack.Children.Add(peek); coverStack.Children.Add(cover);
+                            body.Children.Add(coverStack);
+                        }
+                        else body.Children.Add(cover);
                         var texts = Mg(VS(title, artist), 8 * f, 0, 6 * f, 0);
                         if (v >= 1) body.Children.Add(texts);
                         if (v >= 2) body.Children.Add(prevB);
@@ -1856,6 +1878,13 @@ namespace FlowBar
                             prog.Set(s.HasMedia && !double.IsNaN(s.Dur) ? s.Pos / s.Dur : double.NaN); prog.Squeeze(s.HasMedia && !s.Playing);
                             if (ring != null) ring.Set(s.HasMedia && !double.IsNaN(s.Dur) && s.Dur > 0 ? s.Pos / s.Dur : 0, "");
                             cover.SetTrack(s.MusicTrack, s.Cover, s.CoverDirection);
+                            if (peekImage != null)
+                            {
+                                var after = s.HasMedia ? NeighborTrack(s, 1) : null; var afterCover = after == null ? null : after.Cover;
+                                if (peekImage.Source != afterCover) peekImage.Source = afterCover;
+                                peek.Visibility = afterCover == null ? Visibility.Hidden : Visibility.Visible;
+                                peek.ToolTip = after == null ? null : "Дальше: " + (string.IsNullOrEmpty(after.Artist) ? "" : after.Artist + " — ") + after.Title;
+                            }
                             t.ToolTip = s.HasMedia ? (string.IsNullOrEmpty(s.Artist) ? "" : s.Artist + " — ") + s.Title + "\nКолесо — громкость, клик — подробности" : "Ничего не играет";
                         });
                         return t;
