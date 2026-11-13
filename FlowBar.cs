@@ -1709,6 +1709,11 @@ namespace FlowBar
         }
 
         // Единый вид полей ввода и флажков в карточках (стандартные белые поля выпадали из тёмных тем)
+        static readonly ControlTemplate RoundedTextBox = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(
+            "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' TargetType='TextBox'>" +
+            "<Border Name='Bd' CornerRadius='8' Background='{TemplateBinding Background}' BorderBrush='{TemplateBinding BorderBrush}' BorderThickness='{TemplateBinding BorderThickness}'>" +
+            "<ScrollViewer Name='PART_ContentHost' Padding='{TemplateBinding Padding}' Focusable='False' VerticalScrollBarVisibility='{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}' HorizontalScrollBarVisibility='{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}'/></Border>" +
+            "<ControlTemplate.Triggers><Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Bd' Property='BorderBrush' Value='{Binding SelectionBrush, RelativeSource={RelativeSource TemplatedParent}}'/></Trigger></ControlTemplate.Triggers></ControlTemplate>");
         static void StyleInputs(DependencyObject root, Color fg)
         {
             foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
@@ -1718,7 +1723,7 @@ namespace FlowBar
                 {
                     tb.Background = Frozen(fg, 0x14); tb.Foreground = Frozen(fg, 255); tb.CaretBrush = Frozen(fg, 255);
                     tb.BorderBrush = Frozen(fg, 0x40); tb.BorderThickness = new Thickness(1); tb.Padding = new Thickness(8, 6, 8, 6);
-                    tb.SelectionBrush = Accent;
+                    tb.SelectionBrush = Accent; tb.Template = RoundedTextBox; // углы 8 — как у карточек и переключателей, рамка фокуса берёт цвет акцента из SelectionBrush
                 }
                 var ctl = child as Control; if (ctl != null && !(child is TextBox)) ctl.Foreground = Frozen(fg, 255);
                 StyleInputs(child, fg);
@@ -4315,6 +4320,11 @@ namespace FlowBar
             // перезапуск ради значка трея: только обычные программы, не магазинные, не сам FlowBar, файл должен существовать
             fails += check(Bar.CanRestartForTray(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "notepad.exe")) && !Bar.CanRestartForTray(@"C:\Program Files\WindowsApps\X\app.exe")
                 && !Bar.CanRestartForTray(null) && !Bar.CanRestartForTray(@"C:\nope\missing.exe") && !Bar.CanRestartForTray(Setup.InstalledExe.Replace("FlowBar.exe", "FlowBar.exe")), "Tray restart: only plain existing programs, never Store apps or FlowBar");
+            // склонение: 1 модуль, 2–4 модуля, 5–20 и 11–14 модулей, 21 модуль, 102 модуля, 111 модулей
+            fails += check(Bar.Pl(1, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(2, "модуль", "модуля", "модулей") == "модуля" && Bar.Pl(5, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(11, "модуль", "модуля", "модулей") == "модулей"
+                && Bar.Pl(14, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(21, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(31, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(102, "модуль", "модуля", "модулей") == "модуля" && Bar.Pl(111, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(0, "модуль", "модуля", "модулей") == "модулей", "Russian plural forms");
+            // шаблоны переключателя, флажка и поля ввода разбираются без ошибок:
+            fails += check(Bar.CheckTemplate() != null, "Check template parses");
             // шаблон переключателя разбирается без ошибок: опечатка в XAML иначе всплыла бы только при открытии настроек
             fails += check(Bar.SwitchTemplate() != null, "Switch template parses");
             // поиск по настройкам: слова запроса, регистр, пустой запрос, ничего не найдено, разделы индекса существуют
