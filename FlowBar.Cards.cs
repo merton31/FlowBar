@@ -646,7 +646,11 @@ namespace FlowBar
                         var img = new Image { Source = m.Image ?? ShellIcon(m.Exe, IconPxFor(20, MonScale)), Width = 20, Height = 20, Stretch = Stretch.Uniform, Opacity = 0.85 };
                         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                         var b = Act(new Border { Width = 44, Height = 44, Child = img }, name, () => OpenApp(m.Exe));
-                        b.ToolTip = name + "\nКлик — открыть программу. Меню трея недоступно: значок был добавлен до запуска FlowBar"; b.CornerRadius = new CornerRadius(10); b.Margin = new Thickness(2);
+                        // значок добавлен Проводнику до запуска FlowBar, на сигнал «добавь значок заново» программа не отвечает — меню трея доступно только после её перезапуска
+                        var cm = new ContextMenu(); cm.Items.Add(Item("Открыть", () => OpenApp(m.Exe)));
+                        if (CanRestartForTray(m.Exe)) cm.Items.Add(Item("Перезапустить: значок встанет в трей FlowBar", () => RestartForTray(m.Exe)));
+                        b.ContextMenu = cm;
+                        b.ToolTip = name + "\nКлик — открыть программу. Меню трея недоступно: значок был добавлен до запуска FlowBar" + (CanRestartForTray(m.Exe) ? ". Правая кнопка — перезапустить программу, чтобы значок появился в трее FlowBar" : ""); b.CornerRadius = new CornerRadius(10); b.Margin = new Thickness(2);
                         b.MouseEnter += (o, e) => Fade(b, Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B), 100); b.MouseLeave += (o, e) => Fade(b, Colors.Transparent, 140);
                         mg.Children.Add(b);
                     }
@@ -656,6 +660,41 @@ namespace FlowBar
             };
             fill();
             ShowPanel("Значки трея", body, 320, null, fill);
+        }
+
+        // Перезапуск подходит только обычной программе с exe-файлом: приложения из магазина Windows (папка WindowsApps) так не запустить, а FlowBar не трогаем
+        internal static bool CanRestartForTray(string exe)
+        {
+            return !string.IsNullOrEmpty(exe) && exe.IndexOf("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) < 0
+                && !string.Equals(System.IO.Path.GetFileName(exe), "FlowBar.exe", StringComparison.OrdinalIgnoreCase) && File.Exists(exe);
+        }
+        // Закрыть программу и запустить снова: при запуске она добавит значок уже FlowBar. Сначала вежливо (CloseMainWindow), через 2 с — принудительно.
+        // Закрыть не вышло (служба, права) — заново не запускаем, чтобы не получить вторую копию.
+        static void RestartForTray(string exe)
+        {
+            Action<string, bool> say = (text, force) => { if (Primary != null) Primary.Notify("Значок трея", text, force, ""); };
+            say("Перезапускаю «" + System.IO.Path.GetFileNameWithoutExtension(exe) + "»…", false);
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var procs = Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(exe)).Where(p => { try { return string.Equals(ExePathOf((uint)p.Id), exe, StringComparison.OrdinalIgnoreCase); } catch { return false; } }).ToList();
+                    foreach (var p in procs) try { p.CloseMainWindow(); } catch { }
+                    int left = 0;
+                    foreach (var p in procs)
+                    {
+                        try { if (!p.WaitForExit(2000)) { p.Kill(); p.WaitForExit(3000); } } catch { }
+                        try { if (!p.HasExited) left++; } catch { }
+                    }
+                    bool closed = procs.Count > 0 && left == 0;
+                    Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (!closed) { say(procs.Count == 0 ? "Программа уже не запущена." : "Не удалось закрыть программу — перезапустите её вручную.", true); return; }
+                        Start(exe, null, System.IO.Path.GetDirectoryName(exe));
+                    }));
+                }
+                catch (Exception ex) { Log(ex); }
+            });
         }
 
         // окно запущенной программы — вперёд; спрятана в трей — повторный запуск (программы с одним экземпляром показывают своё окно)
