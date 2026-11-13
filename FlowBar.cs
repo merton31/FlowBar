@@ -2066,7 +2066,7 @@ namespace FlowBar
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
             if (ws.Count == 0 && remote > 0)
                 tile.ToolTip = name + "\n" + WindowIndicatorStatus(local, remote) + "\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
-            tile.MouseEnter += (s, e) => HoverStart(tile, ws);
+            tile.MouseEnter += (s, e) => HoverStart(tile, ws.Count == 0 && remote > 1 ? Elsewhere(path) : ws);
             tile.AllowDrop = true;
             // файл тянут над значком открытой программы — её окно сразу выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
             DispatcherTimer spring = null;
@@ -2114,14 +2114,29 @@ namespace FlowBar
         void Activate(string path, List<Win> ws)
         {
             if ((DateTime.Now - lastDragEnd).TotalMilliseconds < 400) return; // отпускание после перетаскивания — не клик
-            bool wasOpen = preview != null && previewFor == anchor; ClosePreview(); if (wasOpen && ws.Count > 1 && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0) return; // повторный клик закрывает миниатюры
+            bool wasOpen = preview != null && previewFor == anchor;
+            if (wasOpen && previewFolding) { ClosePreview(); wasOpen = false; } // клик во время сворачивания не теряется: закрываем сразу и обрабатываем как обычный клик (у ярлыка с окнами веер раскроется снова)
+            if (wasOpen && previewPinned && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0)
+            {
+                FoldPreview();
+                return;
+            }
+            if (wasOpen && !previewPinned && foldPreview != null && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0)
+            {
+                previewPinned = true;
+                previewMiss = 0;
+                if (spreadPreview != null) spreadPreview();
+                return;
+            }
+            ClosePreview();
             bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0, ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
             if (shift && path != null) { Launch(path); return; } // как в Windows: Shift+клик — новое окно
             var fg = N.GetForegroundWindow();
             if (ws.Count == 0)
             {
                 var other = Elsewhere(path);
-                if (other.Count > 0) { int j = other.FindIndex(w => w.H == fg); ActivateWin(other[(j + 1) % other.Count].H); }
+                if (other.Count > 1 && !ctrl && anchor is Border) ShowPreview((Border)anchor, other, true);
+                else if (other.Count > 0) { int j = other.FindIndex(w => w.H == fg); ActivateWin(other[(j + 1) % other.Count].H); }
                 else if (path != null) Launch(path);
                 return;
             }
@@ -2211,18 +2226,60 @@ namespace FlowBar
             t.Start();
         }
         bool previewPinned;
+        Action foldPreview, spreadPreview;
+        bool previewFolding; // веер сворачивается (≈210 мс): окно ещё открыто, но уже закрывается
+
+        void FoldPreview()
+        {
+            if (foldPreview != null && Motion) foldPreview();
+            else ClosePreview();
+        }
+
+        FrameworkElement PreviewFolderBase(string name, TextBlock count, bool vertical, Action close)
+        {
+            var body = new Grid { Height = 49, Width = vertical ? 104 : 186 };
+            var back = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M0,12 Q0,7 7,7 H52 Q58,7 63,3 Q66,0 73,0 H153 Q160,0 160,7 V42 Q160,49 153,49 H7 Q0,49 0,42 Z"),
+                Fill = Frozen(AccentColor, 0x27), Stroke = Frozen(AccentColor, 0x55), Stretch = Stretch.Fill, IsHitTestVisible = false
+            };
+            var front = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M0,7 Q0,0 7,0 H46 Q52,0 57,5 L61,8 Q64,10 70,10 H153 Q160,10 160,17 V42 Q160,49 153,49 H7 Q0,49 0,42 Z"),
+                Fill = new LinearGradientBrush(Frozen(CardBg, 0xE8).Color, Frozen(CardBg, 0xC7).Color, 90),
+                Stroke = Frozen(CardFg, 0x46), Stretch = Stretch.Fill, IsHitTestVisible = false
+            };
+            body.Children.Add(back);
+            body.Children.Add(front);
+            var caption = Txt(name, 12, true);
+            caption.TextTrimming = TextTrimming.CharacterEllipsis;
+            caption.MaxWidth = vertical ? 78 : 220;
+            var labels = VS(caption, count);
+            var button = Cross("Свернуть предпросмотр", close);
+            button.Width = button.Height = 23;
+            button.Background = Frozen(CardFg, 0x17);
+            var line = new DockPanel { Margin = new Thickness(12, 10, 8, 5) };
+            DockPanel.SetDock(button, Dock.Right);
+            line.Children.Add(button);
+            line.Children.Add(labels);
+            body.Children.Add(line);
+            return body;
+        }
+
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
             ClosePreview(); previewPinned = pinned; TipHide(true);
             var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
+            bool folder = windows.Count > 1;
             const double padding = 8, margin = 4;
             double available = scr.Bounds.Width / MonScale - 2 * (padding + 5);
-            double span = Math.Min(244, Math.Max(105, available));
+            if (folder && VerticalBar) available -= 112;
+            double span = Math.Min(folder ? 226 : 244, Math.Max(105, available));
             int columns = Math.Min(windows.Count, Math.Max(1, (int)(available / span)));
             int rows = (windows.Count + columns - 1) / columns;
             double panelSpace = VerticalBar ? 0 : BarH;
-            double slotHeight = Math.Min(136, Math.Max(54, Math.Floor((scr.Bounds.Height / MonScale - panelSpace - 32) / rows - 46)));
+            double slotHeight = Math.Min(136, Math.Max(folder ? 42 : 54, Math.Floor((scr.Bounds.Height / MonScale - panelSpace - (folder ? 95 : 32)) / rows - 46)));
             var w = new Window
             {
                 WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Topmost = true, ShowInTaskbar = false, ShowActivated = false,
@@ -2231,13 +2288,14 @@ namespace FlowBar
             StylePopupText(w);
             var row = new WrapPanel { Width = span * columns };
             var slots = new List<Tuple<Border, IntPtr>>();
+            var transforms = new Dictionary<Border, TransformGroup>();
             // закрытое из миниатюр окно (вкладка) пропадает из окна предпросмотра, остальные остаются; пусто — окно закрывается
             var cells = new Dictionary<IntPtr, Border>(); Action<IntPtr> dismiss = null;
             foreach (var win in windows)
             {
                 var h = win.H;
                 var title = TitleOf(h);
-                if (string.IsNullOrWhiteSpace(title)) title = AppName(win.Path);
+                if (string.IsNullOrWhiteSpace(title)) title = PinName(win.Path);
                 var close = Cross("Закрыть окно", () => { N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); dismiss(h); });
                 close.MouseEnter += (s, e) => close.Background = Frozen(CardFg, 0x20);
                 close.MouseLeave += (s, e) => close.Background = Brushes.Transparent;
@@ -2255,19 +2313,47 @@ namespace FlowBar
                 var cell = Act(VS(head, frame), title, () => { ClosePreview(); ActivateWin(h); });
                 cell.Width = span - margin * 2; cell.Margin = new Thickness(margin); cell.Padding = new Thickness(7);
                 cell.CornerRadius = new CornerRadius(12); cell.BorderThickness = new Thickness(1);
-                var restFill = Frozen(CardFg, 0x0A); var restEdge = Frozen(CardFg, 0x16);
+                var restFill = folder ? PopupFill(false) : Frozen(CardFg, 0x0A);
+                var restEdge = Frozen(CardFg, folder ? (byte)0x38 : (byte)0x16);
                 cell.Background = restFill; cell.BorderBrush = restEdge;
+                if (folder)
+                {
+                    cell.RenderTransformOrigin = new Point(0.5, 0.5);
+                    var transform = new TransformGroup();
+                    transform.Children.Add(new ScaleTransform(1, 1));
+                    transform.Children.Add(new TranslateTransform());
+                    cell.RenderTransform = transform;
+                    transforms.Add(cell, transform);
+                }
                 // файл над миниатюрой — это окно выходит вперёд
                 cell.AllowDrop = true; DispatcherTimer cs = null;
                 cell.DragEnter += (s, e) => { previewMiss = 0; if (cs != null) cs.Stop(); cs = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(90) }; cs.Tick += (o2, e2) => { cs.Stop(); ClosePreview(); ActivateWin(h); }; cs.Start(); };
                 cell.DragOver += (s, e) => { previewMiss = 0; e.Effects = DragDropEffects.None; e.Handled = true; }; cell.DragLeave += (s, e) => { if (cs != null) cs.Stop(); };
                 cell.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); dismiss(h); } }; // средний клик — закрыть окно
                 cells[h] = cell;
-                cell.MouseEnter += (s, e) => { cell.Background = Frozen(AccentColor, 0x20); cell.BorderBrush = Frozen(AccentColor, 0x7A); };
+                cell.MouseEnter += (s, e) => { if (!folder) cell.Background = Frozen(AccentColor, 0x20); cell.BorderBrush = Frozen(AccentColor, 0x7A); };
                 cell.MouseLeave += (s, e) => { cell.Background = restFill; cell.BorderBrush = restEdge; };
                 row.Children.Add(cell); slots.Add(Tuple.Create(slot, h));
             }
-            var face = new Border { Child = row, Padding = new Thickness(padding), Background = CardFill, BorderBrush = CardEdge,
+            var count = folder ? Txt("Окон: " + cells.Count, 10, false) : null;
+            if (count != null) count.Opacity = 0.72;
+            FrameworkElement content = row;
+            FrameworkElement folderBase = null;
+            var folderOffset = new TranslateTransform();
+            if (folder)
+            {
+                var layout = new DockPanel();
+                folderBase = PreviewFolderBase(PinName(windows[0].Path), count, VerticalBar, FoldPreview);
+                folderBase.Margin = VerticalBar ? new Thickness(4, 4, 4, 4) : new Thickness(14, 3, 14, 3);
+                folderBase.HorizontalAlignment = HorizontalAlignment.Center;
+                folderBase.VerticalAlignment = VerticalAlignment.Center;
+                folderBase.RenderTransform = folderOffset;
+                DockPanel.SetDock(folderBase, VerticalBar ? (LeftBar ? Dock.Left : Dock.Right) : IsTop ? Dock.Top : Dock.Bottom);
+                layout.Children.Add(folderBase);
+                layout.Children.Add(row);
+                content = layout;
+            }
+            var face = new Border { Child = content, Padding = new Thickness(padding), Background = folder ? Brushes.Transparent : CardFill, BorderBrush = folder ? Brushes.Transparent : CardEdge,
                 BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(16) };
             w.Content = face;
             w.SourceInitialized += (s, e) =>
@@ -2275,8 +2361,29 @@ namespace FlowBar
                 var ph = new WindowInteropHelper(w).Handle;
                 N.SetWindowLongPtr(ph, -20, new IntPtr(N.GetWindowLongPtr(ph, -20).ToInt64() | 0x08000000 | 0x80));
             };
-            var previews = new List<Tuple<Border, IntPtr, N.POINT>>();
-            Action position = () =>
+            var previews = new List<Tuple<Border, IntPtr, N.POINT, Border>>();
+            Action updateThumbnails = () =>
+            {
+                if (!w.IsVisible) return;
+                double sc = VisualTreeHelper.GetDpi(w).DpiScaleX;
+                foreach (var entry in previews)
+                {
+                    var o = entry.Item1.TranslatePoint(new Point(), w);
+                    var end = entry.Item1.TranslatePoint(new Point(entry.Item1.ActualWidth, entry.Item1.ActualHeight), w);
+                    double bw = (end.X - o.X) * sc, bh = (end.Y - o.Y) * sc;
+                    double k = Math.Min(1, Math.Min(bw / entry.Item3.X, bh / entry.Item3.Y));
+                    double dw = entry.Item3.X * k, dh = entry.Item3.Y * k;
+                    int left = (int)Math.Round(o.X * sc + (bw - dw) / 2), top = (int)Math.Round(o.Y * sc + (bh - dh) / 2);
+                    double opacity = entry.Item4.Opacity;
+                    var props = new N.THUMBPROPS { Flags = 1 | 4 | 8, Dest = new N.RECT { L = left, T = top, R = left + (int)Math.Round(dw), B = top + (int)Math.Round(dh) },
+                        Opacity = (byte)Math.Round(opacity * 255), Visible = opacity > 0.01 && dw >= 1 && dh >= 1 ? 1 : 0 };
+                    N.DwmUpdateThumbnailProperties(entry.Item2, ref props);
+                }
+            };
+            double progress = 0, motionFrom = 0, motionTo = pinned ? 1 : 0.76, motionDuration = 385;
+            Action<double> arrangeFan = null;
+            EventHandler animate = null; // задан только если веер открыт с движением
+            Action<bool> position = refresh =>
             {
                 if (!w.IsVisible || !tile.IsLoaded) return;
                 double sc = VisualTreeHelper.GetDpi(w).DpiScaleX, gap = Math.Round(7 * sc);
@@ -2286,19 +2393,126 @@ namespace FlowBar
                 var bounds = scr.Bounds;
                 double x = VerticalBar ? (LeftBar ? end.X + gap : start.X - width - gap) : center.X - width / 2;
                 double y = VerticalBar ? center.Y - height / 2 : IsTop ? end.Y + gap : start.Y - height - gap;
-                x = Math.Max(bounds.Left + 4, Math.Min(bounds.Right - 4 - width, x));
-                y = Math.Max(bounds.Top + 4, Math.Min(bounds.Bottom - 4 - height, y));
-                N.SetWindowPos(new WindowInteropHelper(w).Handle, IntPtr.Zero, (int)Math.Round(x), (int)Math.Round(y), 0, 0, 0x1 | 0x4 | 0x10);
-                foreach (var entry in previews)
+                int left = (int)Math.Round(Math.Max(bounds.Left + 4, Math.Min(bounds.Right - 4 - width, x)));
+                int top = (int)Math.Round(Math.Max(bounds.Top + 4, Math.Min(bounds.Bottom - 4 - height, y)));
+                var handle = new WindowInteropHelper(w).Handle;
+                N.RECT rect;
+                if (N.GetWindowRect(handle, out rect) && (rect.L != left || rect.T != top))
+                    N.SetWindowPos(handle, IntPtr.Zero, left, top, 0, 0, 0x1 | 0x4 | 0x10);
+                if (folder)
                 {
-                    var o = entry.Item1.TranslatePoint(new Point(), w);
-                    double bw = entry.Item1.ActualWidth * sc, bh = entry.Item1.ActualHeight * sc;
-                    double k = Math.Min(1, Math.Min(bw / entry.Item3.X, bh / entry.Item3.Y));
-                    double dw = entry.Item3.X * k, dh = entry.Item3.Y * k;
-                    int left = (int)Math.Round(o.X * sc + (bw - dw) / 2), top = (int)Math.Round(o.Y * sc + (bh - dh) / 2);
-                    var props = new N.THUMBPROPS { Flags = 1 | 4 | 8, Dest = new N.RECT { L = left, T = top, R = left + (int)Math.Round(dw), B = top + (int)Math.Round(dh) }, Opacity = 255, Visible = 1 };
-                    N.DwmUpdateThumbnailProperties(entry.Item2, ref props);
+                    // Окно держит миниатюры на экране. Папка внутри него выравнивается по ярлыку отдельно.
+                    var origin = content.TranslatePoint(new Point(), w);
+                    var at = VisualTreeHelper.GetOffset(folderBase);
+                    double room = VerticalBar ? content.ActualHeight : content.ActualWidth;
+                    double size = VerticalBar ? folderBase.ActualHeight : folderBase.ActualWidth;
+                    double desired = VerticalBar ? (center.Y - top) / sc - origin.Y : (center.X - left) / sc - origin.X;
+                    double offset = Math.Max(0, Math.Min(room - size, desired - size / 2)) - (VerticalBar ? at.Y : at.X);
+                    double previous = VerticalBar ? folderOffset.Y : folderOffset.X;
+                    if (Math.Abs(offset - previous) >= 0.1)
+                    {
+                        if (VerticalBar) folderOffset.Y = offset;
+                        else folderOffset.X = offset;
+                        refresh = true;
+                    }
                 }
+                if (refresh)
+                {
+                    if (folder && animate != null) arrangeFan(progress); // без анимации (движение было выключено при открытии) карточки лежат как есть: arrangeFan(0) спрятал бы их
+                    else updateThumbnails();
+                }
+            };
+            // DWM рисует содержимое окон отдельно. Двигаем его вместе с WPF-карточками.
+            var motionWatch = new Stopwatch();
+            bool foldingFolder = false;
+            arrangeFan = value =>
+            {
+                if (folderBase == null || !folderBase.IsLoaded) return;
+                var mouth = folderBase.TranslatePoint(new Point(folderBase.ActualWidth / 2, folderBase.ActualHeight / 2), w);
+                for (int i = 0; i < row.Children.Count; i++)
+                {
+                    var cell = (Border)row.Children[i];
+                    var transform = transforms[cell];
+                    var scale = (ScaleTransform)transform.Children[0];
+                    var shift = (TranslateTransform)transform.Children[1];
+                    double fraction = (i + 0.5) / row.Children.Count - 0.5;
+                    double delay = Math.Min(0.22, (row.Children.Count - 1 - i) * 0.045);
+                    double t = Math.Max(0, Math.Min(1, (value - delay) / (1 - delay)));
+                    double travel = 1 - Math.Pow(1 - t, 2.35);
+                    // Координаты берём из раскладки. Сдвиг и масштаб прошлого кадра в них не попадают.
+                    var at = row.TranslatePoint(VisualTreeHelper.GetOffset(cell) + new Point(cell.ActualWidth / 2, cell.ActualHeight / 2), w);
+                    double openingScale = 0.56 + 0.44 * travel;
+                    scale.ScaleX = scale.ScaleY = openingScale;
+                    double arc = Math.Sin(Math.PI * t) * (VerticalBar ? 11 : 16) * fraction;
+                    double lift = Math.Cos(Math.PI * fraction) * 5 * travel * (IsTop || LeftBar ? 1 : -1);
+                    shift.X = (mouth.X - at.X + (!VerticalBar ? fraction * 22 : 0)) * (1 - travel) + (!VerticalBar ? arc : 0);
+                    shift.Y = (mouth.Y - at.Y + (VerticalBar ? fraction * 18 : 0)) * (1 - travel) + (VerticalBar ? arc : 0);
+                    if (VerticalBar) shift.X += lift;
+                    else shift.Y += lift;
+                    cell.Opacity = Math.Min(1, t * 3.8);
+                }
+                // Передняя стенка слегка наклоняется, пока стопка выходит из папки.
+                var front = (FrameworkElement)((Grid)folderBase).Children[1];
+                var tilt = (ScaleTransform)front.RenderTransform;
+                tilt.ScaleY = 1 - 0.20 * Math.Sin(Math.PI * value);
+                updateThumbnails();
+            };
+            Action stopMotion = () =>
+            {
+                if (animate != null) System.Windows.Media.CompositionTarget.Rendering -= animate;
+                motionWatch.Stop();
+            };
+            if (folder)
+            {
+                var front = (FrameworkElement)((Grid)folderBase).Children[1];
+                front.RenderTransformOrigin = new Point(0.5, 1);
+                front.RenderTransform = new ScaleTransform();
+                foldPreview = ClosePreview;
+                if (Motion)
+                {
+                    foreach (var cell in cells.Values) cell.Opacity = 0;
+                    animate = (s, e) =>
+                    {
+                        double t = Math.Min(1, motionWatch.Elapsed.TotalMilliseconds / motionDuration);
+                        progress = motionFrom + (motionTo - motionFrom) * t;
+                        if (!Motion || t >= 1)
+                        {
+                            stopMotion();
+                            if (foldingFolder) ClosePreview();
+                            else arrangeFan(motionTo);
+                            return;
+                        }
+                        arrangeFan(progress);
+                    };
+                    Action<double, double> move = (target, duration) =>
+                    {
+                        stopMotion();
+                        motionFrom = progress;
+                        motionTo = target;
+                        motionDuration = duration;
+                        motionWatch.Restart();
+                        System.Windows.Media.CompositionTarget.Rendering += animate;
+                    };
+                    spreadPreview = () => { if (!foldingFolder) move(1, 190); };
+                    foldPreview = () =>
+                    {
+                        if (foldingFolder) return;
+                        foldingFolder = true; previewFolding = true;
+                        hoverT.Stop();
+                        face.IsHitTestVisible = false;
+                        if (progress <= 0.02) { ClosePreview(); return; }
+                        move(0, 210);
+                    };
+                }
+            }
+            EventHandler anchorLayout = (s, e) => position(false);
+            var anchorWindow = Window.GetWindow(tile);
+            w.Closed += (s, e) =>
+            {
+                stopMotion();
+                if (!folder) return;
+                tile.LayoutUpdated -= anchorLayout;
+                if (anchorWindow != null) anchorWindow.LocationChanged -= anchorLayout;
             };
             w.Loaded += (s, e) =>
             {
@@ -2308,23 +2522,36 @@ namespace FlowBar
                     IntPtr th; if (N.DwmRegisterThumbnail(ph, sl.Item2, out th) != 0) continue;
                     thumbs.Add(th);
                     N.POINT sz; N.DwmQueryThumbnailSourceSize(th, out sz);
-                    if (sz.X > 0 && sz.Y > 0) previews.Add(Tuple.Create(sl.Item1, th, sz));
+                    if (sz.X > 0 && sz.Y > 0) previews.Add(Tuple.Create(sl.Item1, th, sz, cells[sl.Item2]));
                 }
-                position();
+                position(true);
+                if (folder)
+                {
+                    tile.LayoutUpdated += anchorLayout;
+                    if (anchorWindow != null) anchorWindow.LocationChanged += anchorLayout;
+                }
+                if (animate != null)
+                {
+                    motionWatch.Start();
+                    System.Windows.Media.CompositionTarget.Rendering += animate;
+                }
             };
-            w.DpiChanged += (s, e) => w.Dispatcher.BeginInvoke(position, DispatcherPriority.Loaded);
+            Action relayout = () => position(true);
+            w.DpiChanged += (s, e) => w.Dispatcher.BeginInvoke(relayout, DispatcherPriority.Loaded);
             dismiss = h =>
             {
                 Border cell; if (!cells.TryGetValue(h, out cell)) return;
                 cells.Remove(h); row.Children.Remove(cell);
+                transforms.Remove(cell);
                 if (row.Children.Count == 0) { ClosePreview(); return; }
-                // миниатюра закрытого окна больше не рисуется; ряд сжимается, окно встаёт по центру значка заново
+                if (count != null) count.Text = "Окон: " + cells.Count;
+                // После закрытия окна ряд сжимается, а папка остаётся у ярлыка.
                 var slot = slots.FirstOrDefault(x => x.Item2 == h); if (slot != null) slots.Remove(slot);
                 foreach (var entry in previews.Where(x => x.Item1 == (slot == null ? null : slot.Item1)).ToList()) { N.DwmUnregisterThumbnail(entry.Item2); thumbs.Remove(entry.Item2); previews.Remove(entry); }
                 int columnsNow = Math.Min(row.Children.Count, columns); row.Width = span * columnsNow;
-                w.Dispatcher.BeginInvoke(position, DispatcherPriority.Loaded);
+                w.Dispatcher.BeginInvoke(relayout, DispatcherPriority.Loaded);
             };
-            Glass(w, face, face.CornerRadius.TopLeft, 0);
+            if (!folder) Glass(w, face, face.CornerRadius.TopLeft, 0);
             preview = w; previewFor = tile; previewMiss = 0;
             w.Show(); hoverT.Start();
         }
@@ -2332,10 +2559,12 @@ namespace FlowBar
         {
             if (preview == null) { hoverT.Stop(); return; }
             previewMiss = previewFor.IsMouseOver || preview.IsMouseOver ? 0 : previewMiss + 1;
-            if (previewMiss >= (previewPinned ? 12 : 3)) ClosePreview(); // ¾ секунды на переход курсора со значка на миниатюру; открытые кликом ждут дольше
+            if (previewMiss >= (previewPinned ? 12 : 3)) FoldPreview(); // ¾ секунды на переход курсора со значка на миниатюру; открытые кликом ждут дольше
         }
         void ClosePreview()
         {
+            foldPreview = null; previewFolding = false;
+            spreadPreview = null;
             foreach (var t in thumbs) N.DwmUnregisterThumbnail(t);
             thumbs.Clear();
             if (preview != null) { preview.Close(); preview = null; }
@@ -2379,7 +2608,7 @@ namespace FlowBar
                 uint n = await dr.LoadAsync((uint)st.Size);
                 var buf = new byte[n]; dr.ReadBytes(buf);
                 var bi = new BitmapImage();
-                bi.BeginInit(); bi.CacheOption = BitmapCacheOption.OnLoad; bi.DecodePixelWidth = 160; bi.StreamSource = new MemoryStream(buf); bi.EndInit();
+                bi.BeginInit(); bi.CacheOption = BitmapCacheOption.OnLoad; bi.DecodePixelWidth = 384; bi.StreamSource = new MemoryStream(buf); bi.EndInit();
                 bi.Freeze(); return bi;
             }
         }
@@ -3768,7 +3997,7 @@ namespace FlowBar
                     if (calFeeds.Count == 0)
                     {
                         var none = Txt("Календари не подключены. Пока видны только сбросы лимитов ИИ.", 11, false); none.Opacity = 0.65; none.TextWrapping = TextWrapping.Wrap; agenda.Children.Add(none);
-                        var cb = Btn("Подключить календарь", () => ShowSettings("connect"), true); cb.HorizontalAlignment = HorizontalAlignment.Left; cb.Margin = new Thickness(0, 8, 0, 0); agenda.Children.Add(cb);
+                        var cb = Btn("Подключить календарь", () => ShowSettingsPage("connect", 1), true); cb.HorizontalAlignment = HorizontalAlignment.Left; cb.Margin = new Thickness(0, 8, 0, 0); agenda.Children.Add(cb);
                     }
                     else { var none = Txt("Событий нет", 11, false); none.Opacity = 0.6; agenda.Children.Add(none); }
                 }
@@ -4343,6 +4572,12 @@ namespace FlowBar
                 && Bar.Pl(14, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(21, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(31, "модуль", "модуля", "модулей") == "модуль" && Bar.Pl(102, "модуль", "модуля", "модулей") == "модуля" && Bar.Pl(111, "модуль", "модуля", "модулей") == "модулей" && Bar.Pl(0, "модуль", "модуля", "модулей") == "модулей", "Russian plural forms");
             // шаблоны переключателя, флажка и поля ввода разбираются без ошибок:
             fails += check(Bar.CheckTemplate() != null, "Check template parses");
+            // пружина выделения: старт в нуле, к концу в единице, перелёт небольшой, в начале растёт без отката
+            var spring = new Bar.SpringEase(); double springMax = 0; for (int q = 0; q <= 100; q++) springMax = Math.Max(springMax, spring.Ease(q / 100.0));
+            fails += check(Math.Abs(spring.Ease(0)) < 1e-9 && Math.Abs(spring.Ease(1) - 1) < 0.015 && springMax > 1.0 && springMax < 1.03 && spring.Ease(0.1) > spring.Ease(0.05) && spring.Ease(0.05) > 0, "Selection spring: 0 to 1, overshoot under 3%");
+            // миксер стилей: строки списка по центру плитки, линия входит в плитку не ближе 31 от края; сдвиг оттенка возвращается в тот же цвет
+            fails += check(Math.Abs(Bar.MixGeometry.RowY(1, 3, 100) - 100) < 1e-9 && Math.Abs(Bar.MixGeometry.RowY(0, 4, 100) - 34) < 1e-9 && Math.Abs(Bar.MixGeometry.AttachY(56, 100) - 77) < 1e-9 && Math.Abs(Bar.MixGeometry.AttachY(100, 100) - 100) < 1e-9 && Math.Abs(Bar.MixGeometry.AttachY(144, 100) - 123) < 1e-9
+                && Bar.HueShift(Colors.Red, 360) == Colors.Red && Bar.HueShift(Colors.Red, 120) == Colors.Lime && Bar.HueShift(Colors.Blue, -120) == Colors.Lime && Bar.HueShift(Color.FromRgb(0x80, 0x80, 0x80), 90) == Color.FromRgb(0x80, 0x80, 0x80), "Style mixer geometry and hue shift");
             // шаблон переключателя разбирается без ошибок: опечатка в XAML иначе всплыла бы только при открытии настроек
             fails += check(Bar.SwitchTemplate() != null, "Switch template parses");
             // поиск по настройкам: слова запроса, регистр, пустой запрос, ничего не найдено, разделы индекса существуют

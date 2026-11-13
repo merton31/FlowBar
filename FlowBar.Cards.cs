@@ -115,17 +115,12 @@ namespace FlowBar
             if (player == null) return new List<Audio.MixerSession>();
             return Audio.MixerSessions().Where(x => { var ep = ExePath(x.Pid); return ep != null && string.Equals(System.IO.Path.GetFileNameWithoutExtension(ep), player, StringComparison.OrdinalIgnoreCase); }).ToList();
         }
+        Window musicPanel;
         void ShowMusic()
         {
             var s = live; var body = new StackPanel();
             var tint = new Border { Child = body, CornerRadius = new CornerRadius(10), Padding = new Thickness(4) };
-            var cover = new Border { Width = 112, Height = 112, CornerRadius = new CornerRadius(14), Margin = new Thickness(0, 0, 16, 0) };
-            var title = Txt("", 15, true); title.TextWrapping = TextWrapping.Wrap; title.FontFamily = Display;
-            var artist = Txt("", 12, false); artist.Opacity = 0.75; artist.TextWrapping = TextWrapping.Wrap;
-            var app = Txt("", 10, false); app.Opacity = 0.55; app.Margin = new Thickness(0, 6, 0, 0);
-            var top = new DockPanel(); DockPanel.SetDock(cover, Dock.Left); top.Children.Add(cover); top.Children.Add(VS(title, artist, app));
-            var trackHeader = new Grid { ClipToBounds = true }; trackHeader.Children.Add(top);
-            body.Children.Add(trackHeader);
+            var carousel = new MusicCarousel(); body.Children.Add(carousel);
             // источники: при нескольких плеерах — выбор, кнопки управляют выбранным
             var srcHost = new StackPanel { Margin = new Thickness(0, 12, 0, 0) }; body.Children.Add(srcHost); string srcKey = null;
             var prog = new ElasticSlider { Width = 348, Maximum = 100, LargeChange = 10, Margin = new Thickness(0, 8, 0, 0) };
@@ -168,14 +163,11 @@ namespace FlowBar
             prog.FormatValue = v => mmss(s.Dur * v / 100);
             Action tick = () =>
             {
-                var track = s.HasMedia ? s.Title + "\n" + s.Artist : "";
-                bool transitioning = shownTrack != null && track != shownTrack && Motion;
-                if (transitioning) CrossfadeTrackHeader(trackHeader, top, tint.Background);
+                var track = s.MusicTrack;
                 if (shownTrack != track) seekUntil = DateTime.MinValue;
                 shownTrack = track;
-                title.Text = s.HasMedia ? s.Title : SpotifyOnly ? (spotifyUp ? "Spotify: ничего не играет" : "Spotify не запущен") : "Ничего не играет";
-                artist.Text = s.HasMedia ? s.Artist ?? "" : SpotifyOnly ? (spotifyUp ? "Включите трек в Spotify" : "Нажмите ▶, чтобы открыть") : "Включите музыку в любом плеере — FlowBar подхватит её через Windows.";
-                app.Text = s.HasMedia ? "Источник: " + AppTitle(s.App) : "";
+                carousel.Update(s, SpotifyOnly && !spotifyUp ? "Spotify не запущен" : "Ничего не играет",
+                    SpotifyOnly && !spotifyUp ? "Нажмите ▶, чтобы открыть" : "Включите трек в плеере");
                 ((TextBlock)play.Child).Text = s.Playing ? "\uE769" : "\uE768";
                 Enable(play, !s.HasMedia || s.CanToggle); Enable(prevB, s.HasMedia && s.CanPrev); Enable(nextB, s.HasMedia && s.CanNext);
                 bool stream = s.HasMedia && double.IsNaN(s.Dur);
@@ -201,11 +193,8 @@ namespace FlowBar
                 }
                 if (first || shown != s.Cover)
                 {
-                    if (!first && !transitioning) Soft(cover);
-                    first = false; shown = s.Cover; var ac = AccentColor;
+                    first = false; shown = s.Cover;
                     tint.Background = MusicTint(s.Cover);
-                    cover.Background = s.Cover != null ? (Brush)new ImageBrush(s.Cover) { Stretch = Stretch.UniformToFill } : new LinearGradientBrush(Color.FromArgb(0x90, ac.R, ac.G, ac.B), Color.FromArgb(0x20, ac.R, ac.G, ac.B), 45);
-                    cover.Child = s.Cover != null ? null : G("", 36);
                 }
                 status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count : "";
                 volSess = PlayerSessions(s);
@@ -217,32 +206,12 @@ namespace FlowBar
                 }
             };
             tick();
-            ShowPanel("Музыка", tint, 394, null, tick);
-        }
-
-        static void CrossfadeTrackHeader(Grid host, FrameworkElement current, Brush oldTint)
-        {
-            if (!current.IsLoaded || current.ActualWidth <= 0 || current.ActualHeight <= 0) return;
-            while (host.Children.Count > 1) host.Children.RemoveAt(host.Children.Count - 1);
-            current.BeginAnimation(OpacityProperty, null);
-            var dpi = VisualTreeHelper.GetDpi(current);
-            int w = (int)Math.Ceiling(current.ActualWidth * dpi.DpiScaleX), h = (int)Math.Ceiling(current.ActualHeight * dpi.DpiScaleY);
-            var visual = new DrawingVisual();
-            using (var dc = visual.RenderOpen())
+            ShowPanel("Музыка", tint, Math.Min(530, scr.WorkingArea.Width / MonScale - 44), null, tick);
+            if (panel != null)
             {
-                var area = new Rect(0, 0, current.ActualWidth, current.ActualHeight);
-                dc.DrawRectangle(oldTint, null, area);
-                dc.DrawRectangle(new VisualBrush(current), null, area);
+                musicPanel = panel;
+                musicPanel.Closed += (o, e) => { if (ReferenceEquals(musicPanel, o)) musicPanel = null; };
             }
-            var bitmap = new RenderTargetBitmap(w, h, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
-            bitmap.Render(visual); bitmap.Freeze();
-            var previous = new Image { Source = bitmap, Stretch = Stretch.None, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left };
-            host.Children.Add(previous);
-            int duration = ExpressiveMotion ? 300 : 190;
-            var fade = SettingsMotion(1, 0, duration);
-            fade.Completed += (s, e) => host.Children.Remove(previous);
-            previous.BeginAnimation(OpacityProperty, fade);
-            current.BeginAnimation(OpacityProperty, SettingsMotion(0, 1, duration));
         }
 
         static void ClosePanels() { foreach (var b in bars) if (b.panel != null) b.panel.Close(); }
@@ -984,7 +953,12 @@ namespace FlowBar
             // слева: поиск и категории
             var leftCol = new StackPanel { Width = 210, Margin = new Thickness(14, 0, 0, 14) };
             var search = SearchBox("Поиск виджетов", q => { query = q; if (render != null) render(); }); search.Margin = new Thickness(0, 0, 0, 10);
-            var cats = new StackPanel(); leftCol.Children.Add(search); leftCol.Children.Add(cats);
+            var cats = new StackPanel();
+            // выбранная категория — таблетка со ступенью поверхности и линией акцента слева (как в настройках); при смене категории она скользит
+            var catPill = new Border { Height = 38, Margin = new Thickness(0, 1, 0, 0), VerticalAlignment = VerticalAlignment.Top, CornerRadius = new CornerRadius(9), IsHitTestVisible = false, RenderTransform = new TranslateTransform() };
+            var catBar = new Rectangle { Width = 3, Height = 16, RadiusX = 1.5, RadiusY = 1.5, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 12, 0, 0), IsHitTestVisible = false, RenderTransform = catPill.RenderTransform };
+            var catLayer = new Grid(); catLayer.Children.Add(catPill); catLayer.Children.Add(catBar); catLayer.Children.Add(cats);
+            leftCol.Children.Add(search); leftCol.Children.Add(catLayer);
             var leftScroll = new ScrollViewer { Content = leftCol, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Width = 228 }; DockPanel.SetDock(leftScroll, Dock.Left); dock.Children.Add(leftScroll);
             // справа: подробности выбранного
             var detail = new StackPanel { Width = 262, Margin = new Thickness(6, 0, 18, 14) };
@@ -999,8 +973,16 @@ namespace FlowBar
                 foreach (var c in Categories)
                 {
                     var key = c[0]; int n = key == "all" ? all.Count : all.Count(d => d[4] == key);
-                    cats.Children.Add(NavItem(c[2], c[1], cat == key, () => { cat = key; render(); }, n == 0 ? "скоро" : n.ToString(), n == 0));
+                    var navItem = NavItem(c[2], c[1], false, () => { cat = key; render(); }, n == 0 ? "скоро" : n.ToString(), n == 0);
+                    navItem.Height = 38; // шаг 40 вместе с полями — по нему считается место таблетки
+                    if (cat == key) System.Windows.Automation.AutomationProperties.SetItemStatus(navItem, "Выбрана");
+                    cats.Children.Add(navItem);
                 }
+                catPill.Background = Frozen(CardFg, 0x16); catBar.Fill = Frozen(AccentColor, 255);
+                var catMove = (TranslateTransform)catPill.RenderTransform;
+                double catFrom = catMove.Y, catTo = Math.Max(0, Array.FindIndex(Categories, x => x[0] == cat)) * 40;
+                catMove.BeginAnimation(TranslateTransform.YProperty, null); catMove.Y = catTo;
+                if (Motion && catFrom != catTo) catMove.BeginAnimation(TranslateTransform.YProperty, GlideMotion(catFrom, catTo));
                 var list = all.Where(d => (cat == "all" || d[4] == cat) && (query == "" || (d[1] + " " + d[2]).IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0)).ToList();
                 if (catSel == null || !all.Any(d => d[0] == catSel)) catSel = list.Count > 0 ? list[0][0] : null;
                 foreach (var d in list) grid.Children.Add(CatalogCard(d, render));
@@ -1051,7 +1033,7 @@ namespace FlowBar
             // быстрое действие: «+» — добавить, «✓» — на панели (нажатие убирает), «Подключить» — нет источника
             FrameworkElement quick;
             if (fixedW) quick = Txt("всегда", 10, false);
-            else if (!avail) { var q = Txt("Подключить", 10, true); q.Foreground = Accent; quick = Act(q, "Как подключить " + d[1], () => Primary.ShowSettings("connect")); }
+            else if (!avail) { var q = Txt("Подключить", 10, true); q.Foreground = Accent; quick = Act(q, "Как подключить " + d[1], () => Primary.ShowSettingsPage("connect", id == "claude" || id == "codex" ? 2 : -1)); }
             else quick = RoundBtn(shown ? "" : "", 24, false, () => { tb.SetVisible(id, !shown); rerender(); }, shown ? "Убрать с панели" : "Добавить на панель");
             { var rb = quick as Press; if (rb != null && avail && !fixedW && !shown) { rb.Base = Color.FromArgb(0x1C, CardFg.R, CardFg.G, CardFg.B); rb.Background = new SolidColorBrush(rb.Base); } } // «+» — нейтральный круг, а не оранжевый на каждой карточке
             quick.Opacity = fixedW ? 0.5 : 1; quick.VerticalAlignment = VerticalAlignment.Center; DockPanel.SetDock(quick, Dock.Right); line.Children.Add(quick);
@@ -1092,7 +1074,7 @@ namespace FlowBar
             }
             Border action;
             if (fixedW) { action = Btn("✓ Всегда на панели", () => { }); action.Opacity = 0.7; }
-            else if (!avail) { action = Btn("Как подключить", () => Primary.ShowSettings("connect")); action.ToolTip = id == "claude" ? "Не найден Claude Code (~/.claude) на этом компьютере" : id == "codex" ? "Не найден Codex (~/.codex) на этом компьютере" : "Нет источника данных на этом компьютере"; }
+            else if (!avail) { action = Btn("Как подключить", () => Primary.ShowSettingsPage("connect", id == "claude" || id == "codex" ? 2 : -1)); action.ToolTip = id == "claude" ? "Не найден Claude Code (~/.claude) на этом компьютере" : id == "codex" ? "Не найден Codex (~/.codex) на этом компьютере" : "Нет источника данных на этом компьютере"; }
             else if (shown) { action = Btn("Убрать с панели", () => { tb.SetVisible(id, false); rerender(); }); }
             else action = Btn("Добавить на панель", () => { tb.SetVisible(id, true); rerender(); }, true);
             action.Margin = new Thickness(0, 12, 0, 0); action.HorizontalAlignment = HorizontalAlignment.Left;
@@ -1116,16 +1098,37 @@ namespace FlowBar
         static StackPanel Seg(string[] labels, int sel, Action<int> pick, bool small = false)
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
-            var box = new Border { CornerRadius = new CornerRadius(10), Background = Frozen(CardFg, 0x0E), Padding = new Thickness(3), Child = sp, HorizontalAlignment = HorizontalAlignment.Left };
-            // выбранный вариант — ступень поверхности и тонкая линия акцента снизу, а не оранжевая заливка: акцент остаётся для главного действия
-            var selectedBackground = Frozen(CardFg, 0x22);
-            var selectedLine = Frozen(AccentColor, 255);
+            // выбранный вариант — ступень поверхности и тонкая линия акцента снизу, а не оранжевая заливка: акцент остаётся для главного действия.
+            // Это одна «таблетка» позади кнопок: при выборе она скользит к новому варианту (без движения — переходит сразу)
+            var pill = new Border { CornerRadius = new CornerRadius(8), Background = Frozen(CardFg, 0x22), BorderBrush = Frozen(AccentColor, 255), BorderThickness = new Thickness(0, 0, 0, 2), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false, RenderTransform = new TranslateTransform(), Visibility = Visibility.Collapsed };
+            var host = new Grid(); host.Children.Add(pill); host.Children.Add(sp);
+            var box = new Border { CornerRadius = new CornerRadius(10), Background = Frozen(CardFg, 0x0E), Padding = new Thickness(3), Child = host, HorizontalAlignment = HorizontalAlignment.Left };
+            Action<bool> place = animate =>
+            {
+                if (sel < 0 || sel >= sp.Children.Count) { pill.Visibility = Visibility.Collapsed; return; }
+                var target = (FrameworkElement)sp.Children[sel];
+                if (target.ActualWidth <= 0) return; // ещё не разложено — вернёмся по SizeChanged
+                try
+                {
+                    var at = target.TranslatePoint(new Point(), host); var move = (TranslateTransform)pill.RenderTransform;
+                    bool was = pill.Visibility == Visibility.Visible; double fromX = move.X, fromY = move.Y, fromW = pill.Width;
+                    pill.BeginAnimation(FrameworkElement.WidthProperty, null); move.BeginAnimation(TranslateTransform.XProperty, null); move.BeginAnimation(TranslateTransform.YProperty, null);
+                    pill.Width = target.ActualWidth; pill.Height = target.ActualHeight; move.X = at.X; move.Y = at.Y; pill.Visibility = Visibility.Visible;
+                    if (!animate || !was || !Motion || double.IsNaN(fromW)) return;
+                    move.BeginAnimation(TranslateTransform.XProperty, GlideMotion(fromX, at.X));
+                    move.BeginAnimation(TranslateTransform.YProperty, GlideMotion(fromY, at.Y));
+                    pill.BeginAnimation(FrameworkElement.WidthProperty, GlideMotion(fromW, target.ActualWidth));
+                }
+                catch (InvalidOperationException) { } // страница уже перестроена — таблетка не нужна
+            };
+            bool selecting = false; // пока идёт выбор, смену ширины от жирного шрифта не ловим: иначе таблетка прыгнет раньше анимации
+            sp.SizeChanged += (s, e) => { if (!selecting) place(false); };
             Action<int, bool> paint = (index, selected) =>
             {
                 var button = (Press)sp.Children[index];
                 var text = (TextBlock)button.Child;
-                button.Background = selected ? selectedBackground : Brushes.Transparent;
-                button.BorderThickness = new Thickness(0, 0, 0, 2); button.BorderBrush = selected ? selectedLine : Brushes.Transparent;
+                button.Background = Brushes.Transparent;
+                button.BorderThickness = new Thickness(0, 0, 0, 2); button.BorderBrush = Brushes.Transparent; // та же высота, что у таблетки с линией снизу
                 text.ClearValue(TextBlock.ForegroundProperty);
                 text.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
                 System.Windows.Automation.AutomationProperties.SetName(button, labels[index] + (selected ? ", выбрано" : ""));
@@ -1140,7 +1143,8 @@ namespace FlowBar
                     if (sel == k) return;
                     if (sel >= 0 && sel < sp.Children.Count) paint(sel, false);
                     sel = k;
-                    paint(sel, true);
+                    selecting = true;
+                    try { paint(sel, true); host.UpdateLayout(); place(true); } finally { selecting = false; } // жирный шрифт меняет ширину — таблетка идёт к уже посчитанному месту
                 };
                 var b = new Press { Child = t, Padding = new Thickness(small ? 9 : 14, small ? 4 : 6, small ? 9 : 14, small ? 4 : 6), CornerRadius = new CornerRadius(8), Cursor = Cursors.Hand, Invoke = select };
                 b.MouseLeftButtonUp += (s, e) => { e.Handled = true; select(); };
@@ -1232,8 +1236,8 @@ namespace FlowBar
                 "<ControlTemplate.Triggers>" +
                 "<Trigger Property='IsChecked' Value='True'>" +
                 "<Setter TargetName='Track' Property='Background' Value='" + acc + "'/><Setter TargetName='Track' Property='BorderBrush' Value='" + acc + "'/><Setter TargetName='Knob' Property='Fill' Value='" + knobOn + "'/>" +
-                "<Trigger.EnterActions><BeginStoryboard><Storyboard><ThicknessAnimation Storyboard.TargetName='Knob' Storyboard.TargetProperty='Margin' To='21,0,0,0' Duration='0:0:0.12'/></Storyboard></BeginStoryboard></Trigger.EnterActions>" +
-                "<Trigger.ExitActions><BeginStoryboard><Storyboard><ThicknessAnimation Storyboard.TargetName='Knob' Storyboard.TargetProperty='Margin' To='3,0,0,0' Duration='0:0:0.12'/></Storyboard></BeginStoryboard></Trigger.ExitActions>" +
+                "<Trigger.EnterActions><BeginStoryboard><Storyboard><ThicknessAnimation Storyboard.TargetName='Knob' Storyboard.TargetProperty='Margin' To='21,0,0,0' Duration='0:0:0.16'><ThicknessAnimation.EasingFunction><CubicEase EasingMode='EaseOut'/></ThicknessAnimation.EasingFunction></ThicknessAnimation></Storyboard></BeginStoryboard></Trigger.EnterActions>" +
+                "<Trigger.ExitActions><BeginStoryboard><Storyboard><ThicknessAnimation Storyboard.TargetName='Knob' Storyboard.TargetProperty='Margin' To='3,0,0,0' Duration='0:0:0.16'><ThicknessAnimation.EasingFunction><CubicEase EasingMode='EaseOut'/></ThicknessAnimation.EasingFunction></ThicknessAnimation></Storyboard></BeginStoryboard></Trigger.ExitActions>" +
                 "</Trigger>" +
                 "<Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Card' Property='BorderBrush' Value='" + acc + "'/></Trigger>" +
                 "<Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Track' Property='Opacity' Value='0.85'/></Trigger>" +
@@ -1305,9 +1309,14 @@ namespace FlowBar
             new[] { "widgets", "-1", "Микшер по нажатию на громкость", "звук громкость микшер приложений" },
             new[] { "widgets", "-1", "Дуга светового дня", "рассвет закат часы" },
             new[] { "widgets", "-1", "Вид модулей", "виджеты размер мин комп расш" },
-            new[] { "connect", "-1", "Агенты · MCP", "агенты mcp claude codex подключение" },
-            new[] { "connect", "-1", "Разрешить агентам управлять FlowBar", "агенты mcp доступ задачи заметки напоминания" },
-            new[] { "connect", "-1", "Разрешить агентам читать задачи, заметки и календарь", "агенты чтение доступ" },
+            new[] { "connect", "0", "Агенты · MCP", "агенты mcp claude codex подключение" },
+            new[] { "connect", "0", "Разрешить агентам управлять FlowBar", "агенты mcp доступ задачи заметки напоминания" },
+            new[] { "connect", "0", "Разрешить агентам читать задачи, заметки и календарь", "агенты чтение доступ" },
+            new[] { "connect", "1", "Погода · Open-Meteo", "город прогноз погода" },
+            new[] { "connect", "1", "Календари · iCal", "подключить календарь ссылка ical" },
+            new[] { "connect", "2", "Claude Code", "claude проценты лимиты контекст" },
+            new[] { "connect", "2", "Codex", "codex проценты лимиты" },
+            new[] { "connect", "3", "Музыка", "плеер spotify медиа" },
             new[] { "notify", "-1", "Показывать уведомления FlowBar", "уведомления включить выключить" },
             new[] { "notify", "-1", "Звук", "звук уведомлений сигнал" },
             new[] { "notify", "-1", "Сколько показывать", "время показа секунды длительность уведомления" },
@@ -1327,11 +1336,13 @@ namespace FlowBar
         internal static List<string[]> SearchSettings(string query)
         {
             // по-русски слова склоняются («преломление» и «преломления»): у длинных слов отбрасываем 1–2 последние буквы и ищем основу
-            var tokens = (query ?? "").ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+            var phrase = (query ?? "").Trim().ToLowerInvariant();
+            var tokens = phrase.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(t => t.Length >= 7 ? t.Substring(0, t.Length - 2) : t.Length >= 5 ? t.Substring(0, t.Length - 1) : t).ToArray();
             if (tokens.Length == 0) return new List<string[]>();
             return SettingsIndex.Select(e => new { e, title = e[2].ToLowerInvariant(), all = (e[2] + " " + e[3]).ToLowerInvariant() })
-                .Where(x => tokens.All(t => x.all.Contains(t))).OrderByDescending(x => tokens.Count(t => x.title.Contains(t))).Select(x => x.e).Take(12).ToList();
+                .Where(x => tokens.All(t => x.all.Contains(t))).OrderByDescending(x => x.title.StartsWith(phrase, StringComparison.Ordinal))
+                .ThenByDescending(x => tokens.Count(t => x.title.Contains(t))).Select(x => x.e).Take(12).ToList();
         }
         // найти в логическом дереве подпись, начинающуюся с текста, и мигнуть её строкой
         // false — такой строки на странице сейчас нет (многие настройки «Материала» появляются только у своих тем и режимов)
@@ -1339,7 +1350,7 @@ namespace FlowBar
         {
             TextBlock found = null;
             Action<DependencyObject> walk = null;
-            walk = d => { if (found != null) return; var tb = d as TextBlock; if (tb != null && tb.Text != null && tb.Text.StartsWith(title)) { found = tb; return; } foreach (var ch in LogicalTreeHelper.GetChildren(d)) { var o = ch as DependencyObject; if (o != null) walk(o); } };
+            walk = d => { if (found != null) return; var fe = d as FrameworkElement; if (fe != null && fe.Visibility == Visibility.Collapsed) return; var tb = d as TextBlock; if (tb != null && tb.Text != null && tb.Text.StartsWith(title)) { found = tb; return; } foreach (var ch in LogicalTreeHelper.GetChildren(d)) { var o = ch as DependencyObject; if (o != null) walk(o); } };
             walk(root);
             if (found == null) return false;
             FrameworkElement target = found; DependencyObject p = LogicalTreeHelper.GetParent(found);
@@ -1349,26 +1360,29 @@ namespace FlowBar
             return true;
         }
         static readonly Dictionary<string, int> subTab = new Dictionary<string, int>();
-        // Длинная страница настроек — короткие подразделы: всё, что начинается с заголовка SSub, раскладывается по вкладкам.
-        // tabOf даёт номер вкладки по тексту заголовка (-1 — остаться на прежней). Выбранная вкладка помнится, пока открыто окно.
-        static void SplitTabs(string page, StackPanel c, string[] tabs, Func<string, int> tabOf)
+        static int SettingsTab(string page)
+        {
+            int index;
+            return subTab.TryGetValue(page, out index) ? index : 0;
+        }
+        // Заголовки SSub отмечают начало подраздела. Остальные элементы идут за своим заголовком.
+        static Action<int> SettingsSubpages(StackPanel c, int count, Func<string, int> tabOf)
         {
             var all = c.Children.Cast<UIElement>().ToList();
             int first = all.FindIndex(x => x is TextBlock && "sub".Equals(((TextBlock)x).Tag));
-            if (first < 0) return;
-            var panels = tabs.Select(t => new StackPanel()).ToArray(); int cur = 0;
+            if (first < 0) return null;
+            var panels = Enumerable.Range(0, count).Select(i => new StackPanel()).ToArray(); int cur = 0;
             for (int i = first; i < all.Count; i++)
             {
                 var tb = all[i] as TextBlock;
-                if (tb != null && "sub".Equals(tb.Tag)) { int n = tabOf(tb.Text); if (n >= 0 && n < tabs.Length) cur = n; }
+                if (tb != null && "sub".Equals(tb.Tag)) { int n = tabOf(tb.Text); if (n >= 0 && n < count) cur = n; }
                 c.Children.Remove(all[i]); panels[cur].Children.Add(all[i]);
             }
-            int sel; if (!subTab.TryGetValue(page, out sel) || sel < 0 || sel >= tabs.Length) sel = 0;
-            Action<int> show = k => { for (int j = 0; j < panels.Length; j++) panels[j].Visibility = j == k ? Visibility.Visible : Visibility.Collapsed; };
-            show(sel);
-            var seg = Seg(tabs, sel, i => { subTab[page] = i; show(i); });
-            seg.Margin = new Thickness(0, 14, 0, 0); c.Children.Add(seg);
             foreach (var p in panels) c.Children.Add(p);
+            return selected =>
+            {
+                for (int i = 0; i < panels.Length; i++) panels[i].Visibility = i == selected ? Visibility.Visible : Visibility.Collapsed;
+            };
         }
         static TextBlock SHint(string s) { var t = Txt(s, 11.5, false); t.Opacity = 0.7; t.TextWrapping = TextWrapping.Wrap; return t; }
 
@@ -1423,6 +1437,23 @@ namespace FlowBar
             };
         }
 
+        // Пружина как у переключателей на motion: жёсткость 400, затухание 32 (коэффициент 0,8) — короткий разгон, мягкий выход и едва заметный перелёт (≈1,5%).
+        // Время кадра 0…1 растянуто на 0,32 с: к концу отклонение меньше 1%.
+        internal sealed class SpringEase : EasingFunctionBase
+        {
+            public SpringEase() { EasingMode = EasingMode.EaseIn; } // у базового класса по умолчанию EaseOut — пружина пошла бы задом наперёд
+            protected override double EaseInCore(double t)
+            {
+                double s = t * 0.32; // секунды
+                return 1 - Math.Exp(-16 * s) * (Math.Cos(12 * s) + (16.0 / 12) * Math.Sin(12 * s));
+            }
+            protected override Freezable CreateInstanceCore() { return new SpringEase(); }
+        }
+        // Ход выделения между пунктами (таблетки переключателей, списки разделов и категорий)
+        static DoubleAnimation GlideMotion(double from, double to)
+        {
+            return new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(320)) { EasingFunction = new SpringEase(), FillBehavior = FillBehavior.Stop };
+        }
         static DoubleAnimation SettingsMotion(double from, double to, int duration)
         {
             return new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(duration))
@@ -1701,6 +1732,7 @@ namespace FlowBar
         }
 
         static Window settings; static Action<string> settingsGo;
+        static Action<string, int> settingsNavigate;
         static Action settingsRefreshChrome, settingsRefreshTheme;
         static FrameworkElement SettingsFocusTarget(DependencyObject root, string tag)
         {
@@ -1716,12 +1748,59 @@ namespace FlowBar
         static readonly string[][] SettingsSections = {
             new[] { "look", "Оформление", "" }, new[] { "bar", "Панель", "" }, new[] { "monitors", "Мониторы", "" }, new[] { "widgets", "Виджеты", "" },
             new[] { "connect", "Подключения", "\uE71B" }, new[] { "auto", "Автоматизации", "" }, new[] { "notify", "Уведомления", "" }, new[] { "general", "Общие", "" } };
-        void ShowSettings(string section)
+        static readonly Dictionary<string, string[][]> SettingsBranches = new Dictionary<string, string[][]>
         {
-            if (settings != null) { settings.Activate(); if (section != null) settingsGo(section); return; }
+            { "look", new[] { new[] { "Темы и цвета", "\uE790" }, new[] { "Материал", "\uE81E" }, new[] { "Движение", "\uE945" } } },
+            { "connect", new[] { new[] { "Агенты · MCP", "\uE943" }, new[] { "Погода и календари", "\uE787" }, new[] { "Claude Code и Codex", "\uE99A" }, new[] { "Музыка", "\uE8D6" } } }
+        };
+        static Press SettingsNavLink(string text, string glyph, bool nested, bool active, Brush fg, Brush muted, Brush orange, Brush hover, Action open)
+        {
+            var icon = G(glyph, nested ? 13 : 14);
+            icon.Foreground = nested && active ? orange : muted;
+            icon.Margin = new Thickness(0, 0, nested ? 8 : 10, 0);
+            var label = Txt(text, nested ? 12 : 13, active);
+            label.Foreground = active ? fg : muted;
+            label.VerticalAlignment = VerticalAlignment.Center;
+            var line = new DockPanel();
+            DockPanel.SetDock(icon, Dock.Left);
+            line.Children.Add(icon); line.Children.Add(label);
+            var item = Act(line, text, open);
+            item.Background = Brushes.Transparent;
+            item.Height = nested ? 30 : 38;
+            item.CornerRadius = new CornerRadius(6);
+            item.Padding = new Thickness(8, 0, 5, 0);
+            item.MouseEnter += (s, e) => item.Background = hover;
+            item.MouseLeave += (s, e) => item.Background = Brushes.Transparent;
+            if (active) System.Windows.Automation.AutomationProperties.SetItemStatus(item, "Выбран");
+            return item;
+        }
+
+        static Path SettingsConnector(double height, Brush stroke)
+        {
+            var line = new StreamGeometry();
+            using (var ctx = line.Open())
+            {
+                ctx.BeginFigure(new Point(0.5, 0), false, false);
+                ctx.LineTo(new Point(0.5, height - 5), true, false);
+                ctx.QuadraticBezierTo(new Point(0.5, height + 0.5), new Point(6, height + 0.5), true, false);
+                ctx.LineTo(new Point(12, height + 0.5), true, false);
+            }
+            line.Freeze();
+            return new Path { Data = line, Stroke = stroke, StrokeThickness = 1, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false };
+        }
+
+        void ShowSettings(string section) { ShowSettingsPage(section, -1); }
+        void ShowSettingsPage(string section, int initialTab)
+        {
+            if (settings != null)
+            {
+                settings.Activate();
+                if (section != null) settingsNavigate(section, initialTab);
+                return;
+            }
             var w = AppWindow("Настройки", 940, 720);
             var dock = new DockPanel();
-            var nav = new StackPanel { Width = 192, Margin = new Thickness(12, 24, 12, 14) };
+            var nav = new StackPanel { Margin = new Thickness(12, 24, 12, 14) };
             var navHead = Txt("Flowbar", 21, true); navHead.FontFamily = Display; navHead.Margin = new Thickness(12, 0, 0, 14); nav.Children.Add(navHead);
             // поиск по настройкам: список найденных строк вместо страницы, Enter — первая, Esc — очистить, Ctrl+F — в поле
             var search = new TextBox { Padding = new Thickness(8, 6, 8, 6), FontSize = 12.5, VerticalContentAlignment = VerticalAlignment.Center };
@@ -1730,10 +1809,10 @@ namespace FlowBar
             var searchBox = new Grid { Margin = new Thickness(0, 0, 0, 14) }; searchBox.Children.Add(search); searchBox.Children.Add(searchHint); nav.Children.Add(searchBox);
             bool searching = false, suppress = false;
             var navLayer = new Grid(); nav.Children.Add(navLayer);
-            var selection = new Border { Height = 38, VerticalAlignment = VerticalAlignment.Top, CornerRadius = new CornerRadius(9), IsHitTestVisible = false, RenderTransform = new TranslateTransform() };
-            var selectionBar = new Rectangle { Width = 3, Height = 16, RadiusX = 1.5, RadiusY = 1.5, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 11, 0, 0), IsHitTestVisible = false, RenderTransform = selection.RenderTransform };
-            var navList = new StackPanel(); navLayer.Children.Add(selection); navLayer.Children.Add(selectionBar); navLayer.Children.Add(navList);
-            var navSide = new Border { Child = nav, BorderThickness = new Thickness(0, 0, 1, 0) };
+            var navRail = new Border { Width = 1, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(2, 0, 0, 0), IsHitTestVisible = false };
+            var navList = new StackPanel(); navLayer.Children.Add(navRail); navLayer.Children.Add(navList);
+            var navScroll = new ScrollViewer { Content = nav, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            var navSide = new Border { Width = 230, Child = navScroll, BorderThickness = new Thickness(0, 0, 1, 0) };
             DockPanel.SetDock(navSide, Dock.Left); dock.Children.Add(navSide);
             var content = new StackPanel { Margin = new Thickness(26, 24, 24, 30), MaxWidth = 720 };
             var scroll = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -1748,83 +1827,130 @@ namespace FlowBar
             var preview = AddSettingsPreview(previewBody);
             refreshPreview = preview;
             string cur = section ?? "look";
+            if (initialTab >= 0) subTab[cur] = initialTab;
+            Action<string, int> go = null;
+            Action<int> selectPage = null;
+            Action<bool> renderNav = animate =>
+            {
+                bool dark = Sty.Lum(CardBg) < 128;
+                var fg = Frozen(dark ? Color.FromRgb(241, 241, 242) : Color.FromRgb(29, 29, 31), 255);
+                var muted = Frozen(dark ? Color.FromRgb(167, 167, 173) : Color.FromRgb(101, 101, 107), 255);
+                var orange = Frozen(dark ? Color.FromRgb(255, 154, 87) : Color.FromRgb(194, 85, 20), 255);
+                var guide = Frozen(fg.Color, dark ? (byte)0x2A : (byte)0x24);
+                var hover = Frozen(fg.Color, 0x0D);
+                navRail.Background = guide;
+                navList.Children.Clear();
+                foreach (var entry in SettingsSections)
+                {
+                    string key = entry[0];
+                    bool active = cur == key;
+                    var header = new Grid();
+                    var link = SettingsNavLink(entry[1], entry[2], false, active, fg, muted, orange, hover, () => go(key, -1));
+                    link.Margin = new Thickness(13, 0, 0, 0);
+                    link.Tag = "settings-section:" + key;
+                    header.Children.Add(link);
+                    if (active) header.Children.Add(new Border { Width = 2, Height = 17, Background = orange, CornerRadius = new CornerRadius(1),
+                        HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 0), IsHitTestVisible = false });
+                    navList.Children.Add(header);
+                    string[][] branch;
+                    if (!active || !SettingsBranches.TryGetValue(key, out branch)) continue;
+                    int selected = SettingsTab(key);
+                    var tree = new Grid { Margin = new Thickness(27, 0, 0, 6) };
+                    var paths = new Canvas { IsHitTestVisible = false };
+                    for (int i = 0; i < branch.Length; i++) paths.Children.Add(SettingsConnector(15 + 30 * i, guide));
+                    var route = SettingsConnector(15 + 30 * selected, orange);
+                    paths.Children.Add(route);
+                    var leaves = new StackPanel { Margin = new Thickness(15, 0, 0, 0) };
+                    for (int i = 0; i < branch.Length; i++)
+                    {
+                        int index = i;
+                        var child = SettingsNavLink(branch[i][0], branch[i][1], true, i == selected, fg, muted, orange, hover, () => go(key, index));
+                        child.Tag = "settings-section:" + key + "/" + index;
+                        leaves.Children.Add(child);
+                    }
+                    tree.Children.Add(paths); tree.Children.Add(leaves);
+                    navList.Children.Add(tree);
+                    if (animate && Motion)
+                    {
+                        var end = new Rect(0, 0, 14, 17 + 30 * selected);
+                        var clip = new RectangleGeometry(end);
+                        route.Clip = clip;
+                        clip.BeginAnimation(RectangleGeometry.RectProperty, new RectAnimation(new Rect(0, 0, 14, 0), end, TimeSpan.FromMilliseconds(210))
+                        { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
+                    }
+                }
+            };
             Action paintChrome = () =>
             {
                 w.Background = Frozen(CardBg, 255); w.Foreground = Frozen(CardFg, 255);
-                navSide.Background = Frozen(CardFg, 0x08); navSide.BorderBrush = Frozen(CardFg, 0x22);
+                navSide.Background = Frozen(Sty.Lum(CardBg) < 128 ? Color.FromRgb(34, 34, 36) : Color.FromRgb(248, 248, 248), 255);
+                navSide.BorderBrush = Frozen(CardFg, 0x22);
                 previewFooter.BorderBrush = Frozen(CardFg, 0x22);
-                selection.Background = Frozen(CardFg, 0x16); selectionBar.Fill = Frozen(AccentColor, 255); // выбранный раздел — ступень поверхности и тонкая линия акцента слева
                 searchHint.Foreground = Frozen(CardFg, 255); StyleInputs(searchBox, CardFg);
             };
-            Action<string> go = null;
-            go = key =>
+            go = (key, requestedTab) =>
             {
+                bool onlySubpage = !searching && cur == key && requestedTab >= 0 && selectPage != null;
                 if (searching) { searching = false; suppress = true; search.Text = ""; suppress = false; } // страница открыта — результаты поиска убираем
-                bool changed = key != cur;
+                bool changed = key != cur || (requestedTab >= 0 && requestedTab != SettingsTab(key));
+                if (requestedTab >= 0) subTab[key] = requestedTab;
                 var focused = Keyboard.FocusedElement as FrameworkElement;
                 var focusTag = focused == null ? null : focused.Tag as string;
                 cur = key; lastSection = key; double off = changed ? 0 : scroll.VerticalOffset;
                 paintChrome();
-                var marker = (TranslateTransform)selection.RenderTransform;
-                double y = Math.Max(0, Array.FindIndex(SettingsSections, item => item[0] == key)) * 40;
-                double from = marker.Y;
-                marker.BeginAnimation(TranslateTransform.YProperty, null); marker.Y = y;
-                if (changed && Motion) marker.BeginAnimation(TranslateTransform.YProperty, SettingsMotion(from, y, 200));
-                navList.Children.Clear();
-                foreach (var sct in SettingsSections)
+                renderNav(changed);
+                if (!onlySubpage)
                 {
-                    var k = sct[0];
-                    var item = NavItem(sct[2], sct[1], false, () => go(k));
-                    item.Height = 38; item.Tag = "settings-section:" + k;
-                    if (k == cur) System.Windows.Automation.AutomationProperties.SetItemStatus(item, "Выбран");
-                    navList.Children.Add(item);
+                    content.Children.Clear();
+                    settingsRefreshTheme = null;
+                    Action again = () => go(cur, -1);
+                    selectPage = null;
+                    switch (key)
+                    {
+                        case "look":
+                            SettingsLook(content, again, preview);
+                            selectPage = SettingsSubpages(content, SettingsBranches[key].Length, t => t == "Плотность заливки панели" || t == "Материал панели" ? 1 : t == "Предпросмотр и движение" ? 2 : t == "Тема" || t == "Свои темы" || t == "Акцент" || t == "Палитры" || t == "Расписание оформления" || t == "История оформления" ? 0 : -1);
+                            break;
+                        case "bar": SettingsBar(content, again, preview); break;
+                        case "monitors": SettingsMonitors(content, again); break;
+                        case "widgets": SettingsWidgets(content, again); break;
+                        case "connect":
+                            SettingsConnect(content);
+                            selectPage = SettingsSubpages(content, SettingsBranches[key].Length, t => t == "Погода · Open-Meteo" ? 1 : t == "Claude Code" ? 2 : t == "Музыка" ? 3 : -1);
+                            break;
+                        case "auto": content.Children.Add(SH("Автоматизации")); content.Children.Add(AutomationsBody()); break;
+                        case "notify": SettingsNotify(content, again); break;
+                        default: SettingsGeneral(content, again); break;
+                    }
+                    StyleInputs(content, CardFg);
                 }
-                content.Children.Clear();
-                settingsRefreshTheme = null;
-                Action again = () => go(cur);
-                switch (key)
-                {
-                    case "look":
-                        SettingsLook(content, again, preview);
-                        SplitTabs("look", content, new[] { "Темы и цвета", "Материал", "Движение" }, t => t == "Плотность заливки панели" || t == "Материал панели" ? 1 : t == "Предпросмотр и движение" ? 2 : t == "Тема" || t == "Свои темы" || t == "Акцент" || t == "Палитры" || t == "Расписание оформления" || t == "История оформления" ? 0 : -1);
-                        break;
-                    case "bar": SettingsBar(content, again, preview); break;
-                    case "monitors": SettingsMonitors(content, again); break;
-                    case "widgets": SettingsWidgets(content, again); break;
-                    case "connect": SettingsConnect(content); break;
-                    case "auto": content.Children.Add(SH("Автоматизации")); content.Children.Add(AutomationsBody()); break;
-                    case "notify": SettingsNotify(content, again); break;
-                    default: SettingsGeneral(content, again); break;
-                }
-                StyleInputs(content, CardFg);
+                if (selectPage != null) selectPage(SettingsTab(key));
                 preview(null);
                 scroll.UpdateLayout(); scroll.ScrollToVerticalOffset(off);
-                if (focusTag != null && focused != null && Window.GetWindow(focused) != w)
+                if (focusTag != null && focused != null && (!focused.IsLoaded || !focused.IsVisible || Window.GetWindow(focused) != w))
                 {
                     var match = SettingsFocusTarget(dock, focusTag);
                     if (match != null) match.Focus();
                 }
                 if (changed && Motion) content.BeginAnimation(OpacityProperty, SettingsMotion(0.55, 1, 160));
             };
-            var lookTabs = new[] { "Темы и цвета", "Материал", "Движение" };
             Action<string[]> jump = h =>
             {
-                int tab; if (int.TryParse(h[1], out tab) && tab >= 0) subTab[h[0]] = tab; // нужный подраздел «Оформления» выбираем до построения страницы
-                go(h[0]);
+                go(h[0], int.Parse(h[1]));
                 w.Dispatcher.BeginInvoke(new Action(() => { if (!HighlightSetting(content, h[2])) Notify("Этой настройки сейчас нет", "«" + h[2] + "» появляется при другой теме, материале или режиме — например, преломление есть только у стеклянных тем.", false, ""); }), System.Windows.Threading.DispatcherPriority.Loaded);
             };
             Action showResults = () =>
             {
                 var q = search.Text.Trim();
-                if (q == "") { if (searching) { searching = false; go(cur); } return; }
-                searching = true;
+                if (q == "") { if (searching) { searching = false; go(cur, -1); } return; }
+                searching = true; selectPage = null;
                 content.Children.Clear(); content.Children.Add(SH("Поиск"));
                 var hits = SearchSettings(q);
                 if (hits.Count == 0) content.Children.Add(SHint("Ничего не найдено. Попробуйте другое слово: «звук», «размер», «прозрачность»."));
                 foreach (var h0 in hits)
                 {
                     var h = h0; int tab; bool sub = int.TryParse(h[1], out tab) && tab >= 0;
-                    var path = Txt(SettingsSections.First(x => x[0] == h[0])[1] + (sub ? " › " + lookTabs[tab] : ""), 11, false); path.Opacity = 0.65;
+                    var path = Txt(SettingsSections.First(x => x[0] == h[0])[1] + (sub ? " › " + SettingsBranches[h[0]][tab][0] : ""), 11, false); path.Opacity = 0.65;
                     var card = SettingsRow(VS(Txt(h[2], 12.5, true), path));
                     content.Children.Add(Act(card, h[2], () => jump(h)));
                 }
@@ -1837,12 +1963,13 @@ namespace FlowBar
                 else if (e.Key == System.Windows.Input.Key.Enter) { var hh = SearchSettings(search.Text); if (hh.Count > 0) jump(hh[0]); e.Handled = true; }
             };
             w.PreviewKeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.F && Keyboard.Modifiers == ModifierKeys.Control) { search.Focus(); search.SelectAll(); e.Handled = true; } };
-            settingsGo = go;
-            settingsRefreshChrome = () => { paintChrome(); StyleInputs(content, CardFg); };
-            go(cur);
+            settingsGo = key => go(key, -1);
+            settingsNavigate = go;
+            settingsRefreshChrome = () => { paintChrome(); renderNav(false); StyleInputs(content, CardFg); };
+            go(cur, -1);
             w.Content = dock;
             w.Activated += (s, e) => preview(null);
-            w.Closed += (s, e) => { settings = null; settingsGo = null; settingsRefreshChrome = settingsRefreshTheme = null; refreshPreview = null; settingsPreviewMonitor = null; candidateTheme = null; candidateAppearance = null; };
+            w.Closed += (s, e) => { settings = null; settingsGo = null; settingsNavigate = null; settingsRefreshChrome = settingsRefreshTheme = null; refreshPreview = null; settingsPreviewMonitor = null; candidateTheme = null; candidateAppearance = null; };
             settings = w; w.Show(); w.Activate();
         }
         static void RestyleWindows(bool preserveAppearance = false)
@@ -1918,9 +2045,16 @@ namespace FlowBar
                     tint, () => key == selection(),
                     () => pick(key), over => { if (!commit.IsEnabled && !previewAfterSlide) queuePreview(over ? key : null, false); }, palette);
             };
-            var featuredShelf = shelf(FeaturedThemes.Select(t => card(t[0], false)).ToList());
-            featuredShelf.Unloaded += (s, e) => { commit.Stop(); hoverPreview.Stop(); };
-            c.Children.Add(featuredShelf);
+            // выбор стиля «миксер»: слева темы, справа материал, в центре превью сочетания; линии тянутся от выбранных слов
+            var mixKeys = FeaturedThemes.Select(t => t[0]).ToList(); var mixNames = FeaturedThemes.Select(t => t[1]).ToList();
+            if (!mixKeys.Contains(curKey) && Styles.ContainsKey(curKey)) { mixKeys.Add(curKey); mixNames.Add(ThemeName(curKey)); } // текущая тема не из основных — отдельной строкой
+            var mixer = new StyleMixer(mixKeys.ToArray(), mixNames.ToArray(), selection, pick,
+                (key, over) => { if (!commit.IsEnabled && !previewAfterSlide) queuePreview(over ? key : null, false); },
+                MaterialKeys, MaterialNames, () => Material,
+                key => { cfg["material"] = key; SaveCfg(); ClosePanels(); RebuildAll(); again(); });
+            refreshCards.Add(() => mixer.Repaint(true));
+            mixer.Unloaded += (s, e) => { commit.Stop(); hoverPreview.Stop(); };
+            c.Children.Add(mixer);
             var extraCards = Styles.Keys.Where(k => !FeaturedThemes.Any(t => t[0] == k) && !fileThemes.ContainsKey(k))
                 .Select(k => card(k, false)).ToList();
             var more = shelf(extraCards);
