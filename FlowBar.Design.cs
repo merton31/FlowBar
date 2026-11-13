@@ -851,14 +851,14 @@ namespace FlowBar
                     catch { }
                 live.NetVpn = vpn;
                 if (kind == 0 || level == 0)
-                    foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                    try { foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
                     {
                         if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback || ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel) continue;
                         bool gw = false; try { gw = ni.GetIPProperties().GatewayAddresses.Any(g => g.Address != null && !g.Address.Equals(System.Net.IPAddress.Any)); } catch { }
                         if (!gw) continue; // адаптеры виртуальных машин и VPN без шлюза не считаем подключением
                         if (kind == 0) { kind = ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? 2 : 1; name = ni.Name; }
                         level = Math.Max(level, 1); break;
-                    }
+                    } } catch { } // сбой чтения адаптеров не должен оставить connBusy взведённым
                 live.NetKind = kind; live.NetLevel = kind == 0 ? 0 : level; live.NetBars = bars; live.NetName = name; connBusy = false;
             });
         }
@@ -1248,10 +1248,10 @@ namespace FlowBar
                     {
                         watchRetry = true;
                         Task.Run(() => Program.StartWatch()).ContinueWith(t => Dispatcher.BeginInvoke(new Action(() => { watchRetry = false; if (t.Result) { WatchOk = true; SetTaskbar(false); All(b => { b.reserveKey = null; b.Place(); }); } })));
-                    }                    if (ticks % 5 == 3 && WatchOk && (Program.Watch == null || Program.Watch.HasExited))
+                    }                    if (ticks % 5 == 3 && WatchOk && !watchRetry && (Program.Watch == null || Program.Watch.HasExited))
                     {
-                        WatchOk = Program.StartWatch(); // сторож пропал — перезапускаем; не вышло — возвращаем панель Windows
-                        if (!WatchOk) { All(b => { b.reserveKey = null; b.Place(); }); Taskbar.Restore(false, false); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); }
+                        watchRetry = true; // сторож пропал — перезапускаем в фоне (ожидание до 20 с не должно вешать панель); не вышло — возвращаем панель Windows
+                        Task.Run(() => Program.StartWatch()).ContinueWith(t => Dispatcher.BeginInvoke(new Action(() => { watchRetry = false; WatchOk = !t.IsFaulted && t.Result; if (!WatchOk) { All(b => { b.reserveKey = null; b.Place(); }); Taskbar.Restore(false, false); Notify("Сторож перестал работать", "Панель Windows возвращена, чтобы не остаться без неё при сбое FlowBar.", true, "\uE7BA"); } })));
                     }
                     if (ticks % 600 == 0) pathCache.Clear(); // id процессов переиспользуются
                 }

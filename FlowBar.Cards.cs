@@ -101,7 +101,7 @@ namespace FlowBar
                 memV.Text = Gb(s.RamUsed) + " из " + Gb(s.RamTotal);
                 netV.Text = "↓ " + RateRu(s.Rx) + "   ↑ " + RateRu(s.Tx); hist();
                 tmpV.Text = double.IsNaN(s.Temp) ? "— (" + (s.TempNote ?? "нет данных") + ")" : Math.Round(s.Temp) + " °C · " + (s.TempNote ?? "");
-                upV.Text = Until(TimeSpan.FromMilliseconds(Environment.TickCount & int.MaxValue));
+                upV.Text = Until(TimeSpan.FromMilliseconds((double)GetTickCount64()));
                 status.Text = "Обновлено " + DateTime.Now.ToString("HH:mm:ss") + " · данные раз в секунду. Температура — датчик платы (ACPI), не ядра процессора.";
             };
             tick();
