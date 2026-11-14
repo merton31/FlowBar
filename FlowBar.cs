@@ -2212,11 +2212,11 @@ namespace FlowBar
                     { foreach (var w in closable) if (N.IsWindow(w.H)) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
             }
             // красная кнопка: принудительно завершает программу целиком (как «Снять задачу» в диспетчере задач). Только у запущенной программы
-            var pids = TaskPids(shown);
-            if (pids.Count > 0)
+            var tasks = TaskPids(shown);
+            if (tasks.Count > 0)
             {
                 string taskName = PinName(hp);
-                MenuSection(m, Item("Завершить задачу", () => EndTask(pids, taskName)));
+                MenuSection(m, Item("Завершить задачу", () => EndTask(tasks, taskName)));
             }
         }
 
@@ -2224,26 +2224,34 @@ namespace FlowBar
         static readonly HashSet<string> NoKill = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "explorer", "ApplicationFrameHost", "dwm", "csrss", "winlogon", "services", "svchost", "System", "FlowBar", "ShellExperienceHost", "StartMenuExperienceHost", "SearchHost", "TextInputHost" };
         internal static bool KillableProcess(string name, int pid) { return pid > 4 && pid != Process.GetCurrentProcess().Id && !NoKill.Contains(name ?? ""); }
-        // процессы окон программы без повторов и без защищённых; окно уже исчезло — пропускаем
-        static List<int> TaskPids(IEnumerable<Win> wins)
+        // процессы окон программы без повторов и без защищённых; окно уже исчезло — пропускаем.
+        // Вместе с номером запоминается время старта: пока меню открыто, процесс мог закрыться, а номер — достаться чужому процессу
+        static List<Tuple<int, DateTime>> TaskPids(IEnumerable<Win> wins)
         {
-            var res = new List<int>();
+            var res = new List<Tuple<int, DateTime>>();
             foreach (var w in wins)
             {
-                int pid = (int)w.Pid; if (res.Contains(pid)) continue;
-                try { using (var p = Process.GetProcessById(pid)) if (KillableProcess(p.ProcessName, pid)) res.Add(pid); } catch (Exception) { }
+                int pid = (int)w.Pid; if (res.Any(r => r.Item1 == pid)) continue;
+                try { using (var p = Process.GetProcessById(pid)) if (KillableProcess(p.ProcessName, pid)) res.Add(Tuple.Create(pid, p.StartTime)); } catch (Exception) { }
             }
             return res;
         }
+        // тот ли это процесс, что был при открытии меню: номер совпал, а время старта нет — номер достался чужому процессу
+        internal static bool SameProcess(int pid, DateTime started)
+        {
+            try { using (var p = Process.GetProcessById(pid)) return p.StartTime == started; } catch (Exception) { return false; }
+        }
         // taskkill /T /F: сам процесс и его дочерние (у браузеров окно принадлежит главному процессу). Не вышло (например, программа с правами администратора) — уведомление
-        void EndTask(List<int> pids, string name)
+        void EndTask(List<Tuple<int, DateTime>> tasks, string name)
         {
             Task.Run(() =>
             {
                 int failed = 0;
-                foreach (var pid in pids)
+                foreach (var t in tasks)
                     try
                     {
+                        int pid = t.Item1;
+                        if (!SameProcess(pid, t.Item2)) continue; // программа уже закрылась сама — завершать нечего, чужой процесс не трогаем
                         var psi = new ProcessStartInfo("taskkill.exe", "/PID " + pid + " /T /F") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
                         using (var p = Process.Start(psi)) { p.StandardOutput.ReadToEnd(); p.WaitForExit(8000); if (p.ExitCode != 0) failed++; }
                     }
@@ -4310,7 +4318,8 @@ namespace FlowBar
             if (!args.Contains("--fromshell") && InPackage())
                 try { Bar.Start(Assembly.GetExecutingAssembly().Location, string.Join(" ", args.Concat(new[] { "--fromshell" }).Select(a => "\"" + a + "\"")), null, true); return 0; }
                 catch (Exception ex) { Bar.Log(ex); }
-            if (!Bar.DemoMode && !args.Contains("--here") && (Setup.HandOver() || Setup.Elevate(args))) return 0;
+            // копия в ProgramFiles (её запускает задание с правами администратора) не «устанавливается» и не передаёт работу: она и есть рабочая
+            if (!Bar.DemoMode && !args.Contains("--here") && !Setup.IsAdminCopy && (Setup.HandOver() || Setup.Elevate(args))) return 0;
             return RunBar(me);
         }
 
@@ -4411,6 +4420,24 @@ namespace FlowBar
             fails += check(!Bar.KillableProcess("explorer", 5000) && !Bar.KillableProcess("FlowBar", 5000) && !Bar.KillableProcess("notepad", 4) &&
                 !Bar.KillableProcess("notepad", System.Diagnostics.Process.GetCurrentProcess().Id) && Bar.KillableProcess("notepad", 5000),
                 "End task: system processes and the bar itself are protected");
+            {
+                // права администратора: задание запускает копию из ProgramFiles; копия обновляется только при отличии файлов
+                var xml = Setup.AdminTaskXml("S-1-5-21-1", @"C:\Program Files\FlowBar\FlowBar.exe");
+                var tmpA = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "flowbar-admin-selftest-" + Guid.NewGuid().ToString("N")); var src = System.IO.Path.Combine(tmpA, "src"); var dst = System.IO.Path.Combine(tmpA, "dst");
+                System.IO.Directory.CreateDirectory(src);
+                bool noExe = !Setup.SyncAdminCopy(src, dst);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(src, "FlowBar.exe"), "exe v1"); System.IO.File.WriteAllText(System.IO.Path.Combine(src, "FlowBar.exe.config"), "cfg");
+                bool copied = Setup.SyncAdminCopy(src, dst) && System.IO.File.ReadAllText(System.IO.Path.Combine(dst, "FlowBar.exe")) == "exe v1" && !System.IO.File.Exists(System.IO.Path.Combine(dst, "flowbar-watch.exe"));
+                System.IO.File.WriteAllText(System.IO.Path.Combine(src, "FlowBar.exe"), "exe v2");
+                bool updated = Setup.SyncAdminCopy(src, dst) && System.IO.File.ReadAllText(System.IO.Path.Combine(dst, "FlowBar.exe")) == "exe v2";
+                try { System.IO.Directory.Delete(tmpA, true); } catch { }
+                var me = Process.GetCurrentProcess();
+                fails += check(xml.Contains("<Command>\"C:\\Program Files\\FlowBar\\FlowBar.exe\"</Command>") && xml.Contains("HighestAvailable") && xml.Contains("<WorkingDirectory>C:\\Program Files\\FlowBar</WorkingDirectory>") && !xml.Contains("AppData") &&
+                    noExe && copied && updated && Setup.AdminDir.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), StringComparison.OrdinalIgnoreCase),
+                    "Admin mode: task runs the copy in ProgramFiles, copy is synced only when files differ");
+                fails += check(Bar.SameProcess(me.Id, me.StartTime) && !Bar.SameProcess(me.Id, me.StartTime.AddSeconds(-5)) && !Bar.SameProcess(0x7FFFFFF0, DateTime.Now),
+                    "End task: a reused process id is not killed (start time must match)");
+            }
             var cleanReport = Bar.CleanBugReportLog(new[] {
                 "14.11.2026 13:01:00 System.IO.IOException: C:\\Users\\Test\\private.txt https://example.com/key",
                 "   в FlowBar.Bar.WriteLog(String content) в C:\\Users\\Test\\Source.cs:строка 21",

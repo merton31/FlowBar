@@ -23,6 +23,25 @@ namespace FlowBar
         public static string VersionText { get { return V3(Current); } }
         public static readonly string InstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "FlowBar");
         public static string InstalledExe { get { return Path.Combine(InstallDir, "FlowBar.exe"); } }
+        // Копия для запуска с правами администратора лежит в %ProgramFiles%: писать туда может только администратор. Задание планировщика с наивысшими
+        // правами запускает именно её. Из папки пользователя запускать нельзя: любая программа пользователя подменила бы exe и получила права администратора.
+        public static readonly string AdminDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "FlowBar");
+        public static string AdminExe { get { return Path.Combine(AdminDir, "FlowBar.exe"); } }
+        public static bool IsAdminCopy { get { return string.Equals(Path.GetFullPath(Path.GetDirectoryName(Self)).TrimEnd('\\'), Path.GetFullPath(AdminDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); } }
+        // копия в ProgramFiles совпадает с установленной: задание можно запускать без запроса UAC; после обновления версии расходятся — тогда один запрос UAC обновит копию
+        static bool AdminCopyCurrent() { return File.Exists(AdminExe) && SameFile(InstalledExe, AdminExe); }
+        // exe, config и сторож из src в dst; меняются только отличающиеся файлы (занятый работающий exe не трогаем без нужды). false — главного файла нет
+        internal static bool SyncAdminCopy(string srcDir, string dstDir)
+        {
+            Directory.CreateDirectory(dstDir);
+            foreach (var name in new[] { "FlowBar.exe", "FlowBar.exe.config", "flowbar-watch.exe" })
+            {
+                var s = Path.Combine(srcDir, name); var d = Path.Combine(dstDir, name);
+                if (!File.Exists(s)) { if (name == "FlowBar.exe") return false; continue; }
+                if (!SameFile(s, d)) Copy(s, d);
+            }
+            return true;
+        }
         static string Self { get { return Assembly.GetExecutingAssembly().Location; } }
         // по маркеру новая версия после запуска сообщает, что обновилась
         static string Marker { get { return Path.Combine(Bar.Dir, "updated.txt"); } }
@@ -155,14 +174,14 @@ namespace FlowBar
         {
             try
             {
-                if (!File.ReadAllLines(Path.Combine(Bar.Dir, "settings.txt")).Contains("admin=1")) return false;
+                if (!File.ReadAllLines(Path.Combine(Bar.Dir, "settings.txt")).Contains("admin=1")) { ForgetAdminTask(); return false; }
             }
             catch { return false; }
             if (Elevated) { if (IsInstalledCopy) System.Threading.Tasks.Task.Run(() => MakeTask()); return false; }
             if (ElevationType() != 3 || args.Contains("--fromtask")) return false; // не администратор (или задача не дала прав) — без прав, не зацикливаемся
             try
             {
-                if (IsInstalledCopy && Schtasks("/Run /TN FlowBar") == 0) return true;
+                if (IsInstalledCopy && AdminCopyCurrent() && Schtasks("/Run /TN FlowBar") == 0) return true;
                 Process.Start(new ProcessStartInfo(Self) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(Self) });
                 return true;
             }
@@ -181,26 +200,42 @@ namespace FlowBar
             using (var id = System.Security.Principal.WindowsIdentity.GetCurrent()) { int t, n; return GetTokenInformation(id.Token, 18, out t, 4, out n) ? t : 0; }
         }
 
+        // права выключены, а задание от прежних запусков осталось: оно запускает exe из папки пользователя с наивысшими правами. Пробуем снять;
+        // задание, созданное с правами администратора, обычному процессу может не поддаться — тогда его снимают командой из CHANGELOG
+        static void ForgetAdminTask()
+        {
+            if (Elevated) return;
+            System.Threading.Tasks.Task.Run(() => { try { if (Schtasks("/Query /TN FlowBar") == 0) { int rc = Schtasks("/Delete /F /TN FlowBar"); Bar.Info("прав администратора нет, старое задание FlowBar " + (rc == 0 ? "снято" : "не снято (нужны права администратора), код " + rc)); } } catch (Exception ex) { Bar.Log(ex); } });
+        }
+
         static int Schtasks(string a)
         {
             using (var p = Process.Start(new ProcessStartInfo("schtasks.exe", a) { UseShellExecute = false, CreateNoWindow = true })) { p.WaitForExit(15000); return p.HasExited ? p.ExitCode : -1; }
         }
 
-        // без триггеров (запускают автозапуск и ярлык), без ограничения времени и без остановки от батареи — иначе планировщик снимет панель через 3 дня
+        // XML задания: запускает exe из ProgramFiles с наивысшими правами; без триггеров (запускают автозапуск и ярлык), без ограничения времени
+        // и без остановки от батареи — иначе планировщик снимет панель через 3 дня
+        internal static string AdminTaskXml(string sid, string exe)
+        {
+            Func<string, string> x = System.Security.SecurityElement.Escape;
+            return "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
+                + "<RegistrationInfo><Description>FlowBar с правами администратора</Description></RegistrationInfo>\r\n"
+                + "<Principals><Principal id=\"Author\"><UserId>" + x(sid) + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n"
+                + "<Settings><MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
+                + "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>4</Priority></Settings>\r\n"
+                + "<Actions Context=\"Author\"><Exec><Command>\"" + x(exe) + "\"</Command><Arguments>--fromtask</Arguments><WorkingDirectory>" + x(Path.GetDirectoryName(exe)) + "</WorkingDirectory></Exec></Actions>\r\n</Task>\r\n";
+        }
+
         static void MakeTask()
         {
             try
             {
+                // сначала копия в ProgramFiles (мы с правами администратора), задание — только на неё. Не вышло с копией — старое задание снимаем, а не оставляем
+                if (!SyncAdminCopy(InstallDir, AdminDir)) { Bar.Log(new Exception("копия для запуска с правами в " + AdminDir + " не создана")); Schtasks("/Delete /F /TN FlowBar"); return; }
                 string sid; using (var id = System.Security.Principal.WindowsIdentity.GetCurrent()) sid = id.User.Value;
-                Func<string, string> x = System.Security.SecurityElement.Escape;
-                var xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
-                    + "<RegistrationInfo><Description>FlowBar с правами администратора</Description></RegistrationInfo>\r\n"
-                    + "<Principals><Principal id=\"Author\"><UserId>" + sid + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n"
-                    + "<Settings><MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
-                    + "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>4</Priority></Settings>\r\n"
-                    + "<Actions Context=\"Author\"><Exec><Command>\"" + x(InstalledExe) + "\"</Command><Arguments>--fromtask</Arguments><WorkingDirectory>" + x(InstallDir) + "</WorkingDirectory></Exec></Actions>\r\n</Task>\r\n";
-                var f = Path.Combine(Path.GetTempPath(), "flowbar-task.xml");
-                File.WriteAllText(f, xml, System.Text.Encoding.Unicode);
+                // XML лежит в ProgramFiles, а не во временной папке: туда обычная программа пользователя не пишет и не успеет подменить файл между записью и созданием задания
+                var f = Path.Combine(AdminDir, "task.xml");
+                File.WriteAllText(f, AdminTaskXml(sid, AdminExe), System.Text.Encoding.Unicode);
                 int rc = Schtasks("/Create /F /TN FlowBar /XML \"" + f + "\"");
                 try { File.Delete(f); } catch { }
                 if (rc != 0) Bar.Log(new Exception("schtasks /Create: код " + rc));
