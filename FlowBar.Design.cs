@@ -1540,7 +1540,7 @@ namespace FlowBar
             if (click != null) b.Invoke = () => { anchor = b; anchorAt = DateTime.Now; click(); };
             if (menu != null) b.Menu = x =>
             {
-                var cm = new ContextMenu { PlacementTarget = x };
+                var cm = new FlowMenu { PlacementTarget = x };
                 menu(cm);
                 if (cm.Items.Count > 0) cm.IsOpen = true;
             };
@@ -3176,7 +3176,7 @@ namespace FlowBar
         }
         ContextMenu BarMenu()
         {
-            var m = new ContextMenu();
+            var m = new FlowMenu();
             MenuSection(m, Item("Настройки FlowBar…", () => ShowSettings(null)), Item("Каталог виджетов…", () => ShowCatalog(this)));
             var layout = MenuBranch("Расположение панели");
             layout.Items.Add(Item(collapsed ? "Развернуть панель" : "Свернуть в значок", () => SetCollapsed(!collapsed)));
@@ -3249,6 +3249,17 @@ namespace FlowBar
                 }
             }
             return CallNextHookEx(mouseHook, code, w, l);
+        }
+        // Меню панели: потеря клавиатурного фокуса его не закрывает. Панель не активируется, и фокус то оказывается в меню, то уходит
+        // (замечено на втором мониторе и чаще сразу после запуска, пока активна другая программа) — тогда WPF закрывал меню через ~200 мс
+        // после открытия. Закрывает меню GuardMenu: клик мимо, смена активного окна, пункт, Esc.
+        sealed class FlowMenu : ContextMenu
+        {
+            public FlowMenu() { SetResourceReference(StyleProperty, typeof(ContextMenu)); } // стиль панели берётся по ключу ContextMenu, а у наследника своего типа ключа нет
+            protected override void OnIsKeyboardFocusWithinChanged(DependencyPropertyChangedEventArgs e)
+            {
+                if ((bool)e.NewValue) base.OnIsKeyboardFocusWithinChanged(e);
+            }
         }
         static void CloseGuarded()
         {

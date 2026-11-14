@@ -3064,7 +3064,7 @@ namespace FlowBar
                         var later = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Motion ? 420 : 0) }; later.Tick += (o2, e2) => { later.Stop(); render(); }; later.Start();
                     });
                     row.CornerRadius = new CornerRadius(8);
-                    row.ContextMenu = new ContextMenu();
+                    row.ContextMenu = new FlowMenu();
                     foreach (var choice in new[] { Tuple.Create("Сегодня", (DateTime?)DateTime.Today), Tuple.Create("Завтра", (DateTime?)DateTime.Today.AddDays(1)), Tuple.Create("Без срока", (DateTime?)null) })
                         row.ContextMenu.Items.Add(Item(choice.Item1, () => { t.Due = choice.Item2; SaveTodos(); render(); }));
                     // напомнить об этой задаче уведомлением
@@ -3591,7 +3591,7 @@ namespace FlowBar
                 var name = Txt(System.IO.Path.GetFileName(path.TrimEnd('\\')), 12, false); name.Margin = new Thickness(0, 0, 8, 0); g.Children.Add(name);
                 System.Windows.Automation.AutomationProperties.SetName(g, name.Text);
                 g.MouseEnter += (s, e) => name.TextDecorations = TextDecorations.Underline; g.MouseLeave += (s, e) => name.TextDecorations = null;
-                var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
+                var menu = new FlowMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
                 v.Children.Add(Act(g, name.Text, () => { if (panel != null) panel.Close(); Launch(path); }));
             };
 
@@ -3629,7 +3629,7 @@ namespace FlowBar
                         Background = new ImageBrush(bi) { Stretch = Stretch.UniformToFill } };
                     System.Windows.Automation.AutomationProperties.SetName(cell, "Скриншот " + System.IO.Path.GetFileName(path));
                     cell.Invoke = () => { if (panel != null) panel.Close(); Launch(path); }; cell.MouseLeftButtonUp += (s, e) => cell.Invoke();
-                    var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
+                    var menu = new FlowMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
                     grid.Children.Add(cell);
                 }
                 catch { } // повреждённый файл пропускаем
