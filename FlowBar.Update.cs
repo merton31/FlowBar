@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.6.11.0")]
-[assembly: AssemblyFileVersion("1.6.11.0")]
+[assembly: AssemblyVersion("1.6.11.1")]
+[assembly: AssemblyFileVersion("1.6.11.1")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
@@ -264,6 +264,15 @@ namespace FlowBar
         public const string DefaultRepo = "merton31/FlowBar";
         public static string Repo { get { return Bar.C("update.repo", DefaultRepo); } }
         public static bool RepoKnown { get { return !Repo.StartsWith("OWNER/"); } }
+
+        // Адрес страницы репозитория для кнопки в настройках. Имя «владелец/репозиторий» читается из settings.txt (update.repo),
+        // поэтому проверяется его вид: иначе в адрес мог бы попасть любой текст. null — адрес не задан или имя некорректно.
+        internal static string RepoUrlOf(string repo)
+        {
+            if (string.IsNullOrEmpty(repo) || repo.StartsWith("OWNER/")) return null;
+            return System.Text.RegularExpressions.Regex.IsMatch(repo, @"^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*$") ? "https://github.com/" + repo : null;
+        }
+        public static string RepoUrl { get { return RepoUrlOf(Repo); } }
         public class Release { public Version Ver; public string Tag, Asset, Url, Sha256, Page; }
 
         public static Release Latest()

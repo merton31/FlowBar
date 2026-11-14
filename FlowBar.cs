@@ -1801,7 +1801,7 @@ namespace FlowBar
             if (msg == ShellHookMsg && primary)
             {
                 int code = w.ToInt32();
-                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) All(b => b.lastKey = null); if (IsConsent(l)) BringConsent(l); }
+                if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) { All(b => b.lastKey = null); if (C("notify", "1") != "0" && !QuietNow) BounceApp(l); /* окно программы замигало — на скрытой панели подпрыгивает её значок */ } if (IsConsent(l)) BringConsent(l); }
                 else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
                 // активное окно сменилось — подложка переезжает сразу, а не при опросе раз в секунду
                 if (code == 4 || code == 0x8004) Dispatcher.BeginInvoke(new Action(() => All(b => b.RefreshApps())));
@@ -4362,6 +4362,15 @@ namespace FlowBar
         {
             Func<bool, string, int> check = (ok, name) => { Console.WriteLine((ok ? "OK   " : "FAIL ") + name); return ok ? 0 : 1; };
             int fails = 0;
+            var cleanReport = Bar.CleanBugReportLog(new[] {
+                "14.11.2026 13:01:00 System.IO.IOException: C:\\Users\\Test\\private.txt https://example.com/key",
+                "   в FlowBar.Bar.WriteLog(String content) в C:\\Users\\Test\\Source.cs:строка 21",
+                "   at System.IO.File.Open(String path)", "свободный текст журнала" });
+            fails += check(cleanReport == "System.IO.IOException\r\n  FlowBar.Bar.WriteLog" &&
+                Bar.BugReportEndpoint("https://example.com/bug-report") != null && Bar.BugReportEndpoint("http://example.com") == null &&
+                Bar.BugReportEndpoint("https://secret@example.com") == null && Bar.BugReportEndpoint("https://example.com/?key=abc") == null &&
+                Bar.ReadBugReportReceipt("{\"ok\":true,\"report_id\":\"FB-123\"}") == "FB-123",
+                "Bug report: safe log fields, HTTPS endpoint and delivery receipt");
             // обновление: резервная копия берёт личные файлы (и вложенные папки), но не кэш, журнал и прежние копии
             {
                 var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "flowbar-selftest-" + Guid.NewGuid().ToString("N"));
@@ -4599,6 +4608,13 @@ namespace FlowBar
                 && !Bar.PeekForwardWanted(false, true, true, true, false, 200, false, false, false) && !Bar.PeekForwardWanted(true, false, true, true, false, 200, false, false, false) && !Bar.PeekForwardWanted(true, true, false, true, false, 200, false, false, false)
                 && !Bar.PeekForwardWanted(true, true, true, false, false, 200, false, false, false) && !Bar.PeekForwardWanted(true, true, true, true, true, 200, false, false, false) && !Bar.PeekForwardWanted(true, true, true, true, false, 3000, false, false, false)
                 && !Bar.PeekForwardWanted(true, true, true, true, false, 200, true, false, false) && !Bar.PeekForwardWanted(true, true, true, true, false, 200, false, true, false) && !Bar.PeekForwardWanted(true, true, true, true, false, 200, false, false, true), "Peek forward: only when the panel does not help and the track after the next is unknown");
+            // конец трека: проход делается, только когда до конца осталось от 0,35 до 1,4 с, трек играет и не короче 15 с; позиция досчитывается по часам
+            fails += check(Bar.TrackEndingNow(true, 200, 201, 0) && Bar.TrackEndingNow(true, 198.5, 200, 0.2) && Bar.TrackEndingNow(true, 198, 200, 0.7) && !Bar.TrackEndingNow(true, 150, 200, 0) && !Bar.TrackEndingNow(true, 199.9, 200, 0)
+                && !Bar.TrackEndingNow(true, 198, 200, 1.9) && !Bar.TrackEndingNow(false, 199, 200, 0) && !Bar.TrackEndingNow(true, double.NaN, 200, 0) && !Bar.TrackEndingNow(true, 5, double.NaN, 0) && !Bar.TrackEndingNow(true, 8, 10, 0), "Track end: 0.35 to 1.4 s before the end");
+            // ссылка на репозиторий: только «владелец/репозиторий», без чужих адресов, пробелов, лишних частей и «..»
+            fails += check(Setup.RepoUrlOf("merton31/FlowBar") == "https://github.com/merton31/FlowBar" && Setup.RepoUrlOf("my-org/My_Repo.v2") == "https://github.com/my-org/My_Repo.v2"
+                && Setup.RepoUrlOf("OWNER/FlowBar") == null && Setup.RepoUrlOf("") == null && Setup.RepoUrlOf(null) == null && Setup.RepoUrlOf("a/b/c") == null && Setup.RepoUrlOf("https://evil.example/x") == null
+                && Setup.RepoUrlOf("a b/c") == null && Setup.RepoUrlOf("../x") == null && Setup.RepoUrlOf("x/..") == null && Setup.RepoUrlOf("a/b?c=1") == null && Setup.RepoUrlOf("a/b#c") == null, "Repository link: owner/name only");
             // шаблон переключателя разбирается без ошибок: опечатка в XAML иначе всплыла бы только при открытии настроек
             fails += check(Bar.SwitchTemplate() != null, "Switch template parses");
             // поиск по настройкам: слова запроса, регистр, пустой запрос, ничего не найдено, разделы индекса существуют

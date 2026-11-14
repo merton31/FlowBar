@@ -1043,6 +1043,7 @@ namespace FlowBar
                 s.CoverDirection = oldTrack != null && oldTrack == skipFrom && DateTime.UtcNow < skipUntil ? skipDirection : 1;
                 skipFrom = null;
             }
+            EnsureEndWatch();
             if (s.MusicTrack != oldTrack) NoteTrackChange();
             RememberMusicTrack(s);
             PollSpotifyNext(s);
@@ -1097,7 +1098,7 @@ namespace FlowBar
                     var tl = ss.GetTimelineProperties();
                     double dur = (tl.EndTime - tl.StartTime).TotalSeconds, pos = tl.Position.TotalSeconds;
                     if (smtcPlaying) pos += (DateTimeOffset.Now - tl.LastUpdatedTime).TotalSeconds;
-                    s.Dur = dur > 1 ? dur : double.NaN; s.Pos = dur > 1 ? Math.Max(0, Math.Min(dur, pos)) : double.NaN;
+                    s.Dur = dur > 1 ? dur : double.NaN; s.Pos = dur > 1 ? Math.Max(0, Math.Min(dur, pos)) : double.NaN; posAt = DateTime.UtcNow; // от этого момента позиция досчитывается по часам
                 }
                 catch { s.Pos = s.Dur = double.NaN; }
                 var p = await ss.TryGetMediaPropertiesAsync();
@@ -3358,6 +3359,107 @@ namespace FlowBar
             if (glassBg != null) glassBg.Shift(0, 0); foreach (var sb in sectionBackdrops) sb.Shift(0, 0); // подложка уже прозрачна — возвращаем на место к следующему показу
             frame.BeginAnimation(OpacityProperty, null);
             var tt = frame.RenderTransform as TranslateTransform; if (tt != null) tt.BeginAnimation(VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty, null);
+        }
+        // «Подпрыгивание» значка: панель автоскрыта и спрятана у края, а окно программы замигало (ей пришло уведомление) —
+        // из-за края выпрыгивает один значок этой программы, падает обратно и отскакивает ещё раз. Сама панель не двигается:
+        // значок рисуется в маленьком прозрачном окне у края экрана, в том месте, где он стоит на панели.
+        // Наверху значок задерживается (~1,5 с) и мигает, как мигающая плитка на панели. Если за это время вызвать панель, значок идёт на своё место.
+        static readonly HashSet<IntPtr> bouncing = new HashSet<IntPtr>(); // окна, чей значок сейчас прыгает: повторное мигание не плодит копии
+        internal static void BounceApp(IntPtr win) { All(b => b.BounceAppHere(win)); }
+        static Image FirstImage(DependencyObject d)
+        {
+            var im = d as Image; if (im != null && im.Source != null) return im;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++) { var r = FirstImage(VisualTreeHelper.GetChild(d, i)); if (r != null) return r; }
+            return null;
+        }
+        internal bool BounceAppHere(IntPtr win)
+        {
+            if (!AutoHide || !autoHidden || fsHidden || !Motion || frame == null || Visibility != Visibility.Hidden || bouncing.Contains(win)) return false;
+            FrameworkElement tile = null;
+            foreach (var kv in appWins) if (kv.Value.Any(q => q.H == win)) { appEls.TryGetValue(kv.Key, out tile); break; }
+            if (tile == null || tile.ActualWidth < 1 || PresentationSource.FromVisual(tile) == null) return false;
+            // значок ушёл за край прокрутки («…») — прыгать нечему
+            if (stripScroll != null && tile.IsDescendantOf(stripScroll))
+            {
+                var r = tile.TransformToAncestor(stripScroll).TransformBounds(new Rect(0, 0, tile.ActualWidth, tile.ActualHeight));
+                double seen = VerticalBar ? Math.Min(r.Bottom, stripScroll.ViewportHeight) - Math.Max(r.Top, 0) : Math.Min(r.Right, stripScroll.ViewportWidth) - Math.Max(r.Left, 0);
+                if (seen < (VerticalBar ? r.Height : r.Width) * 0.6) return false;
+            }
+            var src = FirstImage(tile); if (src == null) return false;
+            Point tl, br; try { tl = tile.PointToScreen(new Point(0, 0)); br = tile.PointToScreen(new Point(tile.ActualWidth, tile.ActualHeight)); } catch { return false; } // физические пиксели
+            double sc = MonScale, tw = tile.ActualWidth, th = tile.ActualHeight, s = VerticalBar ? tw : th; // s — размер плитки вдоль прыжка
+            int dir = (VerticalBar ? !LeftBar : !IsTop) ? 1 : -1; // сторона края: вниз и вправо — плюс, вверх и влево — минус
+            var mb = scr.Bounds;
+            // p — расстояние от края экрана до ближней к краю стороны плитки (вглубь экрана); у плитки на панели оно homeP, спрятанная плитка — при p = -s
+            double homeP = (VerticalBar ? (LeftBar ? tl.X - mb.Left : mb.Right - br.X) : (IsTop ? tl.Y - mb.Top : mb.Bottom - br.Y)) / sc;
+            double top = homeP + 0.9 * s; // вершина прыжка: выше того места, где плитка стоит на панели
+            double T = Math.Max(1.4 * s, top + s + 2); // длина окна вдоль прыжка: хватает и на вершину прыжка, и на дорогу до места на панели
+            int wpx = (int)Math.Round((VerticalBar ? T : tw) * sc), hpx = (int)Math.Round((VerticalBar ? th : T) * sc);
+            double cx = (tl.X + br.X) / 2, cy = (tl.Y + br.Y) / 2;
+            int x = VerticalBar ? (LeftBar ? mb.Left : mb.Right - wpx) : (int)Math.Max(mb.Left, Math.Min(mb.Right - wpx, cx - wpx / 2.0));
+            int y = VerticalBar ? (int)Math.Max(mb.Top, Math.Min(mb.Bottom - hpx, cy - hpx / 2.0)) : (IsTop ? mb.Top : mb.Bottom - hpx);
+            // плитка прижата к стороне окна, противоположной краю; положение p переводится в смещение от этого места
+            Func<double, double> toT = p => dir * (T - s - p);
+            var tt = new TranslateTransform(); var axis = VerticalBar ? TranslateTransform.XProperty : TranslateTransform.YProperty;
+            if (VerticalBar) tt.X = toT(-s); else tt.Y = toT(-s); // до первого кадра плитка уже спрятана за краем
+            // как мигающая плитка на панели: оранжевая подложка (на время прыжка пульсирует) и тот же значок
+            var orange = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); var bg = new SolidColorBrush(orange);
+            var icon = new Image { Source = src.Source, Width = src.ActualWidth > 0 ? src.ActualWidth : IconPx, Height = src.ActualHeight > 0 ? src.ActualHeight : IconPx,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, SnapsToDevicePixels = true };
+            RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
+            var item = new Border { Width = tw, Height = th, CornerRadius = tile is Border ? ((Border)tile).CornerRadius : new CornerRadius(8), Background = bg, Child = icon, RenderTransform = tt,
+                HorizontalAlignment = VerticalBar ? (dir > 0 ? HorizontalAlignment.Left : HorizontalAlignment.Right) : HorizontalAlignment.Center,
+                VerticalAlignment = VerticalBar ? VerticalAlignment.Center : (dir > 0 ? VerticalAlignment.Top : VerticalAlignment.Bottom) };
+            var host = new Grid(); host.Children.Add(item);
+            var w = new Window { WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false, ShowActivated = false,
+                ResizeMode = ResizeMode.NoResize, Width = wpx / sc, Height = hpx / sc, WindowStartupLocation = WindowStartupLocation.Manual, Left = x / sc, Top = y / sc, Content = host };
+            // не берёт фокус, не виден в Alt+Tab и пропускает мышь сквозь себя
+            w.SourceInitialized += (sI, eI) => { var h = new WindowInteropHelper(w).Handle; N.SetWindowLongPtr(h, -20, new IntPtr(N.GetWindowLongPtr(h, -20).ToInt64() | 0x08000000 | 0x80 | 0x20)); N.SetWindowPos(h, IntPtr.Zero, x, y, wpx, hpx, 0x4 | 0x10); };
+            bouncing.Add(win);
+            DispatcherTimer watch = null, guard = null; bool closed = false;
+            Action done = () =>
+            {
+                if (closed) return; closed = true; bouncing.Remove(win);
+                if (watch != null) watch.Stop(); if (guard != null) guard.Stop();
+                try { w.Close(); } catch { }
+            };
+            Func<int, KeyTime> at = ms => KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(ms));
+            var kf = new DoubleAnimationUsingKeyFrames();
+            kf.KeyFrames.Add(new EasingDoubleKeyFrame(toT(-s), at(0)));
+            kf.KeyFrames.Add(new EasingDoubleKeyFrame(toT(top), at(450), new QuarticEase { EasingMode = EasingMode.EaseOut })); // выпрыгивание: резкий взлёт, у вершины замедляется
+            kf.KeyFrames.Add(new EasingDoubleKeyFrame(toT(top), at(1950)));                                                    // держится наверху и мигает
+            kf.KeyFrames.Add(new EasingDoubleKeyFrame(toT(-s), at(2330), new CubicEase { EasingMode = EasingMode.EaseIn }));    // падение с ускорением
+            kf.KeyFrames.Add(new EasingDoubleKeyFrame(toT(-0.35 * s), at(2450), new CubicEase { EasingMode = EasingMode.EaseOut })); // отскок
+            kf.KeyFrames.Add(new EasingDoubleKeyFrame(toT(-s), at(2580), new CubicEase { EasingMode = EasingMode.EaseIn }));
+            kf.Completed += (sC, eC) => done();
+            bool settled = false;
+            // панель вызвали, пока значок поднят: он идёт на своё место на панели и растворяется, когда панель уже проявилась
+            watch = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+            watch.Tick += (sW, eW) =>
+            {
+                if (settled || autoHidden) return;
+                settled = true; watch.Stop();
+                double cur = (double)tt.GetValue(axis); // текущее положение с учётом идущей анимации
+                bg.BeginAnimation(SolidColorBrush.ColorProperty, null); bg.Color = orange; // пульсация кончается на цвете плитки панели
+                var home = new DoubleAnimation(cur, toT(homeP), TimeSpan.FromMilliseconds(220)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+                home.Completed += (sH, eH) =>
+                {
+                    var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(140)) { BeginTime = TimeSpan.FromMilliseconds(120) }; // даём настоящей плитке проявиться
+                    fade.Completed += (sF, eF) => done();
+                    w.BeginAnimation(OpacityProperty, fade);
+                };
+                tt.BeginAnimation(axis, home);
+            };
+            watch.Start();
+            w.ContentRendered += (sR, eR) =>
+            {
+                tt.BeginAnimation(axis, kf);
+                bg.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(orange, Color.FromArgb(0xD0, 0xF0, 0x90, 0x20), TimeSpan.FromMilliseconds(380)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever });
+            };
+            guard = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(5000) }; // если анимация не дошла до конца, окно всё равно закроется
+            guard.Tick += (sG, eG) => done(); guard.Start();
+            w.Show();
+            return true;
         }
         void ApplyVis()
         {

@@ -143,17 +143,32 @@ namespace FlowBar
             var ctr = HS(prevB, Mg(play, 10, 0, 10, 0), nextB);
             ctr.HorizontalAlignment = HorizontalAlignment.Center; ctr.Margin = new Thickness(0, 8, 0, 4); body.Children.Add(ctr);
             // громкость самого плеера (его сеанс в микшере Windows); общая громкость не меняется
-            var volIcon = G("", 14); volIcon.Opacity = 0.7;
+            var volSess = new List<Audio.MixerSession>(); bool volSync = false; // сеансы плеера в микшере: обновляются раз в секунду в tick, volSync — «значение поставили мы, а не пользователь»
             var vol = new ElasticSlider { Minimum = 0, Maximum = 100, Width = 250, VerticalAlignment = VerticalAlignment.Center, IsMoveToPointEnabled = true };
             System.Windows.Automation.AutomationProperties.SetName(vol, "Громкость плеера");
+            // Значок громкости — кнопка «без звука» для плеера (заглушается его сеанс в микшере, общий звук Windows не трогаем).
+            // Если плеер уже молчит (заглушен или ползунок на нуле) — кнопка возвращает звук; нулевую громкость поднимает до половины, чтобы звук был слышен.
+            var volBtn = RoundBtn("", 30, false, () =>
+            {
+                if (volSess.Count == 0) return;
+                bool silent = volSess.All(x => x.Muted) || vol.Value < 1;
+                double back = Math.Max(volSess.Max(x => (double)x.Volume) * 100, 0);
+                if (back < 5) back = 50;
+                foreach (var x in volSess)
+                {
+                    if (silent) { x.SetMute(false); if (x.Volume < 0.05f) x.SetVolume(0.5f); }
+                    else x.SetMute(true);
+                }
+                volSync = true; vol.Value = silent ? back : 0; volSync = false; // результат виден сразу, не через секунду
+            }, "Без звука — только плеер");
+            var volIcon = (TextBlock)volBtn.Child;
             var volPct = Txt("", 11, false); volPct.Text = "0%"; volPct.Width = 40; volPct.Opacity = 0.7; volPct.TextAlignment = TextAlignment.Right;
-            var volRow = HS(volIcon, Mg(vol, 10, 0, 6, 0), volPct); volRow.HorizontalAlignment = HorizontalAlignment.Center; volRow.Margin = new Thickness(0, 4, 0, 2); volRow.Visibility = Visibility.Collapsed;
+            var volRow = HS(volBtn, Mg(vol, 10, 0, 6, 0), volPct); volRow.HorizontalAlignment = HorizontalAlignment.Center; volRow.Margin = new Thickness(0, 4, 0, 2); volRow.Visibility = Visibility.Collapsed;
             volRow.ToolTip = "Громкость только этого плеера — общая громкость Windows не меняется";
             body.Children.Add(volRow);
-            var volSess = new List<Audio.MixerSession>(); bool volSync = false;
             vol.ValueChanged += (o, e) =>
             {
-                volPct.Text = Math.Round(e.NewValue) + "%"; volIcon.Text = e.NewValue < 1 ? "" : "";
+                volPct.Text = Math.Round(e.NewValue) + "%"; volIcon.Text = e.NewValue < 1 ? "" : ""; // значок: молчит или звучит
                 if (volSync) return;
                 foreach (var x in volSess) { if (x.Muted && e.NewValue >= 1) x.SetMute(false); x.SetVolume((float)(e.NewValue / 100)); }
             };
@@ -199,6 +214,9 @@ namespace FlowBar
                 status.Text = s.MediaError != null ? "Источник недоступен: " + s.MediaError : s.Sessions.Count > 1 ? "Плееров: " + s.Sessions.Count : "";
                 volSess = PlayerSessions(s);
                 volRow.Visibility = volSess.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                bool silentNow = volSess.Count > 0 && (volSess.All(x => x.Muted) || vol.Value < 1);
+                string muteTip = silentNow ? "Включить звук плеера" : "Без звука — только плеер";
+                volBtn.ToolTip = muteTip; System.Windows.Automation.AutomationProperties.SetName(volBtn, muteTip);
                 if (volSess.Count > 0 && !vol.IsMouseCaptureWithin)
                 {
                     var v = volSess.Max(x => x.Muted ? 0 : x.Volume) * 100.0;
@@ -1330,6 +1348,7 @@ namespace FlowBar
             new[] { "general", "-1", "Закрепления", "закреплённые перенести закрепления программа" },
             new[] { "general", "-1", "Данные", "папка данных отчёт для разработчика журнал ошибка" },
             new[] { "general", "-1", "Код настроек", "поделиться экспорт импорт скопировать код перенос настроек" },
+            new[] { "general", "-1", "Сообщить об ошибке", "баг репорт связаться разработчик отчёт журнал логи" },
             new[] { "general", "-1", "Клавиатура", "горячие клавиши сочетания" },
             new[] { "general", "-1", "Панель Windows", "вернуть панель виндовс выйти" },
             new[] { "auto", "-1", "Автоматизации", "правила сценарии тихие часы пауза музыки" }
@@ -2266,7 +2285,7 @@ namespace FlowBar
             foreach (var r in ClRows) { var k = r[0]; c.Children.Add(CheckRow(r[1], null, ClSel.Contains(k), on => SetClRow(k, on))); }
             item("Codex", Directory.Exists(CodexLimits.Root) ? "Найден: " + CodexLimits.Root : "Не найден на этом компьютере", "Лимиты берутся из журналов Codex CLI.", null);
             item("Музыка", "Системное управление медиа Windows", "Работает со Spotify, браузерами и другими плеерами без настройки.", null);
-            c.Children.Add(SwitchRow("Заглядывать в следующий трек при запуске", "Если панель «Сейчас играет» в Spotify закрыта, при вашем нажатии «вперёд» в FlowBar и при первом проигрывании после запуска Spotify или ПК, он на секунду переключает вперёд и сразу назад, чтобы узнать следующий трек и его обложку. Звук плеера на это время выключается, поэтому новый трек начинается с небольшой задержкой, но без повтора. Не трогает длинные записи.", C("music.peek", "1") == "1",
+            c.Children.Add(SwitchRow("Заглядывать в следующий трек при запуске", "Если панель «Сейчас играет» в Spotify закрыта, при вашем нажатии «вперёд» в FlowBar, за секунду до конца трека и при первом проигрывании после запуска Spotify или ПК, он на секунду переключает вперёд и сразу назад, чтобы узнать следующий трек и его обложку. Звук плеера на это время выключается, поэтому между треками возможна короткая пауза, но без повтора. Не трогает длинные записи.", C("music.peek", "1") == "1",
                 v => { cfg["music.peek"] = v ? "1" : "0"; SaveCfg(); }));
             c.Children.Add(SwitchRow("Обложка следующего трека Spotify", "Название следующего трека читается из окна Spotify, поэтому справа в нём должна быть открыта панель «Сейчас играет». Обложку FlowBar запрашивает у Spotify по идентификатору трека, вход в аккаунт и ключи не нужны.", SpotifyNextOn,
                 v => { cfg["music.next"] = v ? "1" : "0"; SaveCfg(); spotifyNext = null; nextPolledKey = null; All(b => b.Render()); }));
@@ -2390,6 +2409,15 @@ namespace FlowBar
                 }, true);
                 inst.Visibility = Visibility.Collapsed; inst.Margin = new Thickness(8, 0, 0, 0);
                 var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 4) }; row.Children.Add(chk); row.Children.Add(inst);
+                // ссылка на репозиторий — рядом с обновлением: там же выпуски, описание и исходники. Нет корректного адреса — кнопки нет
+                var repoUrl = Setup.RepoUrl;
+                if (repoUrl != null)
+                {
+                    var repoLink = Btn("Репозиторий на GitHub", () => Launch(repoUrl)); repoLink.Margin = new Thickness(8, 0, 0, 0);
+                    repoLink.ToolTip = repoUrl;
+                    System.Windows.Automation.AutomationProperties.SetName(repoLink, "Открыть репозиторий FlowBar на GitHub");
+                    row.Children.Add(repoLink);
+                }
                 c.Children.Add(row); c.Children.Add(upSt);
                 c.Children.Add(SwitchRow("Сообщать о новой версии", "Раз в несколько часов FlowBar проверяет GitHub и показывает уведомление с кнопкой «Установить».", C("update.notify", "1") == "1", v => { cfg["update.notify"] = v ? "1" : "0"; SaveCfg(); }));
             }
@@ -2406,8 +2434,8 @@ namespace FlowBar
             c.Children.Add(CardActions(imp, pick));
             c.Children.Add(SSub("Данные"));
             c.Children.Add(SHint("Настройки, задачи, заметки, календари и экранное время хранятся в " + Dir));
-            c.Children.Add(CardActions(Btn("Открыть папку данных", () => Launch(Dir)), Btn("Отчёт для разработчика", SaveReport)));
-            c.Children.Add(SHint("Если что-то работает не так, нажмите «Отчёт для разработчика» и пришлите файл с рабочего стола. В нём версия, Windows, мониторы, настройки и журнал ошибок; город и ссылки скрыты."));
+            c.Children.Add(CardActions(Btn("Открыть папку данных", () => Launch(Dir)), Btn("Сообщить об ошибке", ShowBugReport)));
+            c.Children.Add(SHint("Опишите проблему и проверьте диагностику перед отправкой. Отчёт можно сохранить в файл."));
             c.Children.Add(SSub("Код настроек"));
             c.Children.Add(SHint("Короткий текст, по которому вид и настройки панели переносятся на другой компьютер: тема, цвета, размер, положение, модули. Без города, ссылок и путей. Скопируйте код и отправьте — получатель нажимает «Применить код из буфера»."));
             var shareNote = SHint("");
@@ -2624,7 +2652,7 @@ namespace FlowBar
 
         // ---------- команды извне: --open и снимки для приёмки ----------
         static readonly uint ShotMsg = N.RegisterWindowMessage("FlowBarShot"), OpenMsg = N.RegisterWindowMessage("FlowBarOpen");
-        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump", "report", "news", "mixer" };
+        public static readonly string[] OpenNames = { "", "settings", "catalog", "system", "music", "calendar", "notify", "weather", "close", "screen", "look", "bar", "monitors", "widgets", "connect", "notes", "todos", "storage", "temp", "wifi", "bluetooth", "quick", "fold", "unfold", "quit", "currency", "traydump", "report", "news", "mixer", "bugreport" };
         void OpenByCode(int code, int barIndex)
         {
             var b = barIndex > 0 && barIndex <= bars.Count ? bars.OrderByDescending(x => x.primary).ElementAt(barIndex - 1) : this;
@@ -2635,6 +2663,7 @@ namespace FlowBar
                 case "quit": ExitWhy = "команда quit от другого запуска FlowBar (обновление или --open quit)"; Application.Current.Shutdown(); break;
                 case "currency": b.ShowFx(); break;
                 case "report": SaveReport(); break;
+                case "bugreport": ShowBugReport(); break;
                 case "news": b.ShowNews(); break;
                 case "mixer": b.ShowAppMixer(); break;
                 case "traydump": try { File.WriteAllLines(F("tray-list.txt"), Tray.Dump()); } catch (Exception ex) { Log(ex); } break; // обновление: новая версия бережно закрывает старую
