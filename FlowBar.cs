@@ -4414,8 +4414,16 @@ namespace FlowBar
             var cleanReport = Bar.CleanBugReportLog(new[] {
                 "14.11.2026 13:01:00 System.IO.IOException: C:\\Users\\Test\\private.txt https://example.com/key",
                 "   в FlowBar.Bar.WriteLog(String content) в C:\\Users\\Test\\Source.cs:строка 21",
-                "   at System.IO.File.Open(String path)", "свободный текст журнала" });
-            fails += check(cleanReport == "System.IO.IOException\r\n  FlowBar.Bar.WriteLog" &&
+                "   at System.IO.File.Open(String path)", "свободный текст журнала",
+                "14.11.2026 13:01:05 System.IO.IOException: D:\\Other\\file.txt mail@example.com",
+                "   в FlowBar.Bar.WriteLog(String content)",
+                "14.11.2026 16:18:34 System.InvalidOperationException: Нельзя вызвать Close во время закрытия окна.",
+                "   в System.Windows.Window.VerifyNotClosing()", "   в System.Windows.Window.InternalClose(Boolean shutdown)",
+                "   в FlowBar.Bar.MenuMotion.TileBurst.Frame(Object sender, EventArgs e)", "   в MS.Win32.HwndWrapper.WndProc(IntPtr hwnd)" });
+            // пути, адреса и почта скрыты; повтор той же ошибки схлопнут в «×2»; у чужой ошибки видна верхняя строка стека
+            fails += check(cleanReport == "14.11.2026 13:01:05 ×2 System.IO.IOException: <скрыто> <скрыто>\r\n  FlowBar.Bar.WriteLog\r\n" +
+                "14.11.2026 16:18:34 System.InvalidOperationException: Нельзя вызвать Close во время закрытия окна.\r\n" +
+                "  System.Windows.Window.VerifyNotClosing\r\n  FlowBar.Bar.MenuMotion.TileBurst.Frame" &&
                 Bar.BugReportEndpoint("https://example.com/bug-report") != null && Bar.BugReportEndpoint("http://example.com") == null &&
                 Bar.BugReportEndpoint("https://secret@example.com") == null && Bar.BugReportEndpoint("https://example.com/?key=abc") == null &&
                 Bar.ReadBugReportReceipt("{\"ok\":true,\"report_id\":\"FB-123\"}") == "FB-123",
