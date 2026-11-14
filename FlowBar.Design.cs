@@ -1344,6 +1344,7 @@ namespace FlowBar
             bool glass = C("menus", "matte") == "glass";
             string bg = hex(CardBg, glass ? (byte)0xCC : (byte)0xFA), edge = hex(CardFg, 0x26), hover = hex(CardFg, 0x19), acc = hex(AccentColor, 0xFF);
             string danger = CardFg.R + CardFg.G + CardFg.B > 380 ? "#FFA496" : "#AC3024";
+            string killFg = CardFg.R + CardFg.G + CardFg.B > 380 ? "#FF6A5F" : "#C4271C"; // текст красной кнопки «Завершить задачу»
             const string ns = "xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' ";
             // поверхность меню: тень — отдельный слой позади, без эффекта на тексте
             Func<string, string> surface = inner =>
@@ -1369,6 +1370,9 @@ namespace FlowBar
                 "<Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Bd' Property='Background' Value='" + hover + "'/></Trigger>" +
                 "<Trigger Property='IsChecked' Value='True'><Setter TargetName='Chk' Property='Visibility' Value='Visible'/><Setter TargetName='Ico' Property='Visibility' Value='Collapsed'/></Trigger>" +
                 "<Trigger Property='Tag' Value='danger'><Setter Property='Foreground' Value='" + danger + "'/></Trigger>" +
+                "<Trigger Property='Tag' Value='kill'><Setter TargetName='Bd' Property='Background' Value='#33FF453A'/><Setter Property='Foreground' Value='" + killFg + "'/></Trigger>" +
+                "<MultiTrigger><MultiTrigger.Conditions><Condition Property='Tag' Value='kill'/><Condition Property='IsHighlighted' Value='True'/></MultiTrigger.Conditions>" +
+                "<Setter TargetName='Bd' Property='Background' Value='#FFE5382E'/><Setter Property='Foreground' Value='White'/></MultiTrigger>" +
                 "<Trigger Property='Role' Value='SubmenuHeader'><Setter TargetName='Arrow' Property='Visibility' Value='Visible'/></Trigger>" +
                 "<Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.4'/></Trigger>" +
                 "</ControlTemplate.Triggers></ControlTemplate>");

@@ -1652,6 +1652,7 @@ namespace FlowBar
         {
             var it = MenuBranch(header);
             if (check.HasValue) { it.IsCheckable = true; it.IsChecked = check.Value; }
+            if (header.StartsWith("Завершить задачу")) it.Tag = "kill"; else
             if (header.StartsWith("Закрыть окна") || header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
             // сначала снять перехват мыши: действие может надолго занять панель (запуск программы с правами администратора, например
             // Диспетчера задач), а с включённым перехватом каждое движение мыши во всей системе ждало бы панель
@@ -2067,6 +2068,8 @@ namespace FlowBar
             if (ws.Count == 0 && remote > 0)
                 tile.ToolTip = name + "\n" + WindowIndicatorStatus(local, remote) + "\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws.Count == 0 && remote > 1 ? Elsewhere(path) : ws);
+            // меню по правой кнопке важнее предпросмотра: предпросмотр закрывается в момент нажатия и не мешает, пока меню открывается и открыто
+            tile.PreviewMouseRightButtonDown += (s, e) => { previewBlockUntil = DateTime.Now.AddSeconds(2); ClosePreview(); };
             tile.AllowDrop = true;
             // файл тянут над значком открытой программы — её окно сразу выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
             DispatcherTimer spring = null;
@@ -2208,6 +2211,45 @@ namespace FlowBar
                 MenuSection(m, Item(closeLabel, () =>
                     { foreach (var w in closable) if (N.IsWindow(w.H)) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
             }
+            // красная кнопка: принудительно завершает программу целиком (как «Снять задачу» в диспетчере задач). Только у запущенной программы
+            var pids = TaskPids(shown);
+            if (pids.Count > 0)
+            {
+                string taskName = PinName(hp);
+                MenuSection(m, Item("Завершить задачу", () => EndTask(pids, taskName)));
+            }
+        }
+
+        // «Завершить задачу» не трогает системные процессы, оболочку Windows и саму панель: их гибель роняет сеанс или саму кнопку
+        static readonly HashSet<string> NoKill = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "explorer", "ApplicationFrameHost", "dwm", "csrss", "winlogon", "services", "svchost", "System", "FlowBar", "ShellExperienceHost", "StartMenuExperienceHost", "SearchHost", "TextInputHost" };
+        internal static bool KillableProcess(string name, int pid) { return pid > 4 && pid != Process.GetCurrentProcess().Id && !NoKill.Contains(name ?? ""); }
+        // процессы окон программы без повторов и без защищённых; окно уже исчезло — пропускаем
+        static List<int> TaskPids(IEnumerable<Win> wins)
+        {
+            var res = new List<int>();
+            foreach (var w in wins)
+            {
+                int pid = (int)w.Pid; if (res.Contains(pid)) continue;
+                try { using (var p = Process.GetProcessById(pid)) if (KillableProcess(p.ProcessName, pid)) res.Add(pid); } catch (Exception) { }
+            }
+            return res;
+        }
+        // taskkill /T /F: сам процесс и его дочерние (у браузеров окно принадлежит главному процессу). Не вышло (например, программа с правами администратора) — уведомление
+        void EndTask(List<int> pids, string name)
+        {
+            Task.Run(() =>
+            {
+                int failed = 0;
+                foreach (var pid in pids)
+                    try
+                    {
+                        var psi = new ProcessStartInfo("taskkill.exe", "/PID " + pid + " /T /F") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                        using (var p = Process.Start(psi)) { p.StandardOutput.ReadToEnd(); p.WaitForExit(8000); if (p.ExitCode != 0) failed++; }
+                    }
+                    catch (Exception ex) { Log(ex); failed++; }
+                if (failed > 0) Dispatcher.BeginInvoke(new Action(() => Notify("Не удалось завершить «" + name + "»", "Возможно, программа запущена от имени администратора.", true)));
+            });
         }
 
         static MenuItem TakeOnlyMenuItem(MenuItem parent)
@@ -2218,11 +2260,14 @@ namespace FlowBar
         }
 
         // ---------- миниатюры окон ----------
+        // пока открыто контекстное меню или только что нажата правая кнопка на значке, предпросмотр окон не показывается
+        DateTime previewBlockUntil = DateTime.MinValue;
+        bool PreviewBlocked { get { return menusOpen > 0 || DateTime.Now < previewBlockUntil; } }
         void HoverStart(Border tile, List<Win> ws)
         {
-            if (ws.Count == 0) return;
+            if (ws.Count == 0 || PreviewBlocked) return;
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
-            t.Tick += (s, e) => { t.Stop(); if (!dragging && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
+            t.Tick += (s, e) => { t.Stop(); if (!dragging && !PreviewBlocked && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
             t.Start();
         }
         bool previewPinned;
@@ -2268,6 +2313,7 @@ namespace FlowBar
 
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
+            if (!pinned && PreviewBlocked) return; // меню по правой кнопке в приоритете
             ClosePreview(); previewPinned = pinned; TipHide(true);
             var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
@@ -4362,6 +4408,9 @@ namespace FlowBar
         {
             Func<bool, string, int> check = (ok, name) => { Console.WriteLine((ok ? "OK   " : "FAIL ") + name); return ok ? 0 : 1; };
             int fails = 0;
+            fails += check(!Bar.KillableProcess("explorer", 5000) && !Bar.KillableProcess("FlowBar", 5000) && !Bar.KillableProcess("notepad", 4) &&
+                !Bar.KillableProcess("notepad", System.Diagnostics.Process.GetCurrentProcess().Id) && Bar.KillableProcess("notepad", 5000),
+                "End task: system processes and the bar itself are protected");
             var cleanReport = Bar.CleanBugReportLog(new[] {
                 "14.11.2026 13:01:00 System.IO.IOException: C:\\Users\\Test\\private.txt https://example.com/key",
                 "   в FlowBar.Bar.WriteLog(String content) в C:\\Users\\Test\\Source.cs:строка 21",
