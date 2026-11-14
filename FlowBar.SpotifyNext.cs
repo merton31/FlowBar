@@ -346,5 +346,41 @@ namespace FlowBar
             var queued = peekQueued.ToList(); peekQueued.Clear(); // кнопки, нажатые во время прохода, — теперь
             foreach (var q in queued) MediaCmd(q.Item1, q.Item2);
         }
+
+        // ---- Конец трека ----
+        // Когда трек доходит до конца сам, следующим стартует B, и повтор его начала при заглядывании был бы слышен. Поэтому, если после B ещё
+        // неизвестно, что играет, проход A → B → C → B делается за секунду до конца A, под выключенным звуком: B начинается один раз с начала.
+        // Позиция приходит из Windows раз в секунду, поэтому между обновлениями она досчитывается по часам (posAt — момент последнего обновления).
+        static DateTime posAt = DateTime.MinValue;
+        static string endHandledKey; // трек, для которого проход у конца уже запускали: на один трек — один раз
+        static System.Windows.Threading.DispatcherTimer endWatch;
+
+        // до конца осталось от 0,35 до 1,4 с: раньше — отрежем слишком много конца трека, позже — Spotify сам успеет переключиться
+        internal static bool TrackEndingNow(bool playing, double pos, double dur, double secondsSincePos)
+        {
+            if (!playing || double.IsNaN(pos) || double.IsNaN(dur) || dur < 15) return false;
+            double left = dur - (pos + secondsSincePos);
+            return left >= 0.35 && left <= 1.4;
+        }
+
+        static void EnsureEndWatch()
+        {
+            if (endWatch != null) return;
+            endWatch = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+            endWatch.Tick += (a, b) => CheckTrackEnd();
+            endWatch.Start();
+        }
+
+        // раз в 200 мс; дешёвые проверки идут первыми, пока не окажется, что трек Spotify играет и вот-вот закончится
+        internal static void CheckTrackEnd()
+        {
+            var s = live;
+            if (peekBusy || !s.HasMedia || !s.Playing || double.IsNaN(s.Pos) || posAt == DateTime.MinValue) return;
+            if (!TrackEndingNow(s.Playing, s.Pos, s.Dur, (DateTime.UtcNow - posAt).TotalSeconds)) return;
+            string key = s.MusicTrack;
+            if (key == endHandledKey || !PeekInterceptNow(s)) return; // те же условия, что у нажатия «вперёд»: панель не помогает, после B ничего не известно
+            endHandledKey = key;
+            RunSeamlessForward(s);
+        }
     }
 }
