@@ -359,7 +359,18 @@ namespace FlowBar
 
                 public static void StopCurrent()
                 {
-                    if (current != null) current.window.Close();
+                    if (current != null) current.Dismiss();
+                }
+
+                // Закрыть окно эффекта один раз. Закрытие окна само вызывает перерисовку (и событие Rendering), а она звала Close ещё раз:
+                // «нельзя вызвать Close во время закрытия окна» летело в журнал на каждом меню (чаще всего на мониторе с другим масштабом).
+                bool dismissed;
+                void Dismiss()
+                {
+                    if (dismissed) return;
+                    dismissed = true;
+                    CompositionTarget.Rendering -= OnRendering;
+                    try { window.Close(); } catch (InvalidOperationException) { } // окно уже закрывается — это и нужно
                 }
 
                 // кадр — по событию отрисовки WPF (60 в секунду): DispatcherTimer на 16 мс упирался в шаг системного таймера и давал около 40
@@ -373,7 +384,7 @@ namespace FlowBar
 
                 void Frame(object sender, EventArgs e)
                 {
-                    if (!Motion || watch.Elapsed.TotalSeconds >= duration) window.Close();
+                    if (!Motion || watch.Elapsed.TotalSeconds >= duration) Dismiss();
                     else
                     {
                         if (reveal != null) SetMask(Phase);

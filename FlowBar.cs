@@ -1652,6 +1652,7 @@ namespace FlowBar
         {
             var it = MenuBranch(header);
             if (check.HasValue) { it.IsCheckable = true; it.IsChecked = check.Value; }
+            if (header.StartsWith("Завершить задачу")) it.Tag = "kill"; else
             if (header.StartsWith("Закрыть окна") || header.StartsWith("Закрыть все") || header.StartsWith("Завершить") || header.StartsWith("Очистить") || header.StartsWith("Вернуть панель Windows")) it.Tag = "danger";
             // сначала снять перехват мыши: действие может надолго занять панель (запуск программы с правами администратора, например
             // Диспетчера задач), а с включённым перехватом каждое движение мыши во всей системе ждало бы панель
@@ -2067,6 +2068,8 @@ namespace FlowBar
             if (ws.Count == 0 && remote > 0)
                 tile.ToolTip = name + "\n" + WindowIndicatorStatus(local, remote) + "\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
             tile.MouseEnter += (s, e) => HoverStart(tile, ws.Count == 0 && remote > 1 ? Elsewhere(path) : ws);
+            // меню по правой кнопке важнее предпросмотра: предпросмотр закрывается в момент нажатия и не мешает, пока меню открывается и открыто
+            tile.PreviewMouseRightButtonDown += (s, e) => { previewBlockUntil = DateTime.Now.AddSeconds(2); ClosePreview(); };
             tile.AllowDrop = true;
             // файл тянут над значком открытой программы — её окно сразу выходит вперёд, и файл можно бросить прямо в него (как в панели Windows)
             DispatcherTimer spring = null;
@@ -2208,6 +2211,53 @@ namespace FlowBar
                 MenuSection(m, Item(closeLabel, () =>
                     { foreach (var w in closable) if (N.IsWindow(w.H)) N.PostMessage(w.H, 0x10, IntPtr.Zero, IntPtr.Zero); }));
             }
+            // красная кнопка: принудительно завершает программу целиком (как «Снять задачу» в диспетчере задач). Только у запущенной программы
+            var tasks = TaskPids(shown);
+            if (tasks.Count > 0)
+            {
+                string taskName = PinName(hp);
+                MenuSection(m, Item("Завершить задачу", () => EndTask(tasks, taskName)));
+            }
+        }
+
+        // «Завершить задачу» не трогает системные процессы, оболочку Windows и саму панель: их гибель роняет сеанс или саму кнопку
+        static readonly HashSet<string> NoKill = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "explorer", "ApplicationFrameHost", "dwm", "csrss", "winlogon", "services", "svchost", "System", "FlowBar", "ShellExperienceHost", "StartMenuExperienceHost", "SearchHost", "TextInputHost" };
+        internal static bool KillableProcess(string name, int pid) { return pid > 4 && pid != Process.GetCurrentProcess().Id && !NoKill.Contains(name ?? ""); }
+        // процессы окон программы без повторов и без защищённых; окно уже исчезло — пропускаем.
+        // Вместе с номером запоминается время старта: пока меню открыто, процесс мог закрыться, а номер — достаться чужому процессу
+        static List<Tuple<int, DateTime>> TaskPids(IEnumerable<Win> wins)
+        {
+            var res = new List<Tuple<int, DateTime>>();
+            foreach (var w in wins)
+            {
+                int pid = (int)w.Pid; if (res.Any(r => r.Item1 == pid)) continue;
+                try { using (var p = Process.GetProcessById(pid)) if (KillableProcess(p.ProcessName, pid)) res.Add(Tuple.Create(pid, p.StartTime)); } catch (Exception) { }
+            }
+            return res;
+        }
+        // тот ли это процесс, что был при открытии меню: номер совпал, а время старта нет — номер достался чужому процессу
+        internal static bool SameProcess(int pid, DateTime started)
+        {
+            try { using (var p = Process.GetProcessById(pid)) return p.StartTime == started; } catch (Exception) { return false; }
+        }
+        // taskkill /T /F: сам процесс и его дочерние (у браузеров окно принадлежит главному процессу). Не вышло (например, программа с правами администратора) — уведомление
+        void EndTask(List<Tuple<int, DateTime>> tasks, string name)
+        {
+            Task.Run(() =>
+            {
+                int failed = 0;
+                foreach (var t in tasks)
+                    try
+                    {
+                        int pid = t.Item1;
+                        if (!SameProcess(pid, t.Item2)) continue; // программа уже закрылась сама — завершать нечего, чужой процесс не трогаем
+                        var psi = new ProcessStartInfo("taskkill.exe", "/PID " + pid + " /T /F") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                        using (var p = Process.Start(psi)) { p.StandardOutput.ReadToEnd(); p.WaitForExit(8000); if (p.ExitCode != 0) failed++; }
+                    }
+                    catch (Exception ex) { Log(ex); failed++; }
+                if (failed > 0) Dispatcher.BeginInvoke(new Action(() => Notify("Не удалось завершить «" + name + "»", "Возможно, программа запущена от имени администратора.", true)));
+            });
         }
 
         static MenuItem TakeOnlyMenuItem(MenuItem parent)
@@ -2218,11 +2268,14 @@ namespace FlowBar
         }
 
         // ---------- миниатюры окон ----------
+        // пока открыто контекстное меню или только что нажата правая кнопка на значке, предпросмотр окон не показывается
+        DateTime previewBlockUntil = DateTime.MinValue;
+        bool PreviewBlocked { get { return menusOpen > 0 || DateTime.Now < previewBlockUntil; } }
         void HoverStart(Border tile, List<Win> ws)
         {
-            if (ws.Count == 0) return;
+            if (ws.Count == 0 || PreviewBlocked) return;
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
-            t.Tick += (s, e) => { t.Stop(); if (!dragging && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
+            t.Tick += (s, e) => { t.Stop(); if (!dragging && !PreviewBlocked && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
             t.Start();
         }
         bool previewPinned;
@@ -2268,6 +2321,7 @@ namespace FlowBar
 
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
+            if (!pinned && PreviewBlocked) return; // меню по правой кнопке в приоритете
             ClosePreview(); previewPinned = pinned; TipHide(true);
             var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
@@ -3018,7 +3072,7 @@ namespace FlowBar
                         var later = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Motion ? 420 : 0) }; later.Tick += (o2, e2) => { later.Stop(); render(); }; later.Start();
                     });
                     row.CornerRadius = new CornerRadius(8);
-                    row.ContextMenu = new ContextMenu();
+                    row.ContextMenu = new FlowMenu();
                     foreach (var choice in new[] { Tuple.Create("Сегодня", (DateTime?)DateTime.Today), Tuple.Create("Завтра", (DateTime?)DateTime.Today.AddDays(1)), Tuple.Create("Без срока", (DateTime?)null) })
                         row.ContextMenu.Items.Add(Item(choice.Item1, () => { t.Due = choice.Item2; SaveTodos(); render(); }));
                     // напомнить об этой задаче уведомлением
@@ -3545,7 +3599,7 @@ namespace FlowBar
                 var name = Txt(System.IO.Path.GetFileName(path.TrimEnd('\\')), 12, false); name.Margin = new Thickness(0, 0, 8, 0); g.Children.Add(name);
                 System.Windows.Automation.AutomationProperties.SetName(g, name.Text);
                 g.MouseEnter += (s, e) => name.TextDecorations = TextDecorations.Underline; g.MouseLeave += (s, e) => name.TextDecorations = null;
-                var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
+                var menu = new FlowMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); g.ContextMenu = menu;
                 v.Children.Add(Act(g, name.Text, () => { if (panel != null) panel.Close(); Launch(path); }));
             };
 
@@ -3583,7 +3637,7 @@ namespace FlowBar
                         Background = new ImageBrush(bi) { Stretch = Stretch.UniformToFill } };
                     System.Windows.Automation.AutomationProperties.SetName(cell, "Скриншот " + System.IO.Path.GetFileName(path));
                     cell.Invoke = () => { if (panel != null) panel.Close(); Launch(path); }; cell.MouseLeftButtonUp += (s, e) => cell.Invoke();
-                    var menu = new ContextMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
+                    var menu = new FlowMenu(); menu.Items.Add(Item("Показать в папке", () => Start("explorer.exe", "/select,\"" + path + "\""))); cell.ContextMenu = menu;
                     grid.Children.Add(cell);
                 }
                 catch { } // повреждённый файл пропускаем
@@ -4264,7 +4318,8 @@ namespace FlowBar
             if (!args.Contains("--fromshell") && InPackage())
                 try { Bar.Start(Assembly.GetExecutingAssembly().Location, string.Join(" ", args.Concat(new[] { "--fromshell" }).Select(a => "\"" + a + "\"")), null, true); return 0; }
                 catch (Exception ex) { Bar.Log(ex); }
-            if (!Bar.DemoMode && !args.Contains("--here") && (Setup.HandOver() || Setup.Elevate(args))) return 0;
+            // копия в ProgramFiles (её запускает задание с правами администратора) не «устанавливается» и не передаёт работу: она и есть рабочая
+            if (!Bar.DemoMode && !args.Contains("--here") && !Setup.IsAdminCopy && (Setup.HandOver() || Setup.Elevate(args))) return 0;
             return RunBar(me);
         }
 
@@ -4362,11 +4417,40 @@ namespace FlowBar
         {
             Func<bool, string, int> check = (ok, name) => { Console.WriteLine((ok ? "OK   " : "FAIL ") + name); return ok ? 0 : 1; };
             int fails = 0;
+            fails += check(!Bar.KillableProcess("explorer", 5000) && !Bar.KillableProcess("FlowBar", 5000) && !Bar.KillableProcess("notepad", 4) &&
+                !Bar.KillableProcess("notepad", System.Diagnostics.Process.GetCurrentProcess().Id) && Bar.KillableProcess("notepad", 5000),
+                "End task: system processes and the bar itself are protected");
+            {
+                // права администратора: задание запускает копию из ProgramFiles; копия обновляется только при отличии файлов
+                var xml = Setup.AdminTaskXml("S-1-5-21-1", @"C:\Program Files\FlowBar\FlowBar.exe");
+                var tmpA = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "flowbar-admin-selftest-" + Guid.NewGuid().ToString("N")); var src = System.IO.Path.Combine(tmpA, "src"); var dst = System.IO.Path.Combine(tmpA, "dst");
+                System.IO.Directory.CreateDirectory(src);
+                bool noExe = !Setup.SyncAdminCopy(src, dst);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(src, "FlowBar.exe"), "exe v1"); System.IO.File.WriteAllText(System.IO.Path.Combine(src, "FlowBar.exe.config"), "cfg");
+                bool copied = Setup.SyncAdminCopy(src, dst) && System.IO.File.ReadAllText(System.IO.Path.Combine(dst, "FlowBar.exe")) == "exe v1" && !System.IO.File.Exists(System.IO.Path.Combine(dst, "flowbar-watch.exe"));
+                System.IO.File.WriteAllText(System.IO.Path.Combine(src, "FlowBar.exe"), "exe v2");
+                bool updated = Setup.SyncAdminCopy(src, dst) && System.IO.File.ReadAllText(System.IO.Path.Combine(dst, "FlowBar.exe")) == "exe v2";
+                try { System.IO.Directory.Delete(tmpA, true); } catch { }
+                var me = Process.GetCurrentProcess();
+                fails += check(xml.Contains("<Command>\"C:\\Program Files\\FlowBar\\FlowBar.exe\"</Command>") && xml.Contains("HighestAvailable") && xml.Contains("<WorkingDirectory>C:\\Program Files\\FlowBar</WorkingDirectory>") && !xml.Contains("AppData") &&
+                    noExe && copied && updated && Setup.AdminDir.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), StringComparison.OrdinalIgnoreCase),
+                    "Admin mode: task runs the copy in ProgramFiles, copy is synced only when files differ");
+                fails += check(Bar.SameProcess(me.Id, me.StartTime) && !Bar.SameProcess(me.Id, me.StartTime.AddSeconds(-5)) && !Bar.SameProcess(0x7FFFFFF0, DateTime.Now),
+                    "End task: a reused process id is not killed (start time must match)");
+            }
             var cleanReport = Bar.CleanBugReportLog(new[] {
                 "14.11.2026 13:01:00 System.IO.IOException: C:\\Users\\Test\\private.txt https://example.com/key",
                 "   в FlowBar.Bar.WriteLog(String content) в C:\\Users\\Test\\Source.cs:строка 21",
-                "   at System.IO.File.Open(String path)", "свободный текст журнала" });
-            fails += check(cleanReport == "System.IO.IOException\r\n  FlowBar.Bar.WriteLog" &&
+                "   at System.IO.File.Open(String path)", "свободный текст журнала",
+                "14.11.2026 13:01:05 System.IO.IOException: D:\\Other\\file.txt mail@example.com",
+                "   в FlowBar.Bar.WriteLog(String content)",
+                "14.11.2026 16:18:34 System.InvalidOperationException: Нельзя вызвать Close во время закрытия окна.",
+                "   в System.Windows.Window.VerifyNotClosing()", "   в System.Windows.Window.InternalClose(Boolean shutdown)",
+                "   в FlowBar.Bar.MenuMotion.TileBurst.Frame(Object sender, EventArgs e)", "   в MS.Win32.HwndWrapper.WndProc(IntPtr hwnd)" });
+            // пути, адреса и почта скрыты; повтор той же ошибки схлопнут в «×2»; у чужой ошибки видна верхняя строка стека
+            fails += check(cleanReport == "14.11.2026 13:01:05 ×2 System.IO.IOException: <скрыто> <скрыто>\r\n  FlowBar.Bar.WriteLog\r\n" +
+                "14.11.2026 16:18:34 System.InvalidOperationException: Нельзя вызвать Close во время закрытия окна.\r\n" +
+                "  System.Windows.Window.VerifyNotClosing\r\n  FlowBar.Bar.MenuMotion.TileBurst.Frame" &&
                 Bar.BugReportEndpoint("https://example.com/bug-report") != null && Bar.BugReportEndpoint("http://example.com") == null &&
                 Bar.BugReportEndpoint("https://secret@example.com") == null && Bar.BugReportEndpoint("https://example.com/?key=abc") == null &&
                 Bar.ReadBugReportReceipt("{\"ok\":true,\"report_id\":\"FB-123\"}") == "FB-123",

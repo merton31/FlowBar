@@ -634,7 +634,7 @@ namespace FlowBar
                         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                         var b = Act(new Border { Width = 44, Height = 44, Child = img }, name, () => OpenApp(m.Exe));
                         // значок добавлен Проводнику до запуска FlowBar, на сигнал «добавь значок заново» программа не отвечает — меню трея доступно только после её перезапуска
-                        var cm = new ContextMenu(); cm.Items.Add(Item("Открыть", () => OpenApp(m.Exe)));
+                        var cm = new FlowMenu(); cm.Items.Add(Item("Открыть", () => OpenApp(m.Exe)));
                         if (CanRestartForTray(m.Exe)) cm.Items.Add(Item("Перезапустить: значок встанет в трей FlowBar", () => RestartForTray(m.Exe)));
                         b.ContextMenu = cm;
                         b.ToolTip = name + "\nКлик — открыть программу. Меню трея недоступно: значок был добавлен до запуска FlowBar" + (CanRestartForTray(m.Exe) ? ". Правая кнопка — перезапустить программу, чтобы значок появился в трее FlowBar" : ""); b.CornerRadius = new CornerRadius(10); b.Margin = new Thickness(2);
@@ -825,7 +825,7 @@ namespace FlowBar
                 cell.MouseLeftButtonUp += (s, e) => { if (panel != null) panel.Close(); Activate(path, ws); };
                 cell.Menu = target =>
                 {
-                    var cm = new ContextMenu { PlacementTarget = target };
+                    var cm = new FlowMenu { PlacementTarget = target };
                     cm.Items.Add(Item("Убрать из группы", () => { RemoveFromGroup(name, path); if (panel != null) panel.Close(); }));
                     cm.IsOpen = true;
                 };

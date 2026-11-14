@@ -598,7 +598,7 @@ namespace FlowBar
                 order.RemoveAt(from); order.Insert(to, id);
                 CommitPreviewWidgets(target, layout, order);
             };
-            var menu = new ContextMenu();
+            var menu = new FlowMenu();
             menu.Items.Add(Item(VerticalBar ? "Выше" : "Левее", () => move(-1)));
             menu.Items.Add(Item(VerticalBar ? "Ниже" : "Правее", () => move(1)));
             var variants = new[] { "", "min", "compact", "full" };
@@ -764,7 +764,7 @@ namespace FlowBar
             Border button = null;
             Action open = () =>
             {
-                var menu = new ContextMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+                var menu = new FlowMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
                 for (int i = 0; i < labels.Length; i++)
                 {
                     int index = i;

@@ -22,33 +22,80 @@ namespace FlowBar
         const int BugReportMaxBytes = 32 * 1024;
         static Window bugReportWindow;
         static readonly Regex ReportException = new Regex(
-            @"^\s*(?:\d{1,4}[./:-]\S*\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s+(?:AM|PM))?\s+|\s*--->\s*)?((?:System|Microsoft|Windows|FlowBar)\.[A-Za-z0-9_.]+Exception)\b(?:\s*\((0x[0-9A-Fa-f]{8})\))?",
+            @"^\s*(?:(\d{1,4}[./:-]\S*\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s+(?:AM|PM))?)\s+|\s*(--->)\s*)?((?:System|Microsoft|Windows|FlowBar)\.[A-Za-z0-9_.]+Exception)\b(?:\s*\((0x[0-9A-Fa-f]{8})\))?(?:\s*:\s*(.*))?",
             RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
         static readonly Regex ReportFrame = new Regex(
-            @"^\s*(?:at|в)\s+(FlowBar\.[A-Za-z0-9_.+<>]+)\(",
+            @"^\s*(?:at|в)\s+([A-Za-z_][A-Za-z0-9_.+<>`]*)\(",
+            RegexOptions.CultureInvariant);
+        // Личное в тексте ошибки: пути к файлам, сетевые пути, адреса и почта — заменяются, сам текст остаётся (по нему видна причина)
+        static readonly Regex ReportPrivate = new Regex(
+            @"[A-Za-z]:\\[^\s'""]*|\\\\[^\s'""]+|\w+://\S+|[\w.+-]+@[\w-]+\.[\w.]+",
             RegexOptions.CultureInvariant);
 
+        static string CleanReportText(string text)
+        {
+            text = ReportPrivate.Replace(text.Trim(), "<скрыто>");
+            return text.Length > 240 ? text.Substring(0, 239) + "…" : text; // тексты WPF длинные: на 160 знаках обрывалась сама суть
+        }
+
+        // Ошибки из журнала для отчёта: время, тип, текст без личного, верхняя строка стека (где ошибка возникла) и строки FlowBar.
+        // Одинаковые ошибки схлопываются в одну запись «×N» со временем последнего раза — иначе один частый сбой вытеснял все остальные.
         internal static string CleanBugReportLog(IEnumerable<string> lines)
         {
-            var result = new List<string>();
-            bool inException = false;
+            var order = new List<string>();
+            var count = new Dictionary<string, int>();
+            var time = new Dictionary<string, string>();
+            List<string> block = null;
+            string blockTime = null;
+            bool topFrame = false;
+            Action flush = delegate
+            {
+                if (block == null) return;
+                var key = string.Join("\r\n", block);
+                int n;
+                count.TryGetValue(key, out n);
+                count[key] = n + 1;
+                time[key] = blockTime ?? "";
+                order.Remove(key);
+                order.Add(key);
+                block = null;
+            };
             foreach (var line in lines)
             {
                 var error = ReportException.Match(line);
                 if (error.Success)
                 {
-                    string entry = error.Groups[1].Value;
-                    if (error.Groups[2].Success) entry += " (" + error.Groups[2].Value + ")";
-                    if (entry.Length <= 200) result.Add(entry);
-                    inException = true;
+                    string entry = error.Groups[3].Value;
+                    if (error.Groups[4].Success) entry += " (" + error.Groups[4].Value + ")";
+                    if (error.Groups[5].Success && error.Groups[5].Value.Trim().Length > 0) entry += ": " + CleanReportText(error.Groups[5].Value);
+                    if (error.Groups[2].Success && block != null) { block.Add("  ---> " + entry); topFrame = true; continue; }
+                    flush();
+                    block = new List<string> { entry };
+                    blockTime = error.Groups[1].Success ? error.Groups[1].Value : null;
+                    topFrame = true;
                     continue;
                 }
                 var frame = ReportFrame.Match(line);
-                if (inException && frame.Success && frame.Groups[1].Length <= 160)
-                    result.Add("  " + frame.Groups[1].Value);
-                else if (line.Length > 0 && !char.IsWhiteSpace(line[0])) inException = false;
+                if (block != null && frame.Success)
+                {
+                    string name = frame.Groups[1].Value;
+                    if ((topFrame || name.StartsWith("FlowBar.", StringComparison.Ordinal)) && name.Length <= 160 && block.Count < 12) block.Add("  " + name);
+                    topFrame = false;
+                }
+                else if (line.Length > 0 && !char.IsWhiteSpace(line[0])) flush();
             }
-            return string.Join("\r\n", result.Skip(Math.Max(0, result.Count - 60)));
+            flush();
+            // Самые свежие записи — в конце; старые отбрасываются, когда не влезают в 60 строк
+            var result = new List<string>();
+            for (int i = order.Count - 1; i >= 0; i--)
+            {
+                var key = order[i];
+                var part = key.Split(new[] { "\r\n" }, StringSplitOptions.None);
+                if (result.Count + part.Length > 60) break;
+                part[0] = (time[key].Length > 0 ? time[key] + " " : "") + (count[key] > 1 ? "×" + count[key] + " " : "") + part[0];
+                result.InsertRange(0, part);
+            }
+            return string.Join("\r\n", result);
         }
 
         static string BuildBugDiagnostics()
