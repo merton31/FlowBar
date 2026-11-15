@@ -2089,6 +2089,8 @@ namespace FlowBar
             };
             go = (key, requestedTab) =>
             {
+                var sectionForLog = SettingsSections.FirstOrDefault(entry => entry[0] == key);
+                if (sectionForLog != null) PanelAction("Настройки: " + sectionForLog[1]);
                 bool onlySubpage = !searching && cur == key && requestedTab >= 0 && selectPage != null;
                 if (searching) { searching = false; suppress = true; search.Text = ""; suppress = false; } // страница открыта — результаты поиска убираем
                 bool changed = key != cur || (requestedTab >= 0 && requestedTab != SettingsTab(key));

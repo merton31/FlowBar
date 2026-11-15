@@ -1672,6 +1672,7 @@ namespace FlowBar
         }
         void SetVisible(string id, bool on, bool remember = true)
         {
+            PanelAction(on ? "Виджет: включение" : "Виджет: отключение");
             if (remember) RememberPanelEdit();
             if (CompactMonitor)
             {

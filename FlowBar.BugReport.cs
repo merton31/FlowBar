@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -10,6 +10,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using InputKey = System.Windows.Input.Key;
 using System.Windows.Media;
 using Microsoft.Win32;
 
@@ -21,6 +24,87 @@ namespace FlowBar
         const string BugReportUrl = "https://flowbat-reports.netlify.app/bug-report";
         const int BugReportMaxBytes = 32 * 1024;
         static Window bugReportWindow;
+        static string lastWheelAction;
+        static long lastWheelAt;
+
+        internal static void PanelAction(string action) { WriteLog(action, "actions", 128 * 1024); }
+
+        internal static void RegisterPanelActionLog()
+        {
+            InputManager.Current.PreProcessInput += (sender, e) =>
+            {
+                var input = e.StagingItem.Input;
+                var button = input as MouseButtonEventArgs;
+                var wheel = input as MouseWheelEventArgs;
+                var key = input as KeyEventArgs;
+                string action;
+                DependencyObject source;
+                if (button != null && input.RoutedEvent == Mouse.PreviewMouseUpEvent)
+                {
+                    source = Mouse.DirectlyOver as DependencyObject;
+                    action = button.ChangedButton == MouseButton.Right ? "Правый клик" :
+                        button.ChangedButton == MouseButton.Middle ? "Средний клик" : "Нажатие мышью";
+                }
+                else if (wheel != null && input.RoutedEvent == Mouse.PreviewMouseWheelEvent)
+                {
+                    source = Mouse.DirectlyOver as DependencyObject;
+                    action = "Прокрутка";
+                }
+                else if (key != null && input.RoutedEvent == Keyboard.PreviewKeyDownEvent && !key.IsRepeat &&
+                    (key.Key == InputKey.Enter || key.Key == InputKey.Space || key.Key == InputKey.Escape || key.Key == InputKey.Apps))
+                {
+                    source = Keyboard.FocusedElement as DependencyObject;
+                    action = key.Key == InputKey.Escape ? "Закрытие с клавиатуры" : key.Key == InputKey.Apps ? "Вызов меню с клавиатуры" : "Активация с клавиатуры";
+                }
+                else return;
+
+                string control = null, surface = null;
+                for (var node = source; node != null; )
+                {
+                    if (node is TextBoxBase || node is PasswordBox) return;
+                    if (node is ContextMenu) { surface = "контекстное меню"; break; }
+                    if (node is Popup) { surface = "всплывающее меню"; break; }
+                    var window = node as Window;
+                    if (window != null)
+                    {
+                        surface = window is Bar ? "панель" : window == settings ? "настройки" :
+                            window == voiceTaskWindow ? "диктовка" : window == bugReportWindow ? "баг-репорт" : "окно FlowBar";
+                        break;
+                    }
+                    if (node is Slider) control = "ползунок";
+                    else if (node is ComboBox || node is ComboBoxItem) control = "список";
+                    else if (control == null)
+                        control = node is MenuItem ? "пункт меню" : node is ToggleButton ? "переключатель" :
+                            node is Press || node is ButtonBase ? "кнопка" : null;
+                    var content = node as FrameworkContentElement;
+                    var element = node as FrameworkElement;
+                    node = content != null ? content.Parent : node is Visual || node is System.Windows.Media.Media3D.Visual3D ?
+                        VisualTreeHelper.GetParent(node) ?? (element == null ? null : element.Parent) : null;
+                }
+                if (surface == null || (key != null && control == null && key.Key != InputKey.Escape)) return;
+                string entry = action + " · " + surface + (control == null ? "" : " · " + control);
+                if (wheel != null)
+                {
+                    long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                    bool consecutive = entry == lastWheelAction && now - lastWheelAt < System.Diagnostics.Stopwatch.Frequency / 3;
+                    lastWheelAt = now;
+                    lastWheelAction = entry;
+                    if (consecutive) return;
+                }
+                else lastWheelAction = null;
+                PanelAction(entry);
+            };
+        }
+
+        static string RecentPanelActions()
+        {
+            var lines = new List<string>();
+            lock (logLock)
+                foreach (var name in new[] { "actions.old.log", "actions.log" })
+                    try { if (File.Exists(F(name))) lines.AddRange(File.ReadLines(F(name))); }
+                    catch (IOException) { } catch (UnauthorizedAccessException) { }
+            return lines.Count == 0 ? "Действий пока нет." : string.Join("\r\n", lines.Skip(Math.Max(0, lines.Count - 60)));
+        }
         static readonly Regex ReportException = new Regex(
             @"^\s*(?:(\d{1,4}[./:-]\S*\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s+(?:AM|PM))?)\s+|\s*(--->)\s*)?((?:System|Microsoft|Windows|FlowBar)\.[A-Za-z0-9_.]+Exception)\b(?:\s*\((0x[0-9A-Fa-f]{8})\))?(?:\s*:\s*(.*))?",
             RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -124,6 +208,7 @@ namespace FlowBar
             var clean = CleanBugReportLog(lines.Skip(Math.Max(0, lines.Count - 400)));
             result.AppendLine().AppendLine("Последние ошибки");
             result.AppendLine(clean.Length == 0 ? "Записей для отправки нет." : clean);
+            result.AppendLine().AppendLine("Последние действия с панелью").AppendLine(RecentPanelActions());
             return result.ToString();
         }
 

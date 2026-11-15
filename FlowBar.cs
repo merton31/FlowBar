@@ -1242,14 +1242,14 @@ namespace FlowBar
         public static void Log(Exception ex) { WriteLog(ex.ToString()); }
         public static void Info(string s) { WriteLog("· " + s); }
         static readonly object logLock = new object();
-        static void WriteLog(string s)
+        static void WriteLog(string s, string journal = "error", int limit = 1048576)
         {
             try
             {
                 lock (logLock)
                 {
-                    var f = F("error.log"); var fi = new FileInfo(f);
-                    if (fi.Exists && fi.Length > 1048576) { File.Copy(f, F("error.old.log"), true); File.Delete(f); }
+                    var f = F(journal + ".log"); var fi = new FileInfo(f);
+                    if (fi.Exists && fi.Length > limit) { File.Copy(f, F(journal + ".old.log"), true); File.Delete(f); }
                     File.AppendAllText(f, DateTime.Now + " " + s + "\r\n");
                 }
             }
@@ -1286,6 +1286,7 @@ namespace FlowBar
                 var lines = new List<string>();
                 lock (logLock) foreach (var f in new[] { F("error.old.log"), F("error.log") }) try { if (File.Exists(f)) lines.AddRange(File.ReadAllLines(f)); } catch { }
                 foreach (var l in lines.Skip(Math.Max(0, lines.Count - 400))) sb.Append(l + "\r\n");
+                sb.Append("\r\n— последние действия —\r\n").Append(RecentPanelActions());
                 var text = sb.ToString().Replace(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "%USERPROFILE%");
                 if (Environment.UserName.Length >= 3) text = text.Replace(Environment.UserName, "%USERNAME%");
                 var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "FlowBar-отчёт-" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm") + ".txt");
@@ -2210,6 +2211,7 @@ namespace FlowBar
 
         void Activate(string path, List<Win> ws)
         {
+            PanelAction("Ярлык приложения: активация");
             if ((DateTime.Now - lastDragEnd).TotalMilliseconds < 400) return; // отпускание после перетаскивания — не клик
             bool wasOpen = preview != null && previewFor == anchor;
             if (wasOpen && previewFolding) { ClosePreview(); wasOpen = false; } // клик во время сворачивания не теряется: закрываем сразу и обрабатываем как обычный клик (у ярлыка с окнами веер раскроется снова)
@@ -2444,6 +2446,7 @@ namespace FlowBar
             ClosePreview(); TipHide(true);
             var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
+            PanelAction(pinned ? "Предпросмотр окон: открытие нажатием" : "Предпросмотр окон: открытие наведением");
             previewPinned = pinned;
             previewNormalWindows = new HashSet<IntPtr>(windows.Where(item => !N.IsIconic(item.H)).Select(item => item.H));
             bool folder = windows.Count > 1;
@@ -2817,6 +2820,7 @@ namespace FlowBar
             foreach (var t in thumbs) N.DwmUnregisterThumbnail(t);
             thumbs.Clear();
             var window = preview;
+            if (window != null) PanelAction("Предпросмотр окон: закрытие");
             preview = null; previewFor = null;
             previewHandle = previewForeground = IntPtr.Zero;
             hoverT.Stop();
@@ -3146,6 +3150,7 @@ namespace FlowBar
             if (back != null) { from = null; keepCx = panel.Left + panel.ActualWidth / 2; } // на месте прежней карточки, как переход внутри одного меню
             if (panel != null) panel.Close();
             if (same) return; // повторный клик по виджету закрывает карточку
+            PanelAction("Карточка виджета: открытие");
             width = Math.Max(320, width); // обычная ширина карточки 320–420
             Color fg = CardFg;
             const double Shadow = 18; // поле под тень вокруг карточки
@@ -3229,7 +3234,7 @@ namespace FlowBar
             })); // из «…» модуль тянут на панель — карточка остаётся
             // Esc закрывает карточку и возвращает фокус на плитку, если на панель пришли с клавиатуры
             w.PreviewKeyDown += (o, e) => { if (e.Key != System.Windows.Input.Key.Escape) return; e.Handled = true; if (dismiss != null && dismiss()) return; w.Close(); if (backTo != IntPtr.Zero && from != null) { N.SetForegroundWindow(hwnd); Keyboard.Focus(from); } };
-            w.Closed += (o, e) => { closed = true; stickyPid = 0; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
+            w.Closed += (o, e) => { PanelAction("Карточка виджета: закрытие"); closed = true; stickyPid = 0; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
             panel = w; panelTitle = title; panelTick = tick;
             w.Show(); w.Activate();
         }
@@ -3310,6 +3315,7 @@ namespace FlowBar
                         feedback.Text = "Не удалось сохранить задачу. Попробуйте ещё раз."; return;
                     }
                     todoVersion++; UpdateTodoTile();
+                    PanelAction("Задача: создание");
                     if (tab != 0 && (tab != 1 || due == null || due > DateTime.Today)) tab = 0;
                     feedback.Text = "Задача добавлена.";
                 }
@@ -3318,6 +3324,7 @@ namespace FlowBar
                     editing.Text = text; editing.Due = due; editing.DueTime = dueTime;
                     feedback.Text = "Задача обновлена.";
                     SaveTodos();
+                    PanelAction("Задача: редактирование");
                 }
                 reset(); render(); input.Focus();
             };
@@ -3391,6 +3398,7 @@ namespace FlowBar
                     var doneBox = CheckRow(task.Text, null, task.Done, doneNow =>
                     {
                         task.Done = doneNow; SaveTodos(); render();
+                        PanelAction(doneNow ? "Задача: отметка о выполнении" : "Задача: возврат в работу");
                     }, TaskCheckTemplate());
                     doneBox.Content = text; doneBox.Margin = new Thickness(0, 3, 0, 0);
                     System.Windows.Automation.AutomationProperties.SetName(doneBox, (task.Done ? "Вернуть в работу: " : "Выполнить: ") + task.Text);
@@ -3432,6 +3440,7 @@ namespace FlowBar
                         removed = task; removedIndex = todos.IndexOf(task);
                         if (editing == task) reset();
                         todos.Remove(task); feedback.Text = "Задача удалена."; SaveTodos(); render();
+                        PanelAction("Задача: удаление");
                     }));
                     var more = TaskButton("…", () => { menu.IsOpen = true; });
                     more.Padding = new Thickness(9, 4, 9, 4); more.Margin = new Thickness(7, 0, 0, 0);
@@ -4926,6 +4935,7 @@ namespace FlowBar
                 catch { }
             };
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+            Bar.RegisterPanelActionLog();
             app.DispatcherUnhandledException += (s, e) => { Bar.Log(e.Exception); e.Handled = true; };
             app.Exit += (s, e) => { Bar.Info("выход: " + (Bar.ExitWhy ?? "приложение завершено без названной причины")); Bar.Shutdown(); };
             app.SessionEnding += (s, e) => { Bar.ExitWhy = "завершение сеанса Windows (" + e.ReasonSessionEnding + ")"; Bar.Info("выход: " + Bar.ExitWhy); Bar.Shutdown(); };

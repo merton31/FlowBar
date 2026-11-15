@@ -895,6 +895,7 @@ namespace FlowBar
                     {
                         recording = false; timer.Stop(); recordStatus = "Распознаём…"; updateControls();
                         message.Text = "Распознаём запись на этом компьютере…";
+                        PanelAction("Диктовка: остановка записи, начало распознавания");
                         await capture.StopRecordAsync();
                         capture.Dispose(); capture = null;
                         if (!closed)
@@ -933,6 +934,7 @@ namespace FlowBar
                         await capture.StartRecordToStorageFileAsync(profile, file);
                         if (closed) return;
                         recording = true; clock.Restart(); timer.Start(); message.Text = "";
+                        PanelAction("Диктовка: начало записи");
                     }
                 }
                 catch (UnauthorizedAccessException) { if (!closed) message.Text = "Разрешите настольным приложениям доступ к микрофону в Windows."; }
@@ -967,6 +969,7 @@ namespace FlowBar
             {
                 if (busy || recording || string.IsNullOrWhiteSpace(input.Text)) return;
                 string selected = VoiceProvider(provider);
+                PanelAction("Диктовка: разбор через " + VoiceAssistantName(selected));
                 string exe = VoiceBinary(selected);
                 showSetup(null);
                 if (DemoMode)
