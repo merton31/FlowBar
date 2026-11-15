@@ -18,7 +18,7 @@ namespace FlowBar
             TimeSpan clock;
             readonly Wheel[] wheels = new Wheel[5];
             readonly TextBlock state = CardStatus("");
-            readonly Border clearDate, clearTime;
+            readonly Border modeNone, modeDue, clearTime;
 
             public TaskSchedule()
             {
@@ -27,8 +27,17 @@ namespace FlowBar
                 title.VerticalAlignment = VerticalAlignment.Center;
                 title.Foreground = Frozen(TaskAccent, 255);
                 var heading = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
-                state.Margin = new Thickness(0);
-                DockPanel.SetDock(state, Dock.Right); heading.Children.Add(state); heading.Children.Add(title);
+                // переключатель «Без срока» / «Срок»: по умолчанию без срока; колёса при выключенном сроке приглушены, а первое же их движение включает срок
+                modeNone = TaskButton("Без срока", () => Set(null, null));
+                modeDue = TaskButton("Срок", () => Set(cursor, Time));
+                foreach (var mode in new[] { modeNone, modeDue }) { mode.Padding = new Thickness(10, 4, 10, 4); mode.Margin = new Thickness(4, 0, 0, 0); }
+                var toggle = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                toggle.Children.Add(modeNone); toggle.Children.Add(modeDue);
+                DockPanel.SetDock(toggle, Dock.Right); heading.Children.Add(toggle);
+                state.Margin = new Thickness(8, 0, 0, 0); state.VerticalAlignment = VerticalAlignment.Center;
+                var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                left.Children.Add(title); left.Children.Add(state);
+                heading.Children.Add(left);
                 Children.Add(heading);
 
                 var columns = new Grid();
@@ -48,9 +57,8 @@ namespace FlowBar
                     Grid.SetColumn(wheel, i); columns.Children.Add(wheel);
                 }
                 Children.Add(columns);
-                clearDate = TaskButton("Снять срок", () => Set(null, null));
                 clearTime = TaskButton("Снять время", () => Set(Date, null));
-                var clear = CardActions(clearDate, clearTime);
+                var clear = CardActions(clearTime);
                 clear.Margin = new Thickness(0, 5, 0, 0);
                 Children.Add(clear);
                 Set(null, null);
@@ -81,11 +89,21 @@ namespace FlowBar
 
             void Refresh(int changed, int direction)
             {
-                state.Text = !Date.HasValue ? "Без срока" : Time.HasValue ? "Дата и время выбраны" : "Без времени";
-                clearDate.Visibility = Date.HasValue ? Visibility.Visible : Visibility.Collapsed;
+                state.Text = !Date.HasValue ? "срока нет" : Time.HasValue ? "дата и время" : "без времени";
+                state.Opacity = 0.8;
+                ModeLook(modeNone, !Date.HasValue); ModeLook(modeDue, Date.HasValue);
                 clearTime.Visibility = Time.HasValue ? Visibility.Visible : Visibility.Collapsed;
                 for (int i = 0; i < wheels.Length; i++)
                     wheels[i].Paint(i < 3 ? Date.HasValue : Time.HasValue, i == changed ? Math.Sign(direction) : 0);
+            }
+
+            // выбранный режим залит акцентом и подписан акцентным цветом, второй — тихая кнопка (как у TaskButton)
+            static void ModeLook(Border button, bool selected)
+            {
+                button.BorderBrush = Frozen(TaskAccent, selected ? (byte)0x6B : (byte)0x34);
+                button.Background = Frozen(TaskAccent, selected ? (byte)0x34 : (byte)0x10);
+                var label = button.Child as TextBlock;
+                if (label != null) label.Foreground = Frozen(selected ? TaskAccent : CardFg, 255);
             }
 
             static int Wrap(int value, int count) { return (value % count + count) % count; }
@@ -168,7 +186,7 @@ namespace FlowBar
                 {
                     for (int i = 0; i < 3; i++) items[i].Text = format(i - 1);
                     items[0].Opacity = items[2].Opacity = 0.48;
-                    items[1].Opacity = active ? 1 : 0.76;
+                    items[1].Opacity = active ? 1 : 0.55; // срок выключен — колесо приглушено
                     items[1].Foreground = Frozen(TaskAccent, 255);
                     System.Windows.Automation.AutomationProperties.SetName(surface, name + ": " + items[1].Text);
                     if (direction != 0 && Motion)

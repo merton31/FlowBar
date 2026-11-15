@@ -150,7 +150,7 @@ namespace FlowBar
                 if (managing) return;
                 if (DemoMode) { status.Text = "В деморежиме установка отключена."; return; }
                 var winget = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "winget.exe");
-                if (!File.Exists(winget)) { Launch(HandyReleases); return; }
+                if (!File.Exists(winget)) { managing = true; actions.IsEnabled = false; await DownloadHandy(t => status.Text = t); managing = false; actions.IsEnabled = true; return; } // без WinGet — свой загрузчик, а не сайт
                 managing = true; actions.IsEnabled = false;
                 status.Text = update ? "Проверяем обновление Handy…" : "Устанавливаем Handy…";
                 string result;
@@ -201,7 +201,7 @@ namespace FlowBar
                     cfg["voice.path." + item.Item1] = dialog.FileName; SaveCfg(); check(); refresh();
                 });
                 var download = Btn(item.Item1 == "handy" ? "Скачать Handy" : "Установка и вход",
-                    () => Launch(item.Item1 == "handy" ? HandyReleases : VoiceAssistantSetup(item.Item1)));
+                    () => { if (item.Item1 == "handy") { var _ = DownloadHandy(t => label.Text = t); } else Launch(VoiceAssistantSetup(item.Item1)); }); // Handy скачивается сам
                 paths.Children.Add(SetRow(item.Item2, null, VS(label, CardActions(download, choose))));
             }
             content.Children.Add(SSub("Голосовые задачи"));
@@ -600,7 +600,7 @@ namespace FlowBar
                 var handySetup = name == "handy";
                 setup.Children.Add(CardActions(
                     button(handySetup ? "Скачать Handy" : "Установка и вход",
-                        () => Launch(handySetup ? HandyReleases : VoiceAssistantSetup(name)), true),
+                        () => { if (handySetup) { var _ = DownloadHandy(t => message.Text = t); } else Launch(VoiceAssistantSetup(name)); }, true), // Handy скачивается сам, ход — в строке состояния карточки
                     button("Подключить установленную программу", () => ShowSettingsPage("connect", 4), false)));
                 setup.Visibility = Visibility.Visible;
                 setup.BringIntoView();
