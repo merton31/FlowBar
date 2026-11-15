@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -612,7 +612,8 @@ namespace FlowBar
                     return VoicePlanFromJson(AntigravityVoiceResult(reply), false, route);
                 }
                 if (claude)
-                    args = new[] { "--print", "--output-format", "json", "--json-schema", outputSchema, "--no-session-persistence",
+                    args = new[] { "--print", "--model", "sonnet", "--effort", "low",
+                        "--output-format", "json", "--json-schema", outputSchema, "--no-session-persistence",
                         "--restricted", "--no-chrome", "--tools", "", "--strict-mcp-config" };
                 else
                 {
@@ -644,6 +645,63 @@ namespace FlowBar
             try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
 
+        static string TaskRecordingPath(Guid id) { return Path.Combine(F("task-audio"), id.ToString("N") + ".wav"); }
+
+        static Guid SaveTaskRecording(string source)
+        {
+            Guid id = Guid.ParseExact(Path.GetFileNameWithoutExtension(source).Substring("FlowBarVoice-".Length), "N");
+            string target = TaskRecordingPath(id);
+            Directory.CreateDirectory(Path.GetDirectoryName(target));
+            if (!File.Exists(target))
+            {
+                string staged = target + ".tmp";
+                try { File.Copy(source, staged, true); File.Move(staged, target); }
+                finally { DeleteVoiceFile(staged); }
+            }
+            return id;
+        }
+
+        static void CleanTaskRecordings(IEnumerable<Todo> tasks, string folder = null)
+        {
+            folder = folder ?? F("task-audio");
+            if (!Directory.Exists(folder)) return;
+            var active = new HashSet<Guid>(tasks.Where(t => !t.Done && t.VoiceRecording.HasValue).Select(t => t.VoiceRecording.Value));
+            try
+            {
+                foreach (string file in Directory.GetFiles(folder, "*.wav"))
+                {
+                    Guid id;
+                    if (Guid.TryParseExact(Path.GetFileNameWithoutExtension(file), "N", out id) && !active.Contains(id))
+                        DeleteVoiceFile(file);
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        internal static bool TestTaskRecordings()
+        {
+            Guid id = Guid.NewGuid();
+            string folder = Path.Combine(Path.GetTempPath(), "FlowBar-task-audio-test-" + id.ToString("N"));
+            string file = Path.Combine(folder, id.ToString("N") + ".wav");
+            Directory.CreateDirectory(folder);
+            try
+            {
+                File.WriteAllBytes(file, new byte[] { 1 });
+                var first = new Todo { VoiceRecording = id, Text = "First | task", Due = new DateTime(2026, 11, 16), DueTime = TimeSpan.Zero };
+                var restored = ParseTodo(TodoLine(first));
+                if (restored.Done || restored.VoiceRecording != id || restored.Due != first.Due || restored.DueTime != first.DueTime || restored.Text != first.Text)
+                    return false;
+                first.Done = true;
+                CleanTaskRecordings(new[] { first, restored }, folder);
+                if (!File.Exists(file) || ParseTodo(TodoLine(first)).VoiceRecording.HasValue) return false;
+                restored.Done = true;
+                CleanTaskRecordings(new[] { first, restored }, folder);
+                return !File.Exists(file);
+            }
+            finally { DeleteVoiceFile(file); Directory.Delete(folder); }
+        }
+
         void ShowVoiceTask(string initialText, bool route = false)
         {
             if (voiceTaskWindow != null) { voiceTaskWindow.Activate(); return; }
@@ -654,7 +712,8 @@ namespace FlowBar
             voiceTaskWindow = win;
             var input = new TextBox { Text = initialText ?? "", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 104, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             Border record;
-            var voice = VoiceTaskControls(input, false, win.Close, null, out record, route);
+            Func<Guid?> attachVoice;
+            var voice = VoiceTaskControls(input, false, win.Close, null, out record, out attachVoice, route);
             var body = VS(SH(title), CardActions(record), FormField(input, route ? "Расшифровка" : "Текст для задачи"), voice);
             if (route) body.Children.Insert(1, CardStatus("После «Стоп» помощник получит текст и предложит, что сохранить в задачи и заметки."));
             win.Content = new ScrollViewer { Content = body, Margin = new Thickness(18), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -664,7 +723,8 @@ namespace FlowBar
             win.Show();
         }
 
-        FrameworkElement VoiceTaskControls(TextBox input, bool inline, Action saved, Action<bool> manual, out Border recordButton, bool route = false)
+        FrameworkElement VoiceTaskControls(TextBox input, bool inline, Action saved, Action<bool> manual, out Border recordButton,
+            out Func<Guid?> attachVoice, bool route = false)
         {
             var fields = new List<Tuple<CheckBox, TextBox, TaskSchedule>>();
             Func<string, Action, bool, Border> button = inline ? (Func<string, Action, bool, Border>)TaskButton : Btn;
@@ -714,6 +774,10 @@ namespace FlowBar
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
             MediaCapture capture = null;
             string wav = null;
+            string transcriptAudio = null;
+            Action discardAudio = () => { DeleteVoiceFile(transcriptAudio); transcriptAudio = null; };
+            Func<Guid?> saveAudio = () => transcriptAudio == null ? (Guid?)null : SaveTaskRecording(transcriptAudio);
+            attachVoice = saveAudio;
             LocalVoiceModel recordingModel = null;
             string recordingHandy = null;
             bool busy = false, closed = false, recording = false, activated = !inline;
@@ -841,7 +905,12 @@ namespace FlowBar
                                 });
                             if (!closed)
                             {
-                                if (text.Length != 0) input.Text = text;
+                                if (text.Length != 0)
+                                {
+                                    discardAudio();
+                                    transcriptAudio = wav; wav = null;
+                                    input.Text = text;
+                                }
                                 sendTranscript = route && text.Length != 0;
                                 message.Text = text.Length == 0 ? "Речь не распознана. Запишите ещё раз." : "Речь распознана. Проверьте текст.";
                             }
@@ -962,6 +1031,18 @@ namespace FlowBar
                     message.Text = route ? "Выберите задачу или введите заметку." : "Выберите хотя бы одну задачу.";
                     return;
                 }
+                Guid? audio = null;
+                if (batch.Count > 0)
+                {
+                    try { audio = saveAudio(); }
+                    catch (Exception ex)
+                    {
+                        if (!(ex is IOException) && !(ex is UnauthorizedAccessException)) throw;
+                        message.Text = "Не удалось сохранить аудиозапись. Попробуйте ещё раз.";
+                        return;
+                    }
+                    foreach (var task in batch) task.VoiceRecording = audio;
+                }
                 if (route)
                 {
                     var selectedFields = fields.Where(row => row.Item1.IsChecked == true).ToArray();
@@ -973,12 +1054,13 @@ namespace FlowBar
                         foreach (var task in batch)
                         {
                             cancel.Token.ThrowIfCancellationRequested();
-                            var result = await WriteVoiceTool("add_task", new Dictionary<string, object>
+                            var arguments = new Dictionary<string, object>
                             {
                                 { "text", task.Text },
                                 { "due", task.Due.HasValue ? task.Due.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "" },
                                 { "time", TaskTimeLabel(task.DueTime) }
-                            });
+                            };
+                            var result = audio.HasValue ? AgentCall("add_task", arguments, audio) : await WriteVoiceTool("add_task", arguments);
                             if (!result.Key) throw new IOException(result.Value);
                             var field = selectedFields[written++];
                             field.Item1.IsChecked = false;
@@ -1004,6 +1086,7 @@ namespace FlowBar
                     catch (OperationCanceledException) { }
                     finally
                     {
+                        if (audio.HasValue && written == 0) CleanTaskRecordings(todos);
                         busy = false; review.IsEnabled = footer.IsEnabled = true;
                         if (!closed) updateControls();
                     }
@@ -1014,10 +1097,12 @@ namespace FlowBar
                 try { WriteTodos(); }
                 catch (Exception)
                 {
-                    todos.RemoveRange(start, batch.Count); message.Text = "Не удалось сохранить задачи. Попробуйте ещё раз."; return;
+                    todos.RemoveRange(start, batch.Count); CleanTaskRecordings(todos);
+                    message.Text = "Не удалось сохранить задачи. Попробуйте ещё раз."; return;
                 }
                 todoVersion++; UpdateTodoTile();
                 review.Visibility = footer.Visibility = Visibility.Collapsed;
+                discardAudio();
                 activated = !inline; message.Text = "";
                 updateControls(); saved();
                 if (openCalendar)
@@ -1036,7 +1121,7 @@ namespace FlowBar
             else footer.Children.Add(CardActions(button("Добавить в задачи", () => saveTasks(false), true),
                 button("Добавить и открыть календарь", () => saveTasks(true), false), back));
             footer.Visibility = Visibility.Collapsed;
-            input.TextChanged += (s, e) => updateControls();
+            input.TextChanged += (s, e) => { if (input.Text.Length == 0) discardAudio(); updateControls(); };
             var connections = button("Настроить подключение", () => ShowSettingsPage("connect", 4), false);
             connections.VerticalAlignment = VerticalAlignment.Center;
             if (!inline) editor.Children.Add(CardActions(connections));
@@ -1047,6 +1132,7 @@ namespace FlowBar
             content.Unloaded += (s, e) =>
             {
                 closed = true; timer.Stop(); cancel.Cancel();
+                discardAudio();
                 if (recording && !busy) { recording = false; if (capture != null) capture.Dispose(); capture = null; DeleteVoiceFile(wav); }
             };
             updateControls();

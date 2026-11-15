@@ -1,4 +1,4 @@
-﻿// FlowBar — плавающая панель задач для Windows 10/11. Сборка: build.ps1 (C# 5, .NET Framework 4 + WinRT, без зависимостей).
+// FlowBar — плавающая панель задач для Windows 10/11. Сборка: build.ps1 (C# 5, .NET Framework 4 + WinRT, без зависимостей).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -311,7 +311,7 @@ namespace FlowBar
     }
 
     class Win { public IntPtr H; public uint Pid; public string Path; public IntPtr Mon; }
-    class Todo { public bool Done; public string Text; public DateTime? Due; public TimeSpan? DueTime; }
+    class Todo { public bool Done; public string Text; public DateTime? Due; public TimeSpan? DueTime; public Guid? VoiceRecording; }
     // Токены стиля: фон панели, текст, акцент (индикаторы, шкалы, «сегодня») и режим размытия (0 — нет, 3 — blur, 4 — акрил)
     class Sty
     {
@@ -1085,6 +1085,12 @@ namespace FlowBar
             }
             else if (FirstRun) SaveCfg();
             todos = Lines("todos.txt").Select(ParseTodo).ToList();
+            if (Directory.Exists(F("task-audio")))
+            {
+                try { CleanTaskRecordings(File.ReadAllLines(F("todos.txt")).Select(ParseTodo)); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
             calFeeds = Lines("calendars.txt");
             LoadGroups(); ApplyAppTheme();
             screen = ScreenTime.Load(Today);
@@ -1170,14 +1176,23 @@ namespace FlowBar
             foreach (var b in bars) if (b.seq != null) { b.seq.Remove(to); int j = b.seq.IndexOf(from); if (j >= 0) { b.seq[j] = to; b.SaveSeq(); } } // закрепили/открепили — значок на своём месте
         }
         static int todoVersion;
-        static void WriteTodos() { SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine)); }
+        static void WriteTodos()
+        {
+            SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine));
+            foreach (var task in todos.Where(t => t.Done)) task.VoiceRecording = null;
+            CleanTaskRecordings(todos);
+        }
         void SaveTodos() { Persist("задачи", WriteTodos); todoVersion++; UpdateTodoTile(); }
         public static Todo ParseTodo(string l)
         {
             int i = l.IndexOf('|');
             if (i < 0) return new Todo { Text = l };
             var flag = l.Substring(0, i);
-            var task = new Todo { Done = flag == "1" || flag.StartsWith("1@"), Text = l.Substring(i + 1) };
+            int audio = flag.IndexOf('~');
+            Guid recording;
+            Guid? recordingId = audio >= 0 && Guid.TryParseExact(flag.Substring(audio + 1), "N", out recording) ? (Guid?)recording : null;
+            if (audio >= 0) flag = flag.Substring(0, audio);
+            var task = new Todo { Done = flag == "1" || flag.StartsWith("1@"), Text = l.Substring(i + 1), VoiceRecording = recordingId };
             if (flag.Length < 10 || flag[1] != '@') return task;
             DateTime date;
             if (DateTime.TryParseExact(flag.Substring(2), "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
@@ -1193,7 +1208,8 @@ namespace FlowBar
         {
             var due = t.Due.HasValue ? "@" + t.Due.Value.ToString("yyyyMMdd", CultureInfo.InvariantCulture) +
                 (t.DueTime.HasValue ? "T" + t.DueTime.Value.ToString(@"hhmm", CultureInfo.InvariantCulture) : "") : "";
-            return (t.Done ? "1" : "0") + due + "|" + t.Text;
+            var audio = !t.Done && t.VoiceRecording.HasValue ? "~" + t.VoiceRecording.Value.ToString("N") : "";
+            return (t.Done ? "1" : "0") + due + audio + "|" + t.Text;
         }
 
         static string TaskTimeLabel(TimeSpan? time)
@@ -3242,13 +3258,14 @@ namespace FlowBar
             var cancel = TaskButton("Отмена", () => reset());
             cancel.Visibility = Visibility.Collapsed;
             Border voice;
+            Func<Guid?> attachVoice;
             var voiceControls = VoiceTaskControls(input, true, () =>
             {
                 reset(); tab = 0; feedback.Text = "Задачи добавлены."; render();
             }, available =>
             {
                 add.IsEnabled = cancel.IsEnabled = schedule.IsEnabled = available;
-            }, out voice);
+            }, out voice, out attachVoice);
             voice.HorizontalAlignment = HorizontalAlignment.Center;
             voice.Margin = new Thickness(0, 6, 0, 3);
             var actions = CardActions(add, cancel);
@@ -3277,7 +3294,22 @@ namespace FlowBar
                 var dueTime = schedule.Time;
                 if (editing == null)
                 {
-                    todos.Add(new Todo { Text = text, Due = due, DueTime = dueTime });
+                    var task = new Todo { Text = text, Due = due, DueTime = dueTime };
+                    try { task.VoiceRecording = attachVoice(); }
+                    catch (Exception ex)
+                    {
+                        if (!(ex is IOException) && !(ex is UnauthorizedAccessException)) throw;
+                        feedback.Text = "Не удалось сохранить аудиозапись. Попробуйте ещё раз.";
+                        return;
+                    }
+                    todos.Add(task);
+                    try { WriteTodos(); }
+                    catch (Exception ex)
+                    {
+                        todos.Remove(task); CleanTaskRecordings(todos); Log(ex);
+                        feedback.Text = "Не удалось сохранить задачу. Попробуйте ещё раз."; return;
+                    }
+                    todoVersion++; UpdateTodoTile();
                     if (tab != 0 && (tab != 1 || due == null || due > DateTime.Today)) tab = 0;
                     feedback.Text = "Задача добавлена.";
                 }
@@ -3285,12 +3317,14 @@ namespace FlowBar
                 {
                     editing.Text = text; editing.Due = due; editing.DueTime = dueTime;
                     feedback.Text = "Задача обновлена.";
+                    SaveTodos();
                 }
-                reset(); SaveTodos(); render(); input.Focus();
+                reset(); render(); input.Focus();
             };
             input.KeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.Enter) { e.Handled = true; submit(); } };
             Action<Todo> editTask = task =>
             {
+                input.Clear();
                 editing = task; input.Text = task.Text; schedule.Set(task.Due, task.DueTime);
                 setActionLabel();
                 input.Focus(); input.SelectAll();
@@ -3361,6 +3395,11 @@ namespace FlowBar
                     doneBox.Content = text; doneBox.Margin = new Thickness(0, 3, 0, 0);
                     System.Windows.Automation.AutomationProperties.SetName(doneBox, (task.Done ? "Вернуть в работу: " : "Выполнить: ") + task.Text);
                     var menu = new FlowMenu();
+                    if (!task.Done && task.VoiceRecording.HasValue)
+                    {
+                        string audioPath = TaskRecordingPath(task.VoiceRecording.Value);
+                        if (File.Exists(audioPath)) menu.Items.Add(Item("Прослушать запись", () => Launch(audioPath)));
+                    }
                     menu.Items.Add(Item("Редактировать", () =>
                     {
                         composer.Visibility = Visibility.Visible; editTask(task); composer.BringIntoView();
@@ -5032,6 +5071,7 @@ namespace FlowBar
             var midnightTask = Bar.ParseTodo("0@20261112T0000|задача | тест");
             fails += check(midnightTask.Due == new DateTime(2026, 11, 12) && midnightTask.DueTime == TimeSpan.Zero &&
                 Bar.TodoLine(midnightTask) == "0@20261112T0000|задача | тест", "Task deadline preserves explicit midnight and old separators");
+            fails += check(Bar.TestTaskRecordings(), "Task audio survives restart format and is deleted after the last linked task is complete");
             var st = new ScreenTime { Day = "2026-01-01" };
             st.Add("Chrome | Web", 9); st.Add("Chrome | Web", 9); st.Add("Code", 23);
             var back = ScreenTime.Parse("2026-01-01", st.Lines().Concat(new[] { "мусор", "h|99|5" }));

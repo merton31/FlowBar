@@ -178,7 +178,7 @@ namespace FlowBar
         static string AStr(Dictionary<string, object> a, string k) { object v; return a.TryGetValue(k, out v) && v != null ? Convert.ToString(v, CultureInfo.InvariantCulture).Trim() : ""; }
 
         // действие агента — в потоке интерфейса панели
-        internal static KeyValuePair<bool, string> AgentCall(string tool, Dictionary<string, object> a)
+        internal static KeyValuePair<bool, string> AgentCall(string tool, Dictionary<string, object> a, Guid? voiceRecording = null)
         {
             Func<string, KeyValuePair<bool, string>> ok = s => new KeyValuePair<bool, string>(true, s), no = s => new KeyValuePair<bool, string>(false, s);
             if (C("agent", "1") != "1") return no("Доступ агентов выключен: «Настройки FlowBar» → «Подключения» → «Агенты».");
@@ -196,7 +196,7 @@ namespace FlowBar
                         DateTime? due; TimeSpan? time;
                         if (!TryReadTaskSchedule(AStr(a, "due"), AStr(a, "time"), out due, out time))
                             return no("Укажите дату ГГГГ-ММ-ДД и при необходимости время ЧЧ:ММ.");
-                        var task = new Todo { Text = text.Replace("\r", " ").Replace("\n", " "), Due = due, DueTime = time };
+                        var task = new Todo { Text = text.Replace("\r", " ").Replace("\n", " "), Due = due, DueTime = time, VoiceRecording = voiceRecording };
                         todos.Add(task);
                         try { WriteTodos(); }
                         catch (Exception) { todos.Remove(task); return no("Не удалось сохранить задачу."); }
