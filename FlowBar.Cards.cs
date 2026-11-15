@@ -2279,7 +2279,7 @@ namespace FlowBar
             var featuredGrid = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
             foreach (var theme in mixKeys) featuredGrid.Children.Add(ThemeGridCard(theme, pick, selection, refreshCards));
             c.Children.Add(featuredGrid);
-            c.Children.Add(new Expander { Header = "Анимированная примерка", Content = mixer, Foreground = Frozen(CardFg, 255) });
+            c.Children.Add(mixer); // миксер стилей всегда на виду, не в сворачиваемом пункте
             var extraCards = Styles.Keys.Where(k => !FeaturedThemes.Any(t => t[0] == k) && !fileThemes.ContainsKey(k))
                 .Select(card).ToList();
             var more = shelf(extraCards);

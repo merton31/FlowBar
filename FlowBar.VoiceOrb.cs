@@ -20,6 +20,7 @@ namespace FlowBar
         static readonly Brush IdleGlow = MakeParticleGlow(94);
         static readonly Brush ActiveGlow = MakeParticleGlow(185);
         public bool LightSurface { get; set; }
+        public bool Bright { get; set; } // ярче обычного: для виджета на панели, где шарик без плитки и должен быть виден сразу
         bool active;
         bool animate;
         int frame;
@@ -103,12 +104,13 @@ namespace FlowBar
             if (images.Length > 0)
             {
                 var center = new Point(ActualWidth / 2, ActualHeight / 2);
-                dc.DrawEllipse(active ? ActiveGlow : IdleGlow, null, center, ActualWidth * 0.40, ActualHeight * 0.40);
+                dc.DrawEllipse(active || Bright ? ActiveGlow : IdleGlow, null, center, ActualWidth * (Bright ? 0.46 : 0.40), ActualHeight * (Bright ? 0.46 : 0.40));
                 var bounds = new Rect(RenderSize);
                 dc.DrawImage(images[frame], bounds);
-                dc.PushOpacity(active ? 0.72 : 0.46);
+                dc.PushOpacity(active ? 0.72 : Bright ? 0.72 : 0.46);
                 dc.DrawImage(images[frame], bounds);
                 dc.Pop();
+                if (Bright) { dc.PushOpacity(active ? 0.5 : 0.38); dc.DrawImage(images[frame], bounds); dc.Pop(); } // ещё один слой частиц — заметнее без подложки
             }
             else dc.DrawEllipse(Brushes.LightSkyBlue, null, new Point(ActualWidth / 2, ActualHeight / 2), 15, 15);
         }
