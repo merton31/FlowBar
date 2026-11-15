@@ -619,6 +619,7 @@ namespace FlowBar
                 {
                     File.WriteAllText(schema, outputSchema, new UTF8Encoding(false));
                     args = new[] { "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only", "--skip-git-repo-check",
+                        "--model", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"",
                         "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins", "-c", "web_search=\"disabled\"",
                         "-c", "history.persistence=\"none\"", "--output-schema", schema, "--output-last-message", final, "-" };
                 }
