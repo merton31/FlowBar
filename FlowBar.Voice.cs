@@ -53,6 +53,7 @@ namespace FlowBar
 
         const int MaxVoiceTasks = 30;
         static Window voiceTaskWindow;
+        static bool claudeInstallInProgress;
 
         static bool IsClaudeCodeBinary(string path)
         {
@@ -156,7 +157,7 @@ namespace FlowBar
         static string VoiceAssistantName(string name)
         {
             if (name == "agy") return "Gemini (Antigravity CLI)";
-            return name == "claude" ? "Claude Code" : "Codex CLI";
+            return name == "claude" ? "Claude Code" : "Codex";
         }
 
         static ComboBox VoiceProviderPicker()
@@ -178,6 +179,57 @@ namespace FlowBar
             return name == "claude" ? "https://code.claude.com/docs/en/setup" : "https://developers.openai.com/codex/cli";
         }
 
+        static void OpenClaudeLogin(string exe)
+        {
+            Launch(exe, "auth login");
+        }
+
+        static async Task InstallClaudeCode(Action<string> status, Action installed)
+        {
+            if (claudeInstallInProgress)
+            {
+                status("Claude Code уже устанавливается.");
+                return;
+            }
+            if (DemoMode)
+            {
+                status("Установка доступна в рабочем режиме FlowBar.");
+                return;
+            }
+            string existing = VoiceBinary("claude");
+            if (existing != null)
+            {
+                installed();
+                return;
+            }
+            string winget = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Microsoft", "WindowsApps", "winget.exe");
+            if (!File.Exists(winget))
+            {
+                status("Для автоматической установки нужен WinGet. Используйте «Инструкция» для установки вручную.");
+                return;
+            }
+
+            claudeInstallInProgress = true;
+            status("Устанавливаем Claude Code в фоне…");
+            try
+            {
+                await RunVoiceProcess(winget, new[] { "install", "--id", "Anthropic.ClaudeCode", "--exact", "--source", "winget",
+                    "--scope", "user", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements" },
+                    null, Environment.SystemDirectory, TimeSpan.FromMinutes(10), CancellationToken.None);
+                if (VoiceBinary("claude") != null) installed();
+                else status("Установка завершилась. Нажмите «Проверить установку». Если Claude Code не найден, откройте «Инструкция».");
+            }
+            catch (VoiceProcessException ex)
+            {
+                if (VoiceBinary("claude") != null) installed();
+                else status("WinGet не завершил установку Claude Code (код " + ex.ExitCode + "). Откройте «Инструкция» для установки вручную.");
+            }
+            catch (TimeoutException) { status("Истекло время установки Claude Code. Проверьте подключение и повторите попытку."); }
+            catch (System.ComponentModel.Win32Exception) { status("Не удалось запустить WinGet. Откройте «Инструкция» для установки вручную."); }
+            finally { claudeInstallInProgress = false; }
+        }
+
         void VoiceSettings(StackPanel content)
         {
             var refreshPaths = new List<Action>();
@@ -191,7 +243,9 @@ namespace FlowBar
                 Action check = () =>
                 {
                     var path = VoiceBinary(item.Item1);
-                    label.Text = path != null ? "Программа найдена." : "Программа пока не найдена. Установите её или укажите файл .exe.";
+                    label.Text = path != null ? "Программа найдена." : item.Item1 == "codex" ?
+                        "Codex не найден. Откройте настольный Codex и нажмите «Проверить установку» или укажите codex.exe." :
+                        "Программа пока не найдена. Установите её или укажите файл .exe.";
                     label.ToolTip = path;
                 };
                 refreshPaths.Add(check);
@@ -207,8 +261,23 @@ namespace FlowBar
                     }
                     cfg["voice.path." + item.Item1] = dialog.FileName; SaveCfg(); check();
                 });
-                var download = Btn("Установка и вход", () => Launch(VoiceAssistantSetup(item.Item1)));
-                paths.Children.Add(SetRow(item.Item2, null, VS(label, CardActions(download, choose))));
+                var download = Btn(item.Item1 == "claude" ? "Инструкция" : "Установка и вход", () => Launch(VoiceAssistantSetup(item.Item1)));
+                if (item.Item1 == "claude")
+                {
+                    var install = Btn("Установить Claude Code", async () => await InstallClaudeCode(t => label.Text = t, () =>
+                    {
+                        check();
+                        label.Text = "Claude Code найден. При первом подключении нажмите «Войти».";
+                    }), true);
+                    var login = Btn("Войти", () =>
+                    {
+                        string exe = VoiceBinary("claude");
+                        if (exe != null) OpenClaudeLogin(exe);
+                        else label.Text = "Сначала установите Claude Code.";
+                    });
+                    paths.Children.Add(SetRow(item.Item2, null, VS(label, CardActions(install, login, download, choose))));
+                }
+                else paths.Children.Add(SetRow(item.Item2, null, VS(label, CardActions(download, choose))));
             }
             content.Children.Add(SSub("Голосовые задачи"));
             content.Children.Add(LocalVoiceSetup());
@@ -616,6 +685,22 @@ namespace FlowBar
                     return;
                 }
                 var handySetup = name == "handy";
+                if (name == "claude")
+                {
+                    setup.Children.Add(CardActions(
+                        button("Установить Claude Code", async () => await InstallClaudeCode(t => message.Text = t,
+                            () => message.Text = "Claude Code найден. Войдите при первом подключении и снова разберите текст."), true),
+                        button("Войти", () =>
+                        {
+                            string exe = VoiceBinary("claude");
+                            if (exe != null) OpenClaudeLogin(exe);
+                            else message.Text = "Сначала установите Claude Code.";
+                        }, false),
+                        button("Инструкция", () => Launch(VoiceAssistantSetup(name)), false)));
+                    setup.Visibility = Visibility.Visible;
+                    setup.BringIntoView();
+                    return;
+                }
                 setup.Children.Add(CardActions(
                     button(handySetup ? "Скачать Handy" : "Установка и вход",
                         () => { if (handySetup) { var _ = DownloadHandy(t => message.Text = t); } else Launch(VoiceAssistantSetup(name)); }, true), // Handy скачивается сам, ход — в строке состояния карточки

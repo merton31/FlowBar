@@ -1,4 +1,4 @@
-﻿// Установка и обновление.
+// Установка и обновление.
 // Программа живёт в %LOCALAPPDATA%\Programs\FlowBar, личные данные — отдельно, в %APPDATA%\FlowBar (настройки, закрепления, группы,
 // заметки, задачи, календари, секундомер, экранное время) — обновление их не меняет.
 // Новый FlowBar.exe, запущенный откуда угодно (например, из «Загрузок»), сравнивает версию с установленной:
@@ -10,8 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.6.13.1")]
-[assembly: AssemblyFileVersion("1.6.13.1")]
+[assembly: AssemblyVersion("1.6.13.2")]
+[assembly: AssemblyFileVersion("1.6.13.2")]
 [assembly: AssemblyTitle("FlowBar")]
 [assembly: AssemblyProduct("FlowBar")]
 
