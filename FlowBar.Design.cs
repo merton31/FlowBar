@@ -1608,6 +1608,48 @@ namespace FlowBar
             };
             return b;
         }
+        void StartQuickLinks(ContextMenu menu)
+        {
+            menu.Placement = VerticalBar
+                ? (LeftBar ? System.Windows.Controls.Primitives.PlacementMode.Right : System.Windows.Controls.Primitives.PlacementMode.Left)
+                : (IsTop ? System.Windows.Controls.Primitives.PlacementMode.Bottom : System.Windows.Controls.Primitives.PlacementMode.Top);
+            MenuSection(menu,
+                Item("Установленные приложения", () => Launch("ms-settings:appsfeatures")),
+                Item("Электропитание", () => Launch("ms-settings:powersleep")),
+                Item("Просмотр событий", () => Launch("eventvwr.msc")),
+                Item("Система", () => Launch("ms-settings:about")),
+                Item("Диспетчер устройств", () => Launch("devmgmt.msc")),
+                Item("Сетевые подключения", () => Launch("ms-settings:network-status")),
+                Item("Управление дисками", () => Launch("diskmgmt.msc")),
+                Item("Управление компьютером", () => Launch("compmgmt.msc")),
+                Item("Терминал", () => OpenWindowsTerminal(false)),
+                Item("Терминал (администратор)", () => OpenWindowsTerminal(true)));
+            MenuSection(menu,
+                Item("Диспетчер задач", () => Launch("taskmgr.exe")),
+                Item("Параметры", () => Launch("ms-settings:")),
+                Item("Проводник", () => Launch("explorer.exe")),
+                Item("Поиск", () => Keys(0x5B, 0x53)),
+                Item("Выполнить", () => Keys(0x5B, 0x52)));
+            var power = MenuBranch("Завершение работы или выход из системы");
+            power.Items.Add(Item("Выход", () => Launch("shutdown.exe", "/l")));
+            power.Items.Add(Item("Спящий режим", () => System.Windows.Forms.Application.SetSuspendState(System.Windows.Forms.PowerState.Suspend, false, false)));
+            power.Items.Add(Item("Завершение работы", () => Launch("shutdown.exe", "/s /t 0")));
+            power.Items.Add(Item("Перезагрузка", () => Launch("shutdown.exe", "/r /t 0")));
+            MenuSection(menu, power, Item("Рабочий стол", () => Keys(0x5B, 0x44)));
+        }
+
+        static void OpenWindowsTerminal(bool elevated)
+        {
+            string alias = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "wt.exe");
+            string executable = File.Exists(alias) ? alias : "powershell.exe";
+            if (!elevated) { Launch(executable); return; }
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" }); }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                if (ex.NativeErrorCode != 1223) MessageBox.Show("Не удалось открыть терминал с правами администратора.", "FlowBar");
+            }
+        }
+
         // меню модуля: вид, убрать с панели, каталог
         Action<ContextMenu> WMenu(string id, Action<ContextMenu> extra = null)
         {
@@ -3170,7 +3212,7 @@ namespace FlowBar
             KeyboardNavigation.SetTabNavigation(root, KeyboardNavigationMode.Cycle);
 
             startLogo = new StartLogo();
-            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), null); ((Press)startEl).ShellKey = true; // в ряду: его можно поставить между модулями
+            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), StartQuickLinks); ((Press)startEl).ShellKey = true; // в ряду: его можно поставить между модулями
             searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellOver(searchEl, 0x5B, 0x53), null) : null; if (searchEl != null) ((Press)searchEl).ShellKey = true;
             strip = new StackPanel { Orientation = orientation };
             stripScroll = new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = VerticalBar ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = VerticalBar ? ScrollBarVisibility.Hidden : ScrollBarVisibility.Disabled, Focusable = false };
@@ -3308,7 +3350,7 @@ namespace FlowBar
         [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string m);
         [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(N.POINT p);
         [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
-        static ContextMenu guarded; static DispatcherTimer menuT; static IntPtr menuFg, mouseHook; static LLProc hookProc;
+        static ContextMenu guarded; static DispatcherTimer menuT; static IntPtr menuFg, mouseHook, previewKeyHook; static LLProc hookProc, previewKeyProc;
         static readonly System.ComponentModel.DependencyPropertyDescriptor MenuOpenProperty =
             System.ComponentModel.DependencyPropertyDescriptor.FromProperty(ContextMenu.IsOpenProperty, typeof(ContextMenu));
         static void GuardMenu(ContextMenu m)
@@ -3319,7 +3361,7 @@ namespace FlowBar
             MenuOpenProperty.AddValueChanged(m, GuardedMenuChanged);
             menuFg = N.GetForegroundWindow(); // фокус не забираем: активация окна меню снимает у него захват мыши, и WPF сразу закрывает меню
             // перехват мыши — только пока меню открыто: видит каждое нажатие, даже самое быстрое
-            if (mouseHook == IntPtr.Zero) { hookProc = MouseLL; mouseHook = SetWindowsHookEx(14 /* WH_MOUSE_LL */, hookProc, GetModuleHandle(null), 0); }
+            UpdateTransientInputHooks();
             if (menuT == null) { menuT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) }; menuT.Tick += (s, e) => MenuTick(); }
             menuT.Start();
         }
@@ -3327,18 +3369,73 @@ namespace FlowBar
         {
             if (sender == guarded && !guarded.IsOpen) CloseGuarded();
         }
+        static void UpdateTransientInputHooks()
+        {
+            bool hasPreview = bars.Any(b => b.preview != null);
+            bool needed = guarded != null || hasPreview;
+            if (needed && mouseHook == IntPtr.Zero)
+            {
+                hookProc = MouseLL;
+                mouseHook = SetWindowsHookEx(14 /* WH_MOUSE_LL */, hookProc, GetModuleHandle(null), 0);
+            }
+            else if (!needed && mouseHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(mouseHook);
+                mouseHook = IntPtr.Zero;
+            }
+            if (hasPreview && previewKeyHook == IntPtr.Zero)
+            {
+                previewKeyProc = PreviewKeyLL;
+                previewKeyHook = SetWindowsHookEx(13 /* WH_KEYBOARD_LL */, previewKeyProc, GetModuleHandle(null), 0);
+            }
+            else if (!hasPreview && previewKeyHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(previewKeyHook);
+                previewKeyHook = IntPtr.Zero;
+            }
+        }
+
+        static IntPtr PreviewKeyLL(int code, IntPtr w, IntPtr l)
+        {
+            if (code >= 0 && (w.ToInt32() == 0x100 || w.ToInt32() == 0x104) && Marshal.ReadInt32(l) == 0x1B)
+            {
+                var open = bars.Where(b => b.preview != null && b.previewArrangeOpen == 0)
+                    .Select(b => Tuple.Create(b, b.preview)).ToArray();
+                if (open.Length != 0)
+                    Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+                    {
+                        foreach (var entry in open)
+                            if (entry.Item1.preview == entry.Item2) entry.Item1.ClosePreview();
+                    }));
+            }
+            return CallNextHookEx(previewKeyHook, code, w, l);
+        }
+
+        static bool IsContextPopup(IntPtr h)
+        {
+            var source = h == IntPtr.Zero ? null : HwndSource.FromHwnd(h);
+            return source != null && source.RootVisual != null && source.RootVisual.GetType().Name == "PopupRoot";
+        }
+
         static IntPtr MouseLL(int code, IntPtr w, IntPtr l)
         {
             int msg = w.ToInt32();
             if (code >= 0 && (msg == 0x201 || msg == 0x204 || msg == 0x207 || msg == 0x20B)) // нажатие левой, правой, средней, боковой кнопки
             {
                 var p = new N.POINT { X = Marshal.ReadInt32(l, 0), Y = Marshal.ReadInt32(l, 4) };
-                var h = GetAncestor(WindowFromPoint(p), 2 /* GA_ROOT */); var src = h == IntPtr.Zero ? null : HwndSource.FromHwnd(h);
-                // мимо меню и его подменю (всплывающие окна FlowBar) — закрыть; сам клик проходит дальше как обычно
-                if (src == null || src.RootVisual == null || src.RootVisual.GetType().Name != "PopupRoot")
+                var h = GetAncestor(WindowFromPoint(p), 2 /* GA_ROOT */);
+                var menu = guarded;
+                var dismissed = bars.Where(b => b.preview != null && !b.PreviewInside(h, p))
+                    .Select(b => Tuple.Create(b, b.preview)).ToArray();
+                if (dismissed.Length != 0 || (menu != null && !IsContextPopup(h)))
                 {
-                    var menu = guarded;
-                    Application.Current.Dispatcher.BeginInvoke(new Action(() => { if (guarded == menu) CloseGuarded(); }));
+                    bool closeMenu = menu != null && !IsContextPopup(h);
+                    Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+                    {
+                        foreach (var entry in dismissed)
+                            if (entry.Item1.preview == entry.Item2) entry.Item1.ClosePreview();
+                        if (closeMenu && guarded == menu) CloseGuarded();
+                    }));
                 }
             }
             return CallNextHookEx(mouseHook, code, w, l);
@@ -3358,7 +3455,7 @@ namespace FlowBar
         {
             var menu = guarded;
             guarded = null; if (menuT != null) menuT.Stop();
-            if (mouseHook != IntPtr.Zero) { UnhookWindowsHookEx(mouseHook); mouseHook = IntPtr.Zero; }
+            UpdateTransientInputHooks();
             if (menu == null) return;
             MenuOpenProperty.RemoveValueChanged(menu, GuardedMenuChanged);
             if (menu.IsOpen) menu.IsOpen = false;
@@ -3398,8 +3495,28 @@ namespace FlowBar
             if (VerticalBar) { if (LeftBar) l = b.Left; else r = b.Right; } else if (IsTop) t = b.Top; else btm = b.Bottom;
             return p.X >= l && p.X <= r && p.Y >= t && p.Y <= btm;
         }
+        void RevealForShell()
+        {
+            fsHidden = autoHidden = sliding = false;
+            lastUse = DateTime.Now;
+            if (frame != null)
+            {
+                frame.BeginAnimation(OpacityProperty, null);
+                var shift = frame.RenderTransform as TranslateTransform;
+                if (shift != null)
+                {
+                    shift.BeginAnimation(TranslateTransform.XProperty, null);
+                    shift.BeginAnimation(TranslateTransform.YProperty, null);
+                }
+            }
+            if (glassBg != null) { glassBg.Shift(0, 0); glassBg.Unfade(0); }
+            foreach (var backdrop in sectionBackdrops) { backdrop.Shift(0, 0); backdrop.Unfade(0); }
+            Visibility = Visibility.Visible;
+        }
+
         void AutoHideTick()
         {
+            if ((fsHidden || autoHidden || sliding) && ShellFlyoutHere()) { RevealForShell(); return; }
             if (!AutoHide) { if (autoHidden) { autoHidden = false; ApplyVis(); } return; }
             N.POINT p; N.GetCursorPos(out p); var b = scr.Bounds;
             bool atEdge = VerticalBar ? p.Y >= b.Top && p.Y < b.Bottom && (LeftBar ? p.X <= b.Left + 1 && p.X >= b.Left : p.X >= b.Right - 2 && p.X < b.Right)

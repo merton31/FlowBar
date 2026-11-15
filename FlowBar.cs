@@ -1008,7 +1008,8 @@ namespace FlowBar
         IntPtr hwnd; uint selfPid = (uint)Process.GetCurrentProcess().Id;
         string lastKey;
         Window panel; string panelTitle;
-        Window preview; FrameworkElement previewFor; List<IntPtr> thumbs = new List<IntPtr>(); DispatcherTimer hoverT; int previewMiss;
+        Window preview; FrameworkElement previewFor; List<IntPtr> thumbs = new List<IntPtr>(); DispatcherTimer hoverT, previewOpenTimer; int previewMiss;
+        IntPtr previewForeground, previewHandle;
         
         static ClaudeUsage claude = new ClaudeUsage(); static CodexLimits codex; static bool aiBusy;
         // календари: строки calendars.txt — «ссылка<TAB>название»
@@ -1858,7 +1859,7 @@ namespace FlowBar
             N.SetWindowLongPtr(hwnd, -20, new IntPtr(ex | 0x08000000 | 0x80)); // не забирать фокус, не показываться в Alt+Tab
             HwndSource.FromHwnd(hwnd).AddHook(WndProc);
             if (primary && !DemoMode) RegisterShellHookWindow(hwnd); // мигание окон «требует внимания»
-            if (primary) HookMinimizeEvents();
+            if (primary) { HookMinimizeEvents(); HookForegroundChanges(); }
             ApplyHotkeys();
             // стрелки и Tab ходят по плиткам по кругу, Esc возвращает в прежнее окно
             PreviewKeyDown += (o, ke) => { if (ke.Key != System.Windows.Input.Key.Escape) return; if (preview != null) { FoldPreview(); ke.Handled = true; } if (backTo != IntPtr.Zero) { N.SetForegroundWindow(backTo); backTo = IntPtr.Zero; ke.Handled = true; } };
@@ -2004,12 +2005,18 @@ namespace FlowBar
 
         void Fullscreen()
         {
+            if (ShellFlyoutHere())
+            {
+                if (fsHidden || autoHidden || sliding) RevealForShell();
+                return;
+            }
             var f = N.GetForegroundWindow(); bool full = false; N.RECT r; var b = scr.Bounds;
             if (f != IntPtr.Zero && f != hwnd && !N.IsZoomed(f) && N.GetWindowRect(f, out r))
             {
                 var c = Cls(f);
                 full = c != "Progman" && c != "WorkerW" && r.L <= b.Left && r.T <= b.Top && r.R >= b.Right && r.B >= b.Bottom;
             }
+            if (full && !fsHidden) ClosePreview();
             fsHidden = full; ApplyVis();
         }
 
@@ -2351,11 +2358,26 @@ namespace FlowBar
         // пока открыто контекстное меню или только что нажата правая кнопка на значке, предпросмотр окон не показывается
         DateTime previewBlockUntil = DateTime.MinValue;
         bool PreviewBlocked { get { return menusOpen > 0 || DateTime.Now < previewBlockUntil; } }
+        void CancelPreviewOpen()
+        {
+            if (previewOpenTimer == null) return;
+            previewOpenTimer.Stop();
+            previewOpenTimer = null;
+        }
+
         void HoverStart(Border tile, List<Win> ws)
         {
+            CancelPreviewOpen();
             if (ws.Count == 0 || PreviewBlocked || HoverAfterMinimize(ws) || C("preview.open", "delay") == "click" || previewPinned) return;
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(C("preview.open", "delay") == "instant" ? 1 : 400) };
-            t.Tick += (s, e) => { t.Stop(); if (!dragging && !previewPinned && !PreviewBlocked && !HoverAfterMinimize(ws) && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
+            var t = previewOpenTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(C("preview.open", "delay") == "instant" ? 1 : 400) };
+            t.Tick += (s, e) =>
+            {
+                if (previewOpenTimer != t) return;
+                CancelPreviewOpen();
+                if (!dragging && !previewPinned && !PreviewBlocked && !HoverAfterMinimize(ws) &&
+                    IsVisible && tile.IsVisible && tile.IsMouseOver && previewFor != tile)
+                    ShowPreview(tile, ws);
+            };
             t.Start();
         }
         bool previewPinned;
@@ -2403,9 +2425,10 @@ namespace FlowBar
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
             if (!pinned && PreviewBlocked) return; // меню по правой кнопке в приоритете
-            ClosePreview(); previewPinned = pinned; TipHide(true);
+            ClosePreview(); TipHide(true);
             var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
+            previewPinned = pinned;
             previewNormalWindows = new HashSet<IntPtr>(windows.Where(item => !N.IsIconic(item.H)).Select(item => item.H));
             bool folder = windows.Count > 1;
             const double padding = 8, margin = 4;
@@ -2670,6 +2693,7 @@ namespace FlowBar
                 foreach (var menu in arrangementMenus) menu.IsOpen = false;
                 previewArrangeOpen = 0;
                 stopMotion();
+                if (preview == w) { preview = null; ClosePreview(); }
                 if (!folder) return;
                 tile.LayoutUpdated -= anchorLayout;
                 if (anchorWindow != null) anchorWindow.LocationChanged -= anchorLayout;
@@ -2713,24 +2737,61 @@ namespace FlowBar
             };
             if (!folder) Glass(w, face, face.CornerRadius.TopLeft, 0);
             preview = w; previewFor = tile; previewMiss = 0;
+            previewForeground = N.GetForegroundWindow();
             previewEscapeDown = (GetAsyncKeyState(0x1B) & 0x8000) != 0;
-            w.Show(); hoverT.Start();
+            w.Show();
+            previewHandle = new WindowInteropHelper(w).Handle;
+            UpdateTransientInputHooks();
+            hoverT.Start();
         }
+
+        bool PreviewInside(IntPtr hit, N.POINT p)
+        {
+            if (preview == null || hit == IntPtr.Zero) return false;
+            if (hit == previewHandle || (previewArrangeOpen > 0 && IsContextPopup(hit))) return true;
+            if (previewFor == null || PresentationSource.FromVisual(previewFor) == null || !previewFor.IsVisible) return false;
+            var anchorWindow = Window.GetWindow(previewFor);
+            if (anchorWindow == null || hit != new WindowInteropHelper(anchorWindow).Handle) return false;
+            try { return new Rect(new Point(), previewFor.RenderSize).Contains(previewFor.PointFromScreen(new Point(p.X, p.Y))); }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        void CheckPreviewForeground(IntPtr current)
+        {
+            if (preview == null || current == IntPtr.Zero || current == previewForeground) return;
+            if (current == previewHandle || (previewArrangeOpen > 0 && IsContextPopup(current)))
+            {
+                previewForeground = current;
+                return;
+            }
+            ClosePreview();
+        }
+
         void PreviewHoverCheck()
         {
             if (preview == null) { hoverT.Stop(); return; }
+            CheckPreviewForeground(N.GetForegroundWindow());
+            if (preview == null) return;
+            if (previewFor == null || !previewFor.IsVisible || PresentationSource.FromVisual(previewFor) == null)
+            {
+                ClosePreview();
+                return;
+            }
             var minimized = previewNormalWindows.FirstOrDefault(h => !N.IsWindow(h) || N.IsIconic(h));
             if (minimized != IntPtr.Zero) { SuppressMinimizedPreview(minimized); return; }
             bool escape = (GetAsyncKeyState(0x1B) & 0x8000) != 0;
             bool pressed = escape && !previewEscapeDown;
             previewEscapeDown = escape;
-            if (pressed && previewPinned && previewArrangeOpen == 0) { ClosePreview(); return; }
+            if (pressed && previewArrangeOpen == 0) { ClosePreview(); return; }
             if (previewPinned || selectingThumbnail) return;
-            previewMiss = previewFor.IsMouseOver || preview.IsMouseOver || previewArrangeOpen > 0 ? 0 : previewMiss + 1;
-            if (previewMiss >= 15) FoldPreview();
+            N.POINT cursor;
+            bool near = N.GetCursorPos(out cursor) && PreviewInside(GetAncestor(WindowFromPoint(cursor), 2), cursor);
+            previewMiss = near || previewArrangeOpen > 0 ? 0 : previewMiss + 1;
+            if (previewMiss >= 7) FoldPreview();
         }
         void ClosePreview()
         {
+            CancelPreviewOpen();
             if (thumbnailSelection != null) { thumbnailSelection.Stop(); thumbnailSelection = null; }
             HidePlacementOutline();
             previewPinned = false;
@@ -2739,8 +2800,12 @@ namespace FlowBar
             spreadPreview = null;
             foreach (var t in thumbs) N.DwmUnregisterThumbnail(t);
             thumbs.Clear();
-            if (preview != null) { preview.Close(); preview = null; }
-            previewFor = null; hoverT.Stop();
+            var window = preview;
+            preview = null; previewFor = null;
+            previewHandle = previewForeground = IntPtr.Zero;
+            hoverT.Stop();
+            if (window != null) window.Close();
+            UpdateTransientInputHooks();
             selectingThumbnail = false; animateThumbnailChoice = null;
         }
 
@@ -3348,7 +3413,7 @@ namespace FlowBar
             ShowPanel("Задачи", VS(summary, composer, filters, feedback, undoArea, list), 416, input, () =>
             {
                 if (seenTasks != todoVersion || seenReminders != reminderVersion || shownDay != DateTime.Today) render();
-            }, null, tint);
+            }, schedule.ClosePicker, tint);
         }
 
         // ---------- инструменты: таймер, секундомер, валюта, файлы, корзина ----------
@@ -4703,6 +4768,7 @@ namespace FlowBar
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--voice-local") return Bar.RunLocalVoiceWorker(args);
             var me = Process.GetCurrentProcess();
             if (args.Contains("--restore"))
             {

@@ -80,6 +80,34 @@ namespace FlowBar
             return file;
         }
 
+        // Handy 0.10.1 загружает настройки до регистрации клавиш и дополняет частичный файл значениями по умолчанию.
+        internal static bool SeedHandyShortcut(string file)
+        {
+            if (File.Exists(file)) return false;
+            Directory.CreateDirectory(Path.GetDirectoryName(file));
+            var shortcut = new Dictionary<string, object>
+            {
+                { "id", "transcribe" }, { "name", "Transcribe" },
+                { "description", "Converts your speech into text." },
+                { "default_binding", "ctrl+space" }, { "current_binding", "ctrl_right+space" }
+            };
+            var settings = new Dictionary<string, object>
+            {
+                { "keyboard_implementation", "handy_keys" },
+                { "bindings", new Dictionary<string, object> { { "transcribe", shortcut } } }
+            };
+            var root = new Dictionary<string, object> { { "settings", settings } };
+            string pending = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(pending, new JavaScriptSerializer().Serialize(root), new System.Text.UTF8Encoding(false));
+                try { File.Move(pending, file); }
+                catch (IOException) { if (File.Exists(file)) return false; throw; }
+                return true;
+            }
+            finally { try { File.Delete(pending); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        }
+
         // по нажатию: найти последнюю версию, скачать, проверить, запустить установщик. status — подпись для пользователя
         static async Task DownloadHandy(Action<string> status)
         {
@@ -95,7 +123,10 @@ namespace FlowBar
                 var ui = Application.Current.Dispatcher;
                 status("Скачиваем " + pick.Item1 + "…");
                 var path = await Task.Run(() => FetchHandyInstaller(pick, pct => ui.BeginInvoke(new Action(() => status("Скачиваем " + pick.Item1 + ": " + pct + "%")))));
-                status("Handy скачан и проверен. Запускаем установщик: завершите установку в его окне, затем нажмите «Проверить установку».");
+                string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "com.pais.handy", "settings_store.json");
+                bool prepared = SeedHandyShortcut(profile);
+                status("Handy скачан и проверен. Завершите установку в его окне." +
+                    (prepared ? " Для Handy задан правый Ctrl+Пробел." : ""));
                 Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
             }
             catch (Exception ex)

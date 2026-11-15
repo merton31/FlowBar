@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -19,6 +20,8 @@ namespace FlowBar
             readonly Wheel[] wheels = new Wheel[5];
             readonly TextBlock state = CardStatus("");
             readonly Border modeNone, modeDue, clearTime;
+            readonly Popup picker;
+            readonly DockPanel heading;
 
             public TaskSchedule()
             {
@@ -26,10 +29,9 @@ namespace FlowBar
                 var title = Txt("Срок", 12, true);
                 title.VerticalAlignment = VerticalAlignment.Center;
                 title.Foreground = Frozen(TaskAccent, 255);
-                var heading = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
-                // переключатель «Без срока» / «Срок»: по умолчанию без срока; колёса при выключенном сроке приглушены, а первое же их движение включает срок
+                heading = new DockPanel();
                 modeNone = TaskButton("Без срока", () => Set(null, null));
-                modeDue = TaskButton("Срок", () => Set(cursor, Time));
+                modeDue = TaskButton("Срок", OpenPicker);
                 foreach (var mode in new[] { modeNone, modeDue }) { mode.Padding = new Thickness(10, 4, 10, 4); mode.Margin = new Thickness(4, 0, 0, 0); }
                 var toggle = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
                 toggle.Children.Add(modeNone); toggle.Children.Add(modeDue);
@@ -56,16 +58,63 @@ namespace FlowBar
                     wheels[i] = wheel;
                     Grid.SetColumn(wheel, i); columns.Children.Add(wheel);
                 }
-                Children.Add(columns);
-                clearTime = TaskButton("Снять время", () => Set(Date, null));
-                var clear = CardActions(clearTime);
-                clear.Margin = new Thickness(0, 5, 0, 0);
-                Children.Add(clear);
+                clearTime = TaskButton("Без времени", () => Set(Date, null));
+                var done = TaskButton("Готово", () => { ClosePicker(); modeDue.Focus(); }, true);
+                var actions = new DockPanel { Margin = new Thickness(0, 9, 0, 0), LastChildFill = false };
+                DockPanel.SetDock(done, Dock.Right);
+                DockPanel.SetDock(clearTime, Dock.Left);
+                actions.Children.Add(done);
+                actions.Children.Add(clearTime);
+                var titlePicker = Txt("Дата и время", 14, true);
+                titlePicker.Margin = new Thickness(0, 0, 0, 9);
+                var surface = TaskSurface(VS(titlePicker, columns, actions));
+                surface.Width = 300;
+                surface.Background = Frozen(CardBg, 0xFA);
+                surface.Padding = new Thickness(12);
+                surface.Margin = new Thickness(0);
+                KeyboardNavigation.SetTabNavigation(surface, KeyboardNavigationMode.Cycle);
+                surface.PreviewKeyDown += (s, e) =>
+                {
+                    if (e.Key != System.Windows.Input.Key.Escape) return;
+                    e.Handled = true;
+                    ClosePicker(); modeDue.Focus();
+                };
+                picker = new Popup { AllowsTransparency = true, StaysOpen = false, Placement = PlacementMode.Custom, Child = surface };
+                picker.CustomPopupPlacementCallback = (popupSize, targetSize, offset) => new[]
+                {
+                    new CustomPopupPlacement(new Point(targetSize.Width + 6, offset.Y), PopupPrimaryAxis.Vertical),
+                    new CustomPopupPlacement(new Point(-popupSize.Width - 6, offset.Y), PopupPrimaryAxis.Vertical)
+                };
+                picker.Opened += (s, e) => wheels[0].FocusValue();
+                Children.Add(picker);
+                IsEnabledChanged += (s, e) => { if (!IsEnabled) ClosePicker(); };
+                IsVisibleChanged += (s, e) => { if (!IsVisible) ClosePicker(); };
+                Unloaded += (s, e) => ClosePicker();
                 Set(null, null);
+            }
+
+            void OpenPicker()
+            {
+                if (picker.IsOpen) return;
+                var owner = Window.GetWindow(this);
+                if (owner == null) return;
+                if (!Date.HasValue) Set(cursor, null);
+                picker.PlacementTarget = owner;
+                picker.VerticalOffset = Math.Max(0, heading.TranslatePoint(new Point(), owner).Y - 12);
+                picker.PopupAnimation = Motion ? PopupAnimation.Fade : PopupAnimation.None;
+                picker.IsOpen = true;
+            }
+
+            public bool ClosePicker()
+            {
+                if (!picker.IsOpen) return false;
+                picker.IsOpen = false;
+                return true;
             }
 
             public void Set(DateTime? date, TimeSpan? time)
             {
+                if (!date.HasValue) ClosePicker();
                 Date = date.HasValue ? date.Value.Date : (DateTime?)null;
                 Time = Date.HasValue ? time : null;
                 cursor = Date ?? DateTime.Today;
@@ -89,7 +138,8 @@ namespace FlowBar
 
             void Refresh(int changed, int direction)
             {
-                state.Text = !Date.HasValue ? "срока нет" : Time.HasValue ? "дата и время" : "без времени";
+                string dateFormat = Date.HasValue && Date.Value.Year != DateTime.Today.Year ? "d MMM yyyy" : "d MMM";
+                state.Text = !Date.HasValue ? "срока нет" : Date.Value.ToString(dateFormat) + (Time.HasValue ? " · " + TaskTimeLabel(Time) : "");
                 state.Opacity = 0.8;
                 ModeLook(modeNone, !Date.HasValue); ModeLook(modeDue, Date.HasValue);
                 clearTime.Visibility = Time.HasValue ? Visibility.Visible : Visibility.Collapsed;
@@ -181,6 +231,8 @@ namespace FlowBar
                     surface.LostKeyboardFocus += (s, e) => focus.BorderBrush = Frozen(baseTint, 0x39);
                     Children.Add(surface);
                 }
+
+                public void FocusValue() { surface.Focus(); }
 
                 public void Paint(bool active, int direction)
                 {
