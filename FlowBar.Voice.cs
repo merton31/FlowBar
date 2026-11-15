@@ -54,10 +54,49 @@ namespace FlowBar
         const int MaxVoiceTasks = 30;
         static Window voiceTaskWindow;
 
+        static bool IsClaudeCodeBinary(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path) || !File.Exists(path)) return false;
+            try
+            {
+                using (var reader = new BinaryReader(File.OpenRead(path)))
+                {
+                    const int subsystemOffset = 24 + 68;
+                    var stream = reader.BaseStream;
+                    if (stream.Length < 64 || reader.ReadUInt16() != 0x5A4D) return false;
+                    stream.Position = 60;
+                    int pe = reader.ReadInt32();
+                    if (pe < 64 || pe > stream.Length - subsystemOffset - 2) return false;
+                    stream.Position = pe;
+                    if (reader.ReadUInt32() != 0x00004550) return false;
+                    stream.Position = pe + subsystemOffset;
+                    if (reader.ReadUInt16() != 3 /* Windows CUI */) return false;
+                }
+                var version = FileVersionInfo.GetVersionInfo(path);
+                return string.Equals(version.ProductName, "Claude Code", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Path.GetFileName(path), "claude.exe", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+            catch (System.ComponentModel.Win32Exception) { return false; }
+        }
+
+        static IEnumerable<string> ClaudeWinGetBinaries(string local)
+        {
+            string packages = Path.Combine(local, "Microsoft", "WinGet", "Packages");
+            try
+            {
+                return Directory.GetDirectories(packages, "Anthropic.ClaudeCode_*")
+                    .Select(package => Path.Combine(package, "claude.exe")).ToArray();
+            }
+            catch (IOException) { return new string[0]; }
+            catch (UnauthorizedAccessException) { return new string[0]; }
+        }
+
         static string VoiceBinary(string name)
         {
             var manual = C("voice.path." + name, "");
-            if (Path.IsPathRooted(manual) && File.Exists(manual)) return manual;
+            if (Path.IsPathRooted(manual) && File.Exists(manual) && (name != "claude" || IsClaudeCodeBinary(manual))) return manual;
             var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             var file = name + ".exe";
@@ -70,12 +109,16 @@ namespace FlowBar
                 Path.Combine(local, "Microsoft", "WinGet", "Links", file),
                 Path.Combine(profile, ".local", "bin", file)
             };
-            foreach (var raw in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+            if (name == "claude") candidates.AddRange(ClaudeWinGetBinaries(local));
+            string search = Environment.GetEnvironmentVariable("PATH") ?? "";
+            if (name == "claude") search += ";" + Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User);
+            foreach (var raw in search.Split(';'))
             {
-                string folder = raw.Trim().Trim('"');
+                string folder = Environment.ExpandEnvironmentVariables(raw.Trim().Trim('"'));
                 if (Path.IsPathRooted(folder)) candidates.Add(Path.Combine(folder, file));
             }
-            var found = candidates.FirstOrDefault(p => !string.IsNullOrEmpty(p) && Path.IsPathRooted(p) && File.Exists(p));
+            var found = name == "claude" ? candidates.FirstOrDefault(IsClaudeCodeBinary) :
+                candidates.FirstOrDefault(p => !string.IsNullOrEmpty(p) && Path.IsPathRooted(p) && File.Exists(p));
             if (found != null || name != "codex") return found;
             try
             {
@@ -157,6 +200,11 @@ namespace FlowBar
                 {
                     var dialog = new OpenFileDialog { Filter = "Программа Windows (*.exe)|*.exe", CheckFileExists = true };
                     if (dialog.ShowDialog(settings) != true) return;
+                    if (item.Item1 == "claude" && !IsClaudeCodeBinary(dialog.FileName))
+                    {
+                        label.Text = "Выберите claude.exe из Claude Code. Настольный Claude не поддерживает фоновый запуск.";
+                        return;
+                    }
                     cfg["voice.path." + item.Item1] = dialog.FileName; SaveCfg(); check();
                 });
                 var download = Btn("Установка и вход", () => Launch(VoiceAssistantSetup(item.Item1)));
@@ -238,17 +286,18 @@ namespace FlowBar
             public VoiceProcessException(int code, string detail, string output = null) { ExitCode = code; Detail = detail; Output = output; }
         }
 
-        static async Task<string> RunVoiceProcess(string exe, string[] args, string input, string directory, TimeSpan timeout, CancellationToken stop)
+        static async Task<string> RunVoiceProcess(string exe, string[] args, string input, string directory, TimeSpan timeout, CancellationToken stop, bool skipClaudeHistory = false)
         {
             stop.ThrowIfCancellationRequested();
             var psi = new ProcessStartInfo(exe, string.Join(" ", args.Select(VoiceArgument)))
             {
-                UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory,
+                UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = directory,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
                 RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = input != null
             };
             foreach (string name in new[] { "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_APP_TOOLS_PIPE_PATH", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT" })
                 psi.EnvironmentVariables.Remove(name);
+            if (skipClaudeHistory) psi.EnvironmentVariables["CLAUDE_CODE_SKIP_PROMPT_HISTORY"] = "1";
             using (var process = Process.Start(psi))
             {
                 var output = process.StandardOutput.ReadToEndAsync();
@@ -460,6 +509,8 @@ namespace FlowBar
 
         static async Task<VoicePlan> VoiceStructureCore(string provider, string exe, string text, bool route, CancellationToken stop)
         {
+            if (provider == "claude" && !IsClaudeCodeBinary(exe))
+                throw new InvalidOperationException("Для фонового разбора нужен Claude Code.");
             string work = Path.Combine(Path.GetTempPath(), "FlowBarVoiceAI-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(work);
             string schema = Path.Combine(work, "task.schema.json"), final = Path.Combine(work, "task.json");
@@ -493,15 +544,15 @@ namespace FlowBar
                 }
                 if (claude)
                     args = new[] { "--print", "--output-format", "json", "--json-schema", outputSchema, "--no-session-persistence",
-                        "--restricted", "--tools", "", "--strict-mcp-config" };
+                        "--restricted", "--no-chrome", "--tools", "", "--strict-mcp-config" };
                 else
                 {
                     File.WriteAllText(schema, outputSchema, new UTF8Encoding(false));
                     args = new[] { "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only", "--skip-git-repo-check",
                         "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins", "-c", "web_search=\"disabled\"",
-                        "--output-schema", schema, "--output-last-message", final, "-" };
+                        "-c", "history.persistence=\"none\"", "--output-schema", schema, "--output-last-message", final, "-" };
                 }
-                string output = await RunVoiceProcess(exe, args, prompt, work, TimeSpan.FromMinutes(2), stop);
+                string output = await RunVoiceProcess(exe, args, prompt, work, TimeSpan.FromMinutes(2), stop, skipClaudeHistory: claude);
                 return VoicePlanFromJson(claude ? output : File.ReadAllText(final), claude, route);
             }
             finally
@@ -775,10 +826,13 @@ namespace FlowBar
                 }
                 if (exe == null)
                 {
-                    message.Text = VoiceAssistantName(selected) + " не найден. Установите программу и войдите в аккаунт, затем нажмите «" + (route ? "Разобрать текст" : "Сформировать список") + "». Можно сохранить текст кнопкой «Без ИИ».";
+                    message.Text = selected == "claude" ?
+                        "Для фонового разбора нужен Claude Code. Установите его и войдите в аккаунт или сохраните расшифровку кнопкой «Без ИИ»." :
+                        VoiceAssistantName(selected) + " не найден. Установите программу и войдите в аккаунт, затем нажмите «" +
+                        (route ? "Разобрать текст" : "Сформировать список") + "». Можно сохранить текст кнопкой «Без ИИ».";
                     showSetup(selected); return;
                 }
-                busy = true; updateControls(); review.Visibility = Visibility.Collapsed; message.Text = route ? "Помощник распределяет текст по задачам и заметкам…" : "Помощник составляет список задач…";
+                busy = true; updateControls(); review.Visibility = Visibility.Collapsed; message.Text = VoiceAssistantName(selected) + (route ? " разбирает текст в фоне…" : " составляет список задач в фоне…");
                 try
                 {
                     var plan = await VoiceStructureCore(selected, exe, input.Text, route, cancel.Token);
