@@ -137,7 +137,28 @@ namespace FlowBar
         static extern IntPtr SetWinEventHook(uint first, uint last, IntPtr module, MinimizeCallback callback, uint process, uint thread, uint flags);
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool UnhookWinEvent(IntPtr hook);
-        MinimizeCallback minimizeCallback;
+        MinimizeCallback minimizeCallback, foregroundCallback;
+
+        void HookForegroundChanges()
+        {
+            const uint foreground = 0x0003;
+            foregroundCallback = (hook, kind, window, objectId, childId, threadId, time) =>
+            {
+                if (window == IntPtr.Zero || objectId != 0 || childId != 0) return;
+                Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+                {
+                    if (shuttingDown || !bars.Contains(this) || N.GetForegroundWindow() != window) return;
+                    All(b =>
+                    {
+                        b.CancelPreviewOpen();
+                        b.CheckPreviewForeground(window);
+                        b.Fullscreen();
+                    });
+                }));
+            };
+            var eventHook = SetWinEventHook(foreground, foreground, IntPtr.Zero, foregroundCallback, 0, 0, 0);
+            Closed += (s, e) => { if (eventHook != IntPtr.Zero) UnhookWinEvent(eventHook); };
+        }
         HashSet<IntPtr> previewNormalWindows = new HashSet<IntPtr>();
         IntPtr lastMinimizedWindow;
         DateTime lastMinimizedUntil;
