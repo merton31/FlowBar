@@ -4768,6 +4768,7 @@ namespace FlowBar
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--voice-local") return Bar.RunLocalVoiceWorker(args);
             var me = Process.GetCurrentProcess();
             if (args.Contains("--restore"))
             {

@@ -332,8 +332,8 @@ namespace FlowBar
             parent.Items.Add(item);
         }
 
-        static readonly string[] HotkeyNames = { "Задачи", "Фокус панели", "Быстрый поиск", "Уведомления FlowBar", "Правка панели", "Сменить сценарий" };
-        static readonly string[] HotkeyDefaults = { "1,84", "3,66", "3,32", "", "", "" };
+        static readonly string[] HotkeyNames = { "Задачи", "Фокус панели", "Быстрый поиск", "Уведомления FlowBar", "Правка панели", "Сменить сценарий", "Диктовка" };
+        static readonly string[] HotkeyDefaults = { "1,84", "3,66", "3,32", "", "", "", "" };
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr window, int id);
         readonly HashSet<int> activeHotkeys = new HashSet<int>();
 
@@ -365,6 +365,7 @@ namespace FlowBar
                     if (!int.TryParse(C("scenario.active", ""), out previous)) previous = -1;
                     ApplyScenario(previous >= 2 ? -1 : previous + 1);
                     return true;
+                case 7: ShowVoiceTask("", true); return true;
                 default: return false;
             }
         }
@@ -408,7 +409,8 @@ namespace FlowBar
                     { cfg[configKey] = old; target.ApplyHotkeys(); status.Text = "Сочетание занято Windows или другой программой."; return; }
                     SaveCfg(); row.Text = HotkeyLabel(value); status.Text = "Сохранено.";
                 };
-                host.Children.Add(SetRow(HotkeyNames[i], null, VS(row, status)));
+                string hint = i == HotkeyNames.Length - 1 ? "По умолчанию горячей клавиши нет. Нажмите Backspace, чтобы снять назначение." : null;
+                host.Children.Add(SetRow(HotkeyNames[i], hint, VS(row, status)));
             }
             c.Children.Add(new Expander { Header = "Горячие клавиши", Content = host });
         }

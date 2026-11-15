@@ -137,53 +137,12 @@ namespace FlowBar
 
         void VoiceSettings(StackPanel content)
         {
-            var status = SHint("");
             var refreshPaths = new List<Action>();
             var providers = VoiceProviderPicker();
             System.Windows.Automation.AutomationProperties.SetName(providers, "Помощник для голосовых задач");
             providers.SelectionChanged += (s, e) => { cfg["voice.provider"] = VoiceProvider(providers); SaveCfg(); };
-            var actions = new StackPanel();
-            bool managing = false;
-            Action refresh = null;
-            Action<bool> manage = async update =>
-            {
-                if (managing) return;
-                if (DemoMode) { status.Text = "В деморежиме установка отключена."; return; }
-                var winget = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "winget.exe");
-                if (!File.Exists(winget)) { managing = true; actions.IsEnabled = false; await DownloadHandy(t => status.Text = t); managing = false; actions.IsEnabled = true; return; } // без WinGet — свой загрузчик, а не сайт
-                managing = true; actions.IsEnabled = false;
-                status.Text = update ? "Проверяем обновление Handy…" : "Устанавливаем Handy…";
-                string result;
-                try
-                {
-                    await RunVoiceProcess(winget, new[] { update ? "upgrade" : "install", "--id", "cjpais.Handy", "--exact", "--source", "winget", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity" },
-                        null, Path.GetTempPath(), TimeSpan.FromMinutes(15), CancellationToken.None);
-                    result = update ? "Обновление завершено." : "Handy установлен. Выберите модель GigaAM v3 E2E-RNN-T в Handy.";
-                }
-                catch (VoiceProcessException ex)
-                {
-                    result = update && ex.ExitCode == unchecked((int)0x8A15002B) ? "Обновлений нет." : "WinGet не завершил операцию. Откройте выпуски Handy или попробуйте снова.";
-                }
-                catch (Exception) { result = "WinGet недоступен. Откройте выпуски Handy."; }
-                managing = false; actions.IsEnabled = true;
-                foreach (var check in refreshPaths) check();
-                refresh(); status.Text = result;
-            };
-            refresh = () =>
-            {
-                actions.Children.Clear();
-                bool installed = VoiceBinary("handy") != null;
-                status.Text = installed ? "Handy найден. Для русской речи нужна модель GigaAM v3 E2E-RNN-T." : "Handy пока не найден.";
-                var install = Btn(installed ? "Обновить Handy" : "Установить Handy", () => manage(installed), true);
-                var setup = installed ? Btn("Открыть Handy", () => { var path = VoiceBinary("handy"); if (path != null) Launch(path); }) : null;
-                var buttons = new List<Border> { install };
-                if (setup != null) buttons.Add(setup);
-                buttons.Add(Btn("Выпуски Handy", () => Launch(HandyReleases)));
-                actions.Children.Add(CardActions(buttons.ToArray()));
-            };
-            refresh();
             var paths = new StackPanel();
-            foreach (var item in new[] { "handy" }.Concat(VoiceProviders).Select(name => Tuple.Create(name, name == "handy" ? "Handy" : VoiceAssistantName(name))))
+            foreach (var item in VoiceProviders.Select(name => Tuple.Create(name, VoiceAssistantName(name))))
             {
                 var label = SHint("");
                 Action check = () =>
@@ -198,23 +157,24 @@ namespace FlowBar
                 {
                     var dialog = new OpenFileDialog { Filter = "Программа Windows (*.exe)|*.exe", CheckFileExists = true };
                     if (dialog.ShowDialog(settings) != true) return;
-                    cfg["voice.path." + item.Item1] = dialog.FileName; SaveCfg(); check(); refresh();
+                    cfg["voice.path." + item.Item1] = dialog.FileName; SaveCfg(); check();
                 });
-                var download = Btn(item.Item1 == "handy" ? "Скачать Handy" : "Установка и вход",
-                    () => { if (item.Item1 == "handy") { var _ = DownloadHandy(t => label.Text = t); } else Launch(VoiceAssistantSetup(item.Item1)); }); // Handy скачивается сам
+                var download = Btn("Установка и вход", () => Launch(VoiceAssistantSetup(item.Item1)));
                 paths.Children.Add(SetRow(item.Item2, null, VS(label, CardActions(download, choose))));
             }
             content.Children.Add(SSub("Голосовые задачи"));
-            content.Children.Add(SHint("1. Установите Handy и скачайте в нём модель GigaAM v3 для русского языка."));
-            content.Children.Add(SettingsRow(VS(status, actions)));
-            content.Children.Add(SHint("До 30 минут за запись. Handy обрабатывает отрывки до 2:40, помощник получает весь текст одним запросом."));
-            content.Children.Add(SHint("2. Для разбора текста выберите Codex, Claude или Gemini. Установите программу и войдите в свой аккаунт по её инструкции. Для записи и сохранения текста этот шаг можно пропустить."));
+            content.Children.Add(LocalVoiceSetup());
+            if (!LocalVoiceSupported)
+            {
+                var handyStatus = SHint("На этой архитектуре можно подключить Handy с установленной моделью GigaAM v3 RNN-T.");
+                content.Children.Add(SettingsRow(VS(handyStatus, CardActions(Btn("Скачать Handy", async () => await DownloadHandy(t => handyStatus.Text = t))))));
+            }
+            content.Children.Add(SHint("Помощник нужен для разбора текста по задачам и заметкам. Для самой записи достаточно модели речи."));
             content.Children.Add(SetRow("Помощник", "Для формирования списка выбранному помощнику отправляется только текст.", providers));
             content.Children.Add(paths);
             content.Children.Add(CardActions(Btn("Проверить установку", () =>
             {
                 foreach (var check in refreshPaths) check();
-                refresh();
             }, true)));
             AddVoicePromptEditor(content, false);
             AddVoicePromptEditor(content, true);
@@ -321,7 +281,7 @@ namespace FlowBar
             }
         }
 
-        static List<string> SliceVoiceWave(string wav, string output, CancellationToken stop)
+        static List<string> SliceVoiceWave(string wav, string output, CancellationToken stop, int seconds = VoiceSegmentSeconds)
         {
             var paths = new List<string>();
             using (var reader = new BinaryReader(File.OpenRead(wav), Encoding.ASCII))
@@ -347,7 +307,7 @@ namespace FlowBar
                 long bytesPerSecond = BitConverter.ToUInt32(format, 8);
                 if (alignment == 0 || bytesPerSecond == 0 || dataSize % alignment != 0)
                     throw new InvalidDataException("Неверный формат WAV.");
-                long partSize = bytesPerSecond * VoiceSegmentSeconds;
+                long partSize = bytesPerSecond * seconds;
                 partSize -= partSize % alignment;
                 if (partSize == 0 || partSize > int.MaxValue - 65540) throw new InvalidDataException("Неверный формат WAV.");
                 source.Position = dataOffset;
@@ -588,7 +548,7 @@ namespace FlowBar
         {
             var fields = new List<Tuple<CheckBox, TextBox, TaskSchedule>>();
             Func<string, Action, bool, Border> button = inline ? (Func<string, Action, bool, Border>)TaskButton : Btn;
-            var message = CardStatus(DemoMode ? "Деморежим использует пример записи." : "Распознавание Handy выполняется на этом компьютере.");
+            var message = CardStatus(DemoMode ? "Деморежим использует пример записи." : "Речь распознаётся на этом компьютере.");
             var provider = VoiceProviderPicker();
             System.Windows.Automation.AutomationProperties.SetName(provider, "Помощник");
             var editor = new StackPanel();
@@ -597,6 +557,13 @@ namespace FlowBar
             {
                 setup.Children.Clear();
                 if (name == null) { setup.Visibility = Visibility.Collapsed; return; }
+                if (name == "local")
+                {
+                    setup.Children.Add(LocalVoiceSetup());
+                    setup.Visibility = Visibility.Visible;
+                    setup.BringIntoView();
+                    return;
+                }
                 var handySetup = name == "handy";
                 setup.Children.Add(CardActions(
                     button(handySetup ? "Скачать Handy" : "Установка и вход",
@@ -611,6 +578,8 @@ namespace FlowBar
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
             MediaCapture capture = null;
             string wav = null;
+            LocalVoiceModel recordingModel = null;
+            string recordingHandy = null;
             bool busy = false, closed = false, recording = false, activated = !inline;
             Border record = null, format = null, plain = null;
             string recordStatus = null;
@@ -703,11 +672,20 @@ namespace FlowBar
                     if (route && !recording) await formatVoice();
                     return;
                 }
-                string handy = VoiceBinary("handy");
-                if (!recording && handy == null)
+                if (!recording)
                 {
-                    message.Text = "Для записи нужен Handy. Установите его, откройте и скачайте модель GigaAM v3 для русского языка. Затем вернитесь и нажмите «Старт».";
-                    updateControls(); showSetup("handy"); return;
+                    recordingModel = LocalVoiceSupported ? SelectedLocalVoice : null;
+                    recordingHandy = recordingModel == null ? VoiceBinary("handy") : null;
+                    if (recordingModel != null && !LocalVoiceReady(recordingModel))
+                    {
+                        message.Text = "Выберите модель речи и нажмите «Скачать и включить». Затем начните запись.";
+                        updateControls(); showSetup("local"); return;
+                    }
+                    if (recordingModel == null && recordingHandy == null)
+                    {
+                        message.Text = "Установите Handy с моделью GigaAM v3 RNN-T для записи на этом компьютере.";
+                        updateControls(); showSetup("handy"); return;
+                    }
                 }
                 busy = true; updateControls();
                 try
@@ -715,21 +693,21 @@ namespace FlowBar
                     if (recording)
                     {
                         recording = false; timer.Stop(); recordStatus = "Распознаём…"; updateControls();
-                        message.Text = "Handy распознаёт голос.";
+                        message.Text = "Распознаём запись на этом компьютере…";
                         await capture.StopRecordAsync();
                         capture.Dispose(); capture = null;
                         if (!closed)
                         {
-                            if (handy == null) throw new IOException("Handy недоступен.");
-                            string text = await VoiceTranscribe(handy, wav, cancel.Token, (part, total) =>
-                            {
-                                if (!closed && total > 1) message.Text = "Handy распознаёт часть " + part + " из " + total + "…";
-                            });
+                            string text = recordingModel != null ? await TranscribeLocally(recordingModel, wav, cancel.Token) :
+                                await VoiceTranscribe(recordingHandy, wav, cancel.Token, (part, total) =>
+                                {
+                                    if (!closed && total > 1) message.Text = "Распознаём часть " + part + " из " + total + "…";
+                                });
                             if (!closed)
                             {
                                 if (text.Length != 0) input.Text = text;
                                 sendTranscript = route && text.Length != 0;
-                                message.Text = text.Length == 0 ? "Handy не распознал речь. Запишите ещё раз." : "Речь распознана. Проверьте текст.";
+                                message.Text = text.Length == 0 ? "Речь не распознана. Запишите ещё раз." : "Речь распознана. Проверьте текст.";
                             }
                         }
                     }
@@ -754,10 +732,11 @@ namespace FlowBar
                 catch (UnauthorizedAccessException) { if (!closed) message.Text = "Разрешите настольным приложениям доступ к микрофону в Windows."; }
                 catch (VoiceProcessException ex)
                 {
-                    if (!closed) message.Text = ex.Detail.IndexOf("model", StringComparison.OrdinalIgnoreCase) >= 0 ?
+                    if (!closed && recordingModel != null) message.Text = "Локальное распознавание не завершилось. Выберите другую модель в «Голосовых задачах» и повторите.";
+                    else if (!closed) message.Text = ex.Detail.IndexOf("model", StringComparison.OrdinalIgnoreCase) >= 0 ?
                         "Handy не смог загрузить модель. Установите GigaAM v3 E2E-RNN-T в Handy и повторите." : "Handy не смог распознать запись.";
                 }
-                catch (Exception) { if (!closed) message.Text = "Не удалось записать или распознать звук. Проверьте микрофон и Handy."; }
+                catch (Exception) { if (!closed) message.Text = "Не удалось записать или распознать звук. Проверьте микрофон и выбранную модель."; }
                 finally
                 {
                     if (!recording)

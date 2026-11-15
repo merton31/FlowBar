@@ -1608,6 +1608,48 @@ namespace FlowBar
             };
             return b;
         }
+        void StartQuickLinks(ContextMenu menu)
+        {
+            menu.Placement = VerticalBar
+                ? (LeftBar ? System.Windows.Controls.Primitives.PlacementMode.Right : System.Windows.Controls.Primitives.PlacementMode.Left)
+                : (IsTop ? System.Windows.Controls.Primitives.PlacementMode.Bottom : System.Windows.Controls.Primitives.PlacementMode.Top);
+            MenuSection(menu,
+                Item("Установленные приложения", () => Launch("ms-settings:appsfeatures")),
+                Item("Электропитание", () => Launch("ms-settings:powersleep")),
+                Item("Просмотр событий", () => Launch("eventvwr.msc")),
+                Item("Система", () => Launch("ms-settings:about")),
+                Item("Диспетчер устройств", () => Launch("devmgmt.msc")),
+                Item("Сетевые подключения", () => Launch("ms-settings:network-status")),
+                Item("Управление дисками", () => Launch("diskmgmt.msc")),
+                Item("Управление компьютером", () => Launch("compmgmt.msc")),
+                Item("Терминал", () => OpenWindowsTerminal(false)),
+                Item("Терминал (администратор)", () => OpenWindowsTerminal(true)));
+            MenuSection(menu,
+                Item("Диспетчер задач", () => Launch("taskmgr.exe")),
+                Item("Параметры", () => Launch("ms-settings:")),
+                Item("Проводник", () => Launch("explorer.exe")),
+                Item("Поиск", () => Keys(0x5B, 0x53)),
+                Item("Выполнить", () => Keys(0x5B, 0x52)));
+            var power = MenuBranch("Завершение работы или выход из системы");
+            power.Items.Add(Item("Выход", () => Launch("shutdown.exe", "/l")));
+            power.Items.Add(Item("Спящий режим", () => System.Windows.Forms.Application.SetSuspendState(System.Windows.Forms.PowerState.Suspend, false, false)));
+            power.Items.Add(Item("Завершение работы", () => Launch("shutdown.exe", "/s /t 0")));
+            power.Items.Add(Item("Перезагрузка", () => Launch("shutdown.exe", "/r /t 0")));
+            MenuSection(menu, power, Item("Рабочий стол", () => Keys(0x5B, 0x44)));
+        }
+
+        static void OpenWindowsTerminal(bool elevated)
+        {
+            string alias = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "wt.exe");
+            string executable = File.Exists(alias) ? alias : "powershell.exe";
+            if (!elevated) { Launch(executable); return; }
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" }); }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                if (ex.NativeErrorCode != 1223) MessageBox.Show("Не удалось открыть терминал с правами администратора.", "FlowBar");
+            }
+        }
+
         // меню модуля: вид, убрать с панели, каталог
         Action<ContextMenu> WMenu(string id, Action<ContextMenu> extra = null)
         {
@@ -3170,7 +3212,7 @@ namespace FlowBar
             KeyboardNavigation.SetTabNavigation(root, KeyboardNavigationMode.Cycle);
 
             startLogo = new StartLogo();
-            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), null); ((Press)startEl).ShellKey = true; // в ряду: его можно поставить между модулями
+            startEl = Tile(new Viewbox { Width = 16 * Fs, Height = 16 * Fs, Child = startLogo }, "Пуск", () => ShellOver(startEl, 0x5B), StartQuickLinks); ((Press)startEl).ShellKey = true; // в ряду: его можно поставить между модулями
             searchEl = C("search", "1") == "1" ? Tile(G(""), "Поиск (Win+S)", () => ShellOver(searchEl, 0x5B, 0x53), null) : null; if (searchEl != null) ((Press)searchEl).ShellKey = true;
             strip = new StackPanel { Orientation = orientation };
             stripScroll = new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = VerticalBar ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = VerticalBar ? ScrollBarVisibility.Hidden : ScrollBarVisibility.Disabled, Focusable = false };
