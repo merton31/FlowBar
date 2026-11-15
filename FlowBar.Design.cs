@@ -1966,9 +1966,14 @@ namespace FlowBar
                     }
                 case "voiceCapture":
                     {
-                        double size = Math.Max(22, th - 8);
-                        var orb = new VoiceOrb { Width = size, Height = size, LightSurface = Sty.Lum(Cur.Fg) < 128 };
-                        return Tile(orb, "Диктовка · задачи и заметки", act(() => ShowVoiceTask("", true)), menu(null), true);
+                        double size = Math.Max(26, th - 2); // шарик крупнее прежнего (было th - 8) и ярче, чтобы был заметен на панели
+                        var orb = new VoiceOrb { Width = size, Height = size, Bright = true, LightSurface = Sty.Lum(Cur.Fg) < 128 };
+                        // частицы движутся всегда, пока панель видна (спрятанная панель останавливает таймер шарика сама); при выключенных анимациях шарик неподвижен
+                        orb.SetState(false, Motion); up.Add(() => orb.SetState(false, Motion));
+                        var t = Tile(orb, "Диктовка · задачи и заметки", act(() => ShowVoiceTask("", true)), menu(null), true);
+                        // без рамки и подложки плитки: на панели виден только сам шарик
+                        t.Base = Color.FromArgb(0, 0, 0, 0); t.Background = new SolidColorBrush(t.Base); t.BorderThickness = new Thickness(0); t.BorderBrush = null;
+                        return t;
                     }
                 case "notes":
                     {
