@@ -21,6 +21,10 @@ namespace FlowBar
 {
     partial class Bar
     {
+        const int VoiceSegmentSeconds = 160;
+        static readonly TimeSpan VoiceRecordingLimit = TimeSpan.FromMinutes(30);
+        static readonly string[] VoiceProviders = { "codex", "claude", "agy" };
+
         const string RussianVoiceModel = "gigaam-v3-e2e-rnnt";
         const string RussianVoiceFilename = RussianVoiceModel + "-Q8_0.gguf";
         const string HandyReleases = "https://github.com/cjpais/Handy/releases/latest";
@@ -61,6 +65,7 @@ namespace FlowBar
             {
                 name == "codex" ? Environment.GetEnvironmentVariable("CODEX_APP_RUNTIME_CLI_PATH") : null,
                 name == "handy" ? Path.Combine(local, "Handy", file) : null,
+                name == "agy" ? Path.Combine(local, "agy", "bin", file) : null,
                 name == "handy" ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Handy", file) : null,
                 Path.Combine(local, "Microsoft", "WinGet", "Links", file),
                 Path.Combine(profile, ".local", "bin", file)
@@ -105,10 +110,28 @@ namespace FlowBar
             return found;
         }
 
-        static string VoiceAssistantName(string name) { return name == "claude" ? "Claude Code" : "Codex CLI"; }
+        static string VoiceAssistantName(string name)
+        {
+            if (name == "agy") return "Gemini (Antigravity CLI)";
+            return name == "claude" ? "Claude Code" : "Codex CLI";
+        }
+
+        static ComboBox VoiceProviderPicker()
+        {
+            return new ComboBox {
+                ItemsSource = VoiceProviders.Select(VoiceAssistantName).ToArray(),
+                SelectedIndex = Math.Max(0, Array.IndexOf(VoiceProviders, C("voice.provider", "codex")))
+            };
+        }
+
+        static string VoiceProvider(ComboBox combo)
+        {
+            return VoiceProviders[Math.Max(0, combo.SelectedIndex)];
+        }
 
         static string VoiceAssistantSetup(string name)
         {
+            if (name == "agy") return "https://antigravity.google/docs/cli/tutorial/";
             return name == "claude" ? "https://code.claude.com/docs/en/setup" : "https://developers.openai.com/codex/cli";
         }
 
@@ -116,9 +139,9 @@ namespace FlowBar
         {
             var status = SHint("");
             var refreshPaths = new List<Action>();
-            var providers = new ComboBox { ItemsSource = new[] { "Codex CLI", "Claude Code" }, SelectedIndex = C("voice.provider", "codex") == "claude" ? 1 : 0 };
+            var providers = VoiceProviderPicker();
             System.Windows.Automation.AutomationProperties.SetName(providers, "Помощник для голосовых задач");
-            providers.SelectionChanged += (s, e) => { cfg["voice.provider"] = providers.SelectedIndex == 1 ? "claude" : "codex"; SaveCfg(); };
+            providers.SelectionChanged += (s, e) => { cfg["voice.provider"] = VoiceProvider(providers); SaveCfg(); };
             var actions = new StackPanel();
             bool managing = false;
             Action refresh = null;
@@ -160,7 +183,7 @@ namespace FlowBar
             };
             refresh();
             var paths = new StackPanel();
-            foreach (var item in new[] { Tuple.Create("handy", "Handy"), Tuple.Create("codex", "Codex CLI"), Tuple.Create("claude", "Claude Code") })
+            foreach (var item in new[] { "handy" }.Concat(VoiceProviders).Select(name => Tuple.Create(name, name == "handy" ? "Handy" : VoiceAssistantName(name))))
             {
                 var label = SHint("");
                 Action check = () =>
@@ -184,7 +207,8 @@ namespace FlowBar
             content.Children.Add(SSub("Голосовые задачи"));
             content.Children.Add(SHint("1. Установите Handy и скачайте в нём модель GigaAM v3 для русского языка."));
             content.Children.Add(SettingsRow(VS(status, actions)));
-            content.Children.Add(SHint("2. Для разбора текста выберите Codex или Claude. Установите программу и войдите в свой аккаунт по её инструкции. Для записи и сохранения текста этот шаг можно пропустить."));
+            content.Children.Add(SHint("До 30 минут за запись. Handy обрабатывает отрывки до 2:40, помощник получает весь текст одним запросом."));
+            content.Children.Add(SHint("2. Для разбора текста выберите Codex, Claude или Gemini. Установите программу и войдите в свой аккаунт по её инструкции. Для записи и сохранения текста этот шаг можно пропустить."));
             content.Children.Add(SetRow("Помощник", "Для формирования списка выбранному помощнику отправляется только текст.", providers));
             content.Children.Add(paths);
             content.Children.Add(CardActions(Btn("Проверить установку", () =>
@@ -250,7 +274,8 @@ namespace FlowBar
         {
             public readonly int ExitCode;
             public readonly string Detail;
-            public VoiceProcessException(int code, string detail) { ExitCode = code; Detail = detail; }
+            public readonly string Output;
+            public VoiceProcessException(int code, string detail, string output = null) { ExitCode = code; Detail = detail; Output = output; }
         }
 
         static async Task<string> RunVoiceProcess(string exe, string[] args, string input, string directory, TimeSpan timeout, CancellationToken stop)
@@ -286,7 +311,7 @@ namespace FlowBar
                     stop.ThrowIfCancellationRequested();
                     if (!combined.IsCompleted) throw new TimeoutException();
                     var logs = await combined;
-                    if (process.ExitCode != 0) throw new VoiceProcessException(process.ExitCode, logs[1]);
+                    if (process.ExitCode != 0) throw new VoiceProcessException(process.ExitCode, logs[1], logs[0]);
                     return logs[0];
                 }
                 finally
@@ -296,7 +321,70 @@ namespace FlowBar
             }
         }
 
-        static async Task<string> VoiceTranscribe(string handy, string wav, CancellationToken stop)
+        static List<string> SliceVoiceWave(string wav, string output, CancellationToken stop)
+        {
+            var paths = new List<string>();
+            using (var reader = new BinaryReader(File.OpenRead(wav), Encoding.ASCII))
+            {
+                var source = reader.BaseStream;
+                if (new string(reader.ReadChars(4)) != "RIFF") throw new InvalidDataException("Ожидается WAV.");
+                reader.ReadUInt32();
+                if (new string(reader.ReadChars(4)) != "WAVE") throw new InvalidDataException("Ожидается WAV.");
+                byte[] format = null;
+                long dataOffset = 0, dataSize = 0;
+                while (source.Length - source.Position >= 8 && (format == null || dataOffset == 0))
+                {
+                    string tag = new string(reader.ReadChars(4));
+                    uint size = reader.ReadUInt32();
+                    long next = source.Position + size + (size & 1);
+                    if (source.Position + size > source.Length) throw new InvalidDataException("Неполный WAV.");
+                    if (tag == "fmt " && size >= 16 && size <= 65536) format = reader.ReadBytes((int)size);
+                    if (tag == "data") { dataOffset = source.Position; dataSize = size; }
+                    source.Position = next;
+                }
+                if (format == null || dataOffset == 0) throw new InvalidDataException("В WAV нет звука.");
+                int alignment = BitConverter.ToUInt16(format, 12);
+                long bytesPerSecond = BitConverter.ToUInt32(format, 8);
+                if (alignment == 0 || bytesPerSecond == 0 || dataSize % alignment != 0)
+                    throw new InvalidDataException("Неверный формат WAV.");
+                long partSize = bytesPerSecond * VoiceSegmentSeconds;
+                partSize -= partSize % alignment;
+                if (partSize == 0 || partSize > int.MaxValue - 65540) throw new InvalidDataException("Неверный формат WAV.");
+                source.Position = dataOffset;
+                var buffer = new byte[64 * 1024];
+                for (long remaining = dataSize; remaining > 0;)
+                {
+                    stop.ThrowIfCancellationRequested();
+                    int bytes = (int)Math.Min(remaining, partSize);
+                    string path = Path.Combine(output, (paths.Count + 1).ToString("D3", CultureInfo.InvariantCulture) + ".wav");
+                    using (var writer = new BinaryWriter(File.Create(path), Encoding.ASCII))
+                    {
+                        writer.Write("RIFF".ToCharArray());
+                        writer.Write(20 + format.Length + (format.Length & 1) + bytes + (bytes & 1));
+                        writer.Write("WAVEfmt ".ToCharArray());
+                        writer.Write(format.Length);
+                        writer.Write(format);
+                        if ((format.Length & 1) != 0) writer.Write((byte)0);
+                        writer.Write("data".ToCharArray());
+                        writer.Write(bytes);
+                        for (int pending = bytes; pending > 0;)
+                        {
+                            stop.ThrowIfCancellationRequested();
+                            int count = source.Read(buffer, 0, Math.Min(pending, buffer.Length));
+                            if (count == 0) throw new EndOfStreamException();
+                            writer.Write(buffer, 0, count);
+                            pending -= count;
+                        }
+                        if ((bytes & 1) != 0) writer.Write((byte)0);
+                    }
+                    remaining -= bytes;
+                    paths.Add(path);
+                }
+            }
+            return paths;
+        }
+
+        static async Task<string> VoiceTranscribe(string handy, string wav, CancellationToken stop, Action<int, int> progress)
         {
             string folder = Path.GetDirectoryName(wav);
             var serializer = new JavaScriptSerializer();
@@ -306,11 +394,31 @@ namespace FlowBar
                 Equals(item["is_downloaded"], true) && (Equals(item["id"], RussianVoiceModel) ||
                 (item.ContainsKey("filename") && Equals(item["filename"], RussianVoiceFilename))));
             if (model == null) throw new VoiceProcessException(2, "model missing");
-            var json = await RunVoiceProcess(handy, new[] { "--transcribe-file", wav, "--model", (string)model["id"], "--json" }, null,
-                Path.GetDirectoryName(wav), TimeSpan.FromMinutes(3), stop);
-            var response = serializer.Deserialize<Dictionary<string, object>>(json);
-            object value;
-            return response != null && response.TryGetValue("text", out value) ? (value as string ?? "").Trim() : "";
+            string work = Path.Combine(folder, "FlowBarVoiceParts-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(work);
+            try
+            {
+                var parts = await Task.Run(() => SliceVoiceWave(wav, work, stop), stop);
+                var transcript = new List<string>();
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    progress(i + 1, parts.Count);
+                    string json = await RunVoiceProcess(handy, new[] { "--transcribe-file", parts[i], "--model", (string)model["id"], "--json" }, null,
+                        work, TimeSpan.FromMinutes(3), stop);
+                    var response = serializer.Deserialize<Dictionary<string, object>>(json);
+                    object value;
+                    if (response == null || !response.TryGetValue("text", out value) || !(value is string))
+                        throw new InvalidDataException("Handy не вернул текст.");
+                    string part = ((string)value).Trim();
+                    if (part.Length > 0) transcript.Add(part);
+                }
+                return string.Join(Environment.NewLine, transcript);
+            }
+            finally
+            {
+                foreach (var part in Directory.GetFiles(work, "*.wav")) DeleteVoiceFile(part);
+                try { Directory.Delete(work); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
         }
 
         static VoicePlan VoicePlanFromJson(string json, bool claude, bool route)
@@ -356,6 +464,35 @@ namespace FlowBar
             return new VoicePlan { Tasks = tasks, Note = note };
         }
 
+        sealed class GeminiAvailabilityException : Exception
+        {
+            public GeminiAvailabilityException() : base("Gemini через Antigravity недоступен для этого аккаунта в текущем регионе. Расшифровку можно разобрать через Codex или Claude либо сохранить без ИИ.") { }
+        }
+
+        static string AntigravityVoiceResult(string output)
+        {
+            var serializer = new JavaScriptSerializer { MaxJsonLength = 512000 };
+            foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var payload = serializer.Deserialize<Dictionary<string, object>>(line);
+                object kind, value;
+                if (payload == null || !payload.TryGetValue("event", out kind) || !Equals(kind, "result")) continue;
+                var result = payload.TryGetValue("result", out value) ? value as Dictionary<string, object> : null;
+                if (result == null || !result.TryGetValue("status", out value) || !Equals(value, "SUCCESS"))
+                {
+                    if (result != null && result.TryGetValue("error", out value) && value is string &&
+                        ((string)value).IndexOf("not currently available in your location", StringComparison.OrdinalIgnoreCase) >= 0)
+                        throw new GeminiAvailabilityException();
+                    break;
+                }
+                if (result.TryGetValue("structured_output", out value) && value is Dictionary<string, object>)
+                    return serializer.Serialize(value);
+                if (result.TryGetValue("response", out value) && value is string) return (string)value;
+                break;
+            }
+            throw new InvalidDataException("Antigravity CLI не вернул результат.");
+        }
+
         static async Task<List<Todo>> VoiceStructure(string provider, string exe, string text, CancellationToken stop)
         {
             return (await VoiceStructureCore(provider, exe, text, false, stop)).Tasks;
@@ -378,6 +515,22 @@ namespace FlowBar
                     ". Расшифровка в JSON: " + new JavaScriptSerializer().Serialize(text);
                 bool claude = provider == "claude";
                 string[] args;
+                if (provider == "agy")
+                {
+                    File.WriteAllText(schema, outputSchema, new UTF8Encoding(false));
+                    var message = new Dictionary<string, object> { { "content", prompt } };
+                    string request = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "event", "user" }, { "message", message } });
+                    var antigravityArgs = new[] { "--input-format", "stream-json", "--output-format", "stream-json",
+                        "--disable-slash-commands", "--mode", "plan", "--sandbox", "--json-schema", schema, "--print-timeout", "110s" };
+                    string reply;
+                    try { reply = await RunVoiceProcess(exe, antigravityArgs, request + "\n", work, TimeSpan.FromMinutes(2), stop); }
+                    catch (VoiceProcessException ex)
+                    {
+                        if (string.IsNullOrWhiteSpace(ex.Output)) throw;
+                        reply = ex.Output;
+                    }
+                    return VoicePlanFromJson(AntigravityVoiceResult(reply), false, route);
+                }
                 if (claude)
                     args = new[] { "--print", "--output-format", "json", "--json-schema", outputSchema, "--no-session-persistence",
                         "--restricted", "--tools", "", "--strict-mcp-config" };
@@ -419,7 +572,7 @@ namespace FlowBar
             var win = AppWindow(title, 610, 600);
             win.MinWidth = 430; win.MinHeight = 370;
             voiceTaskWindow = win;
-            var input = new TextBox { Text = initialText ?? "", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 104, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxLength = 4000 };
+            var input = new TextBox { Text = initialText ?? "", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 104, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             Border record;
             var voice = VoiceTaskControls(input, false, win.Close, null, out record, route);
             var body = VS(SH(title), CardActions(record), FormField(input, route ? "Расшифровка" : "Текст для задачи"), voice);
@@ -436,7 +589,7 @@ namespace FlowBar
             var fields = new List<Tuple<CheckBox, TextBox, TaskSchedule>>();
             Func<string, Action, bool, Border> button = inline ? (Func<string, Action, bool, Border>)TaskButton : Btn;
             var message = CardStatus(DemoMode ? "Деморежим использует пример записи." : "Распознавание Handy выполняется на этом компьютере.");
-            var provider = new ComboBox { ItemsSource = new[] { "Codex CLI", "Claude Code" }, SelectedIndex = C("voice.provider", "codex") == "claude" ? 1 : 0 };
+            var provider = VoiceProviderPicker();
             System.Windows.Automation.AutomationProperties.SetName(provider, "Помощник");
             var editor = new StackPanel();
             var setup = new StackPanel { Visibility = Visibility.Collapsed };
@@ -568,10 +721,13 @@ namespace FlowBar
                         if (!closed)
                         {
                             if (handy == null) throw new IOException("Handy недоступен.");
-                            string text = await VoiceTranscribe(handy, wav, cancel.Token);
+                            string text = await VoiceTranscribe(handy, wav, cancel.Token, (part, total) =>
+                            {
+                                if (!closed && total > 1) message.Text = "Handy распознаёт часть " + part + " из " + total + "…";
+                            });
                             if (!closed)
                             {
-                                if (text.Length != 0) input.Text = text.Length <= 4000 ? text : text.Substring(0, 4000);
+                                if (text.Length != 0) input.Text = text;
                                 sendTranscript = route && text.Length != 0;
                                 message.Text = text.Length == 0 ? "Handy не распознал речь. Запишите ещё раз." : "Речь распознана. Проверьте текст.";
                             }
@@ -617,7 +773,7 @@ namespace FlowBar
             };
             timer.Tick += (s, e) =>
             {
-                if (clock.Elapsed >= TimeSpan.FromMinutes(3)) recordOrStop();
+                if (clock.Elapsed >= VoiceRecordingLimit) recordOrStop();
                 else updateRecordLabel();
             };
             record = VoiceRecordButton(orb, recordLabel, recordOrStop, inline);
@@ -625,7 +781,7 @@ namespace FlowBar
             formatVoice = async () =>
             {
                 if (busy || recording || string.IsNullOrWhiteSpace(input.Text)) return;
-                string selected = provider.SelectedIndex == 1 ? "claude" : "codex";
+                string selected = VoiceProvider(provider);
                 string exe = VoiceBinary(selected);
                 showSetup(null);
                 if (DemoMode)
@@ -648,6 +804,10 @@ namespace FlowBar
                 {
                     var plan = await VoiceStructureCore(selected, exe, input.Text, route, cancel.Token);
                     if (!closed) showPlan(plan.Tasks, plan.Note);
+                }
+                catch (GeminiAvailabilityException ex)
+                {
+                    if (!closed) message.Text = ex.Message;
                 }
                 catch (Exception)
                 {
