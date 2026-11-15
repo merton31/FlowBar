@@ -4872,6 +4872,17 @@ namespace FlowBar
                 fails += check(Bar.SameProcess(me.Id, me.StartTime) && !Bar.SameProcess(me.Id, me.StartTime.AddSeconds(-5)) && !Bar.SameProcess(0x7FFFFFF0, DateTime.Now),
                     "End task: a reused process id is not killed (start time must match)");
             }
+            {
+                // установщик Handy: только x64/arm64-setup.exe из выпусков cjpais/Handy на github.com и только с контрольной суммой SHA-256
+                string good = "{\"assets\":[{\"name\":\"Handy_0.10.1_x64_en-US.msi\",\"browser_download_url\":\"https://github.com/cjpais/Handy/releases/download/v0.10.1/Handy_0.10.1_x64_en-US.msi\",\"digest\":\"sha256:" + new string('a', 64) + "\"}," +
+                    "{\"name\":\"Handy_0.10.1_arm64-setup.exe\",\"browser_download_url\":\"https://github.com/cjpais/Handy/releases/download/v0.10.1/Handy_0.10.1_arm64-setup.exe\",\"digest\":\"sha256:" + new string('b', 64) + "\"}," +
+                    "{\"name\":\"Handy_0.10.1_x64-setup.exe\",\"browser_download_url\":\"https://github.com/cjpais/Handy/releases/download/v0.10.1/Handy_0.10.1_x64-setup.exe\",\"digest\":\"sha256:" + new string('C', 64) + "\"}]}";
+                var x64 = Bar.PickHandyInstaller(good, false); var arm = Bar.PickHandyInstaller(good, true);
+                string foreign = good.Replace("https://github.com/cjpais/Handy/", "https://example.com/other/"), noSum = good.Replace("sha256:", "md5:"), wrongRepo = good.Replace("/cjpais/Handy/releases/download/", "/evil/Handy/releases/download/");
+                fails += check(x64 != null && x64.Item1 == "Handy_0.10.1_x64-setup.exe" && x64.Item3 == new string('c', 64) && arm != null && arm.Item1 == "Handy_0.10.1_arm64-setup.exe" &&
+                    Bar.PickHandyInstaller(foreign, false) == null && Bar.PickHandyInstaller(noSum, false) == null && Bar.PickHandyInstaller(wrongRepo, false) == null && Bar.PickHandyInstaller("{}", false) == null,
+                    "Handy installer: right file for the architecture, github.com and checksum are required");
+            }
             var cleanReport = Bar.CleanBugReportLog(new[] {
                 "14.11.2026 13:01:00 System.IO.IOException: C:\\Users\\Test\\private.txt https://example.com/key",
                 "   в FlowBar.Bar.WriteLog(String content) в C:\\Users\\Test\\Source.cs:строка 21",
