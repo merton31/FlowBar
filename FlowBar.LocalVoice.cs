@@ -44,8 +44,10 @@ namespace FlowBar
         static string LocalEnginePath { get { return Path.Combine(LocalVoiceRoot, "engine-" + LocalEngineTag, LocalEnginePackage); } }
         static bool LocalVoiceSupported { get { return Environment.Is64BitProcess && !IsArmWindows(); } }
         static LocalVoiceModel SelectedLocalVoice { get { return LocalVoiceModels.FirstOrDefault(model => model.Id == C("voice.model", "")) ?? LocalVoiceModels[0]; } }
-        static string LocalModelPath(LocalVoiceModel model) { return Path.Combine(LocalVoiceRoot, "models", model.FileName); }
-        static string HandyModelPath(LocalVoiceModel model) { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "com.pais.handy", "models", model.FileName); }
+        static string LocalModelsFolder { get { return Path.Combine(LocalVoiceRoot, "models"); } }
+        static string HandyModelsFolder { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "com.pais.handy", "models"); } }
+        static string LocalModelPath(LocalVoiceModel model) { return Path.Combine(LocalModelsFolder, model.FileName); }
+        static string HandyModelPath(LocalVoiceModel model) { return Path.Combine(HandyModelsFolder, model.FileName); }
         static bool ModelSizeMatches(string file, LocalVoiceModel model) { return File.Exists(file) && new FileInfo(file).Length == model.Size; }
         static bool LocalVoiceReady(LocalVoiceModel model)
         {
@@ -94,7 +96,22 @@ namespace FlowBar
             models.SelectionChanged += (s, e) => refresh();
             refresh();
             StyleChoice(models, CardFg, TaskAccent);
-            return TaskSurface(VS(CardHead("Модель речи"), models, status, CardActions(get)));
+            return TaskSurface(VS(CardHead("Модель речи"), models, status, CardActions(get),
+                ModelFolderControls(LocalVoiceSupported ? LocalModelsFolder : HandyModelsFolder)));
+        }
+
+        FrameworkElement ModelFolderControls(string folder)
+        {
+            var path = SHint(folder);
+            path.TextWrapping = TextWrapping.Wrap;
+            var open = TaskButton("Открыть папку", () =>
+            {
+                try { Directory.CreateDirectory(folder); }
+                catch (Exception ex) { Log(ex); MessageBox.Show("Не удалось открыть папку моделей.\n" + ex.Message, "FlowBar"); return; }
+                Launch(folder);
+            });
+            open.IsEnabled = !DemoMode;
+            return VS(CardStatus("Папка моделей"), path, CardActions(open));
         }
 
         static string VoiceSha256(string path)
