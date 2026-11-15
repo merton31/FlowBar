@@ -38,7 +38,7 @@ namespace FlowBar
             int currentFrame = -1;
 
             public ThemeCapsule(string key, string label, string subtitle, Color tint,
-                Func<bool> selected, Action pick, Action<bool> preview, bool palette)
+                Func<bool> selected, Action pick, Action<bool> preview)
             {
                 ThemeKey = key; Tint = tint; this.selected = selected;
                 motif = ThemeArt(key, tint);
@@ -86,13 +86,6 @@ namespace FlowBar
                     description.TextTrimming = TextTrimming.CharacterEllipsis;
                     description.Foreground = Frozen(Colors.White, 0xB8);
                     AddAt(face, description, 74.5, 132);
-                }
-                if (palette)
-                {
-                    var style = Styles[key];
-                    int i = 0;
-                    foreach (var color in new[] { style.Bg, style.Fg, style.Ac })
-                        AddAt(face, new Ellipse { Width = 4, Height = 4, Fill = Frozen(color, 255) }, 97 + i++ * 6, 137);
                 }
                 appliedDot = new Ellipse { Width = 3, Height = 3, Fill = Frozen(Colors.White, 0xA0) };
                 AddAt(face, appliedDot, 102.5, 62);

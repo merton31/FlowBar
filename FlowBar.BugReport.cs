@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -116,6 +116,7 @@ namespace FlowBar
             foreach (var bar in bars)
                 result.AppendLine("Монитор " + (++index) + (bar.scr.Primary ? " (основной)" : "") +
                     ", " + bar.scr.Bounds.Width + " × " + bar.scr.Bounds.Height + ", масштаб " + Math.Round(bar.MonScale * 100) + "%");
+            if (!string.IsNullOrEmpty(performanceResult)) result.AppendLine().AppendLine("Последний замер производительности").AppendLine(performanceResult);
             var lines = new List<string>();
             lock (logLock)
                 foreach (var name in new[] { "error.old.log", "error.log" })

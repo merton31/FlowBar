@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -28,6 +28,11 @@ internal static class Program
             var screens = Screen.AllScreens.Where(s => choice == "all" ||
                 s.DeviceName.EndsWith(choice, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (screens.Length == 0) throw new ArgumentException("Display not found: " + choice);
+            if (args.Contains("--minimize"))
+            {
+                foreach (var screen in screens) CheckMinimize(screen, ios);
+                return 0;
+            }
             return Run(screens, ios);
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -90,6 +95,65 @@ internal static class Program
             while (workers.Any(w => !w.IsCompleted)) { Application.DoEvents(); Thread.Sleep(1); }
             foreach (var scene in scenes) scene.Dispose();
         }
+    }
+
+    static void CheckMinimize(Screen screen, bool ios)
+    {
+        var lensArea = new Rectangle(screen.Bounds.Left + 140, screen.Bounds.Top + 180, 440, 60);
+        var sourceArea = Rectangle.Inflate(lensArea, 40, 40);
+        using var background = new Native.Layer(sourceArea, "FlowBar static test backdrop");
+        using var foreground = new Native.Layer(sourceArea, "FlowBar window to minimize");
+        background.Paint(0x125CD8);
+        foreground.Paint(0xE73717);
+        background.Show(-1);
+        nint overlay = Native.Window(0x082000A8, lensArea, "FlowBar rim test");
+        try
+        {
+            Native.Exclude(overlay);
+            Native.Show(overlay, -1, lensArea);
+            using var lens = new GpuLens(screen.DeviceName, screen.Bounds, lensArea, overlay, ios,
+                true, 28, 17, 14, 1, diagnosticRim: true);
+            int WaitForColor(bool red)
+            {
+                var timer = Stopwatch.StartNew();
+                while (timer.ElapsedMilliseconds < 1500)
+                {
+                    Application.DoEvents();
+                    lens.DrawNext();
+                    while (lens.ReadProbe(out int rgb, out _))
+                    {
+                        int r = rgb >> 16 & 255, b = rgb & 255;
+                        if (red ? r > b + 25 : b > r + 25) return (int)timer.ElapsedMilliseconds;
+                    }
+                }
+                throw new InvalidOperationException(red ? "Restored window missing from the rim." : "Minimized window remains in the rim.");
+            }
+            WaitForColor(false);
+            foreground.Show(-1);
+            Native.Show(overlay, -1, lensArea);
+            WaitForColor(true);
+            var worst = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                Native.ShowWindow(foreground.Handle, 6);
+                if (!Native.IsIconic(foreground.Handle)) throw new InvalidOperationException("Test window did not minimize.");
+                worst = Math.Max(worst, WaitForColor(false));
+                var still = Stopwatch.StartNew();
+                while (still.ElapsedMilliseconds < 200)
+                {
+                    Application.DoEvents(); lens.DrawNext();
+                    while (lens.ReadProbe(out int rgb, out _))
+                        if ((rgb >> 16 & 255) > (rgb & 255) + 25)
+                            throw new InvalidOperationException("Old reflection returned on a static desktop.");
+                }
+                Native.ShowWindow(foreground.Handle, 4);
+                foreground.Show(-1);
+                Native.Show(overlay, -1, lensArea);
+                WaitForColor(true);
+            }
+            Console.WriteLine($"{screen.DeviceName} {(ios ? "iOS Glass" : "Liquid Glass")}: 3 minimize/restore cycles passed, slowest minimize refresh {worst} ms.");
+        }
+        finally { Native.DestroyWindow(overlay); }
     }
 
     static Result Measure(Scene scene, bool ios, CancellationToken stop)
@@ -215,6 +279,8 @@ internal static unsafe class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern nint CreateWindowEx(uint ex,string cls,
         string name,uint style,int x,int y,int w,int h,nint parent,nint menu,nint instance,nint parameter);
     [DllImport("user32.dll")] public static extern bool DestroyWindow(nint hwnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(nint hwnd, int command);
+    [DllImport("user32.dll")] public static extern bool IsIconic(nint hwnd);
     [DllImport("user32.dll", SetLastError = true)] static extern bool UpdateLayeredWindow(nint hwnd,nint dest,ref Point where,
         ref Point size,nint source,ref Point from,int key,ref Blend blend,int flags);
     [DllImport("gdi32.dll")] static extern nint CreateCompatibleDC(nint dc);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Collections.Generic;
 using System.IO;
@@ -97,8 +97,9 @@ internal sealed unsafe class GpuLens : IDisposable
     Box stripBox, probeBox;
     public ulong MemoryBefore { get; private set; }
     public int AccumulatedFrames { get; private set; }
-
-    public GpuLens(string display, Rectangle screen, Rectangle lens, IntPtr hwnd, bool ios, bool diagnostics, float radius, float band, float shift, int blur)
+    long nextMemorySample;
+    public GpuLens(string display, Rectangle screen, Rectangle lens, IntPtr hwnd, bool ios, bool diagnostics,
+        float radius, float band, float shift, int blur, bool diagnosticRim = false)
     {
         probes = new IntPtr[diagnostics ? 4 : 0];
         try
@@ -122,7 +123,7 @@ internal sealed unsafe class GpuLens : IDisposable
             source.Inflate(padding, padding);
             source.Intersect(screen);
             stripBox = new Box(source.Left - screen.Left, source.Top - screen.Top, source.Width, source.Height);
-            probeBox = new Box(lens.Width / 2, lens.Height / 2, 1, 1);
+            probeBox = new Box(lens.Width / 2, diagnosticRim ? 2 : lens.Height / 2, 1, 1);
             strip = MakeTexture(source.Width, source.Height, 0, 8, 0);
             IntPtr view;
             Check(Method<CreateView>(device, 7)(device,strip,IntPtr.Zero,&view), "CreateShaderResourceView");
@@ -134,7 +135,7 @@ internal sealed unsafe class GpuLens : IDisposable
             tilesY = (uint)(source.Height + 15) / 16;
             for (int i = 0; i < probes.Length; i++) probes[i] = MakeTexture(1, 1, 3, 0, 0x20000);
             CreateComposition(hwnd, lens);
-            PreparePipeline(lens, source, ios, screen, radius, band, shift, blur, !diagnostics);
+            PreparePipeline(lens, source, ios, screen, radius, band, shift, blur, !diagnostics || diagnosticRim);
         }
         catch { Dispose(); throw; }
     }
@@ -312,6 +313,9 @@ internal sealed unsafe class GpuLens : IDisposable
         Method<CopyRegion>(context, 46)(context,to,0,0,0,0,from,0,&area);
     }
 
+    internal Func<bool> MeasurementActive { get; set; }
+    internal Action<bool, long, int, long, bool> Measurement { get; set; }
+
     bool Capture(out long timestamp)
     {
         timestamp = 0;
@@ -323,7 +327,11 @@ internal sealed unsafe class GpuLens : IDisposable
         try
         {
             if (info.LastPresent == 0) return false;
-            AccumulatedFrames += (int)Math.Max(0L, (long)info.Accumulated - 1);
+            var coalesced = (int)Math.Max(0L, (long)info.Accumulated - 1);
+            AccumulatedFrames += coalesced;
+            if (Measurement != null) Measurement(false, 0, coalesced, 0, true);
+            // A window can disappear in the last desktop update before the scene becomes static.
+            // Compare the current strip with the last presented pixels on every desktop update.
             var captured = Query(resource, Texture2D);
             try { Copy(strip, captured, stripBox); }
             finally { Release(ref captured); }
@@ -360,6 +368,13 @@ internal sealed unsafe class GpuLens : IDisposable
         }
         Check(Method<Present>(swap, 8)(swap,0,0), "Present");
         hasPresented = true;
+        long bytes = 0;
+        if (MeasurementActive != null && MeasurementActive() && System.Diagnostics.Stopwatch.GetTimestamp() >= nextMemorySample)
+        {
+            nextMemorySample = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency;
+            try { bytes = (long)LocalMemory(); } catch (Exception) { }
+        }
+        if (Measurement != null) Measurement(true, timestamp, 0, bytes, false);
         return true;
     }
 

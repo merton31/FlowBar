@@ -311,7 +311,7 @@ namespace FlowBar
     }
 
     class Win { public IntPtr H; public uint Pid; public string Path; public IntPtr Mon; }
-    class Todo { public bool Done; public string Text; public DateTime? Due; }
+    class Todo { public bool Done; public string Text; public DateTime? Due; public TimeSpan? DueTime; }
     // Токены стиля: фон панели, текст, акцент (индикаторы, шкалы, «сегодня») и режим размытия (0 — нет, 3 — blur, 4 — акрил)
     class Sty
     {
@@ -519,7 +519,7 @@ namespace FlowBar
         public void Invoke() { var o = (Press)Owner; if (o.Invoke != null) o.Invoke(); }
     }
 
-    class CalEvent { public string Title, Location, Cal; public DateTime Start, End; public bool AllDay; }
+    class CalEvent { public string Title, Location, Cal; public DateTime Start, End; public bool AllDay; public Todo Task; }
 
     // Разбор iCalendar (RFC 5545): события, RRULE (DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY),
     // EXDATE, перенесённые повторы (RECURRENCE-ID), часовые пояса Windows и IANA.
@@ -1049,17 +1049,30 @@ namespace FlowBar
         static string Today { get { return DateTime.Now.ToString("yyyy-MM-dd"); } }
         static void All(Action<Bar> a) { foreach (var b in bars.ToList()) a(b); }
 
+        internal static bool FirstRun { get; private set; }
+        internal static bool IsFirstRun(int settingsCount, bool settingsFileExists, bool demo)
+        { return settingsCount == 0 && !settingsFileExists && !demo; }
+        internal static void ShowStartupWindow()
+        {
+            if (FirstRun && Primary != null) Primary.ShowSettings("start");
+            else ShowUpdateNote();
+        }
+
         public static void Init()
         {
             Directory.CreateDirectory(Dir);
             foreach (var l in Lines("settings.txt")) { int i = l.IndexOf('='); if (i > 0) cfg[l.Substring(0, i)] = l.Substring(i + 1); }
-            LoadThemeFiles(); StartTrim(); if (!DemoMode) MigrateAutoStart();
+            LoadThemeFiles(); StartTrim();
+            bool settingsUnreadable = cfg.Count == 0 && (File.Exists(F("settings.txt")) || File.Exists(F("settings.txt.bak")));
+            FirstRun = IsFirstRun(cfg.Count, settingsUnreadable, DemoMode);
+            if (FirstRun)
+            {
+                cfg["widgets"] = StarterLayout;
+                cfg["hideTaskbar"] = "0";
+            }
+            if (!DemoMode) MigrateAutoStart();
             rememberedAppearance = SnapshotAppearance();
             LogHideSource();
-            // первая установка (настроек ещё нет): только ярлыки программ, все виджеты выключены — добавляются в каталоге. --demo остаётся с виджетами для сверки вида
-            // файл настроек есть, но не открылся (блокировка): это не первая установка — ничего не подставляем и не перезаписываем
-            bool settingsUnreadable = cfg.Count == 0 && (File.Exists(F("settings.txt")) || File.Exists(F("settings.txt.bak")));
-            if (cfg.Count == 0 && !settingsUnreadable && !DemoMode) cfg["widgets"] = NoWidgets;
             pinned = Lines("pinned.txt");
             // первый запуск (список пуст или только «Проводник» по умолчанию из прошлых версий): берём закрепления панели Windows в её порядке
             var explorer = Environment.ExpandEnvironmentVariables(@"%WINDIR%\explorer.exe");
@@ -1069,17 +1082,32 @@ namespace FlowBar
                 if (pinned.Count == 0) pinned.Add(explorer);
                 SafeFile.WriteLines(F("pinned.txt"), pinned);
             }
+            else if (FirstRun) SaveCfg();
             todos = Lines("todos.txt").Select(ParseTodo).ToList();
             calFeeds = Lines("calendars.txt");
             LoadGroups(); ApplyAppTheme();
             screen = ScreenTime.Load(Today);
         }
         public static string ExitWhy; // кто попросил закрыть панель — для журнала
+        static volatile bool shuttingDown;
         public static void Shutdown()
         {
-            CloseGuarded(); CloseDesktopMedia(true);
-            foreach (var b in bars.ToList()) b.Unreserve();
-            if (!DemoMode) { Tray.Stop(); Taskbar.Restore(true, true); } // всегда показываем панель Windows, даже если до FlowBar она была скрыта
+            if (shuttingDown) return;
+            shuttingDown = true;
+            try
+            {
+                CloseGuarded(); CloseDesktopMedia(true);
+                foreach (var b in bars.ToList()) b.Unreserve();
+            }
+            catch (Exception ex) { Log(ex); }
+            finally
+            {
+                if (!DemoMode)
+                {
+                    try { Tray.Stop(); } catch (Exception ex) { Log(ex); }
+                    finally { Taskbar.Restore(true, true); }
+                }
+            }
             try { if (screen != null) screen.Save(); } catch (Exception ex) { Log(ex); }
         }
 
@@ -1097,7 +1125,7 @@ namespace FlowBar
             var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             t.Tick += (o, e) => Tick(); t.Start();
             Closed += (o, e) => { t.Stop(); ClosePreview(); if (hideT != null) hideT.Stop(); Unreserve(); bars.Remove(this); };
-            hoverT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            hoverT = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
             hoverT.Tick += (o, e) => PreviewHoverCheck();
             // async-код WinRT запускаем только после старта диспетчера, иначе продолжения уйдут не в UI-поток
             Loaded += (o, e) => { Tick(); if (primary) InitRadios(); };
@@ -1140,21 +1168,59 @@ namespace FlowBar
             appOrder.Remove(to); int i = appOrder.IndexOf(from); if (i >= 0) appOrder[i] = to;
             foreach (var b in bars) if (b.seq != null) { b.seq.Remove(to); int j = b.seq.IndexOf(from); if (j >= 0) { b.seq[j] = to; b.SaveSeq(); } } // закрепили/открепили — значок на своём месте
         }
-        void SaveTodos() { Persist("задачи", () => SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine))); UpdateTodoTile(); }
+        static int todoVersion;
+        static void WriteTodos() { SafeFile.WriteLines(F("todos.txt"), todos.Select(TodoLine)); }
+        void SaveTodos() { Persist("задачи", WriteTodos); todoVersion++; UpdateTodoTile(); }
         public static Todo ParseTodo(string l)
         {
             int i = l.IndexOf('|');
             if (i < 0) return new Todo { Text = l };
             var flag = l.Substring(0, i);
-            DateTime due;
-            return new Todo
+            var task = new Todo { Done = flag == "1" || flag.StartsWith("1@"), Text = l.Substring(i + 1) };
+            if (flag.Length < 10 || flag[1] != '@') return task;
+            DateTime date;
+            if (DateTime.TryParseExact(flag.Substring(2), "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
+                task.Due = date;
+            else if (DateTime.TryParseExact(flag.Substring(2), "yyyyMMdd'T'HHmm", CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
             {
-                Done = flag == "1" || flag.StartsWith("1@"), Text = l.Substring(i + 1),
-                Due = flag.Length == 10 && flag[1] == '@' && DateTime.TryParseExact(flag.Substring(2), "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out due) ? (DateTime?)due : null
-            };
+                task.Due = date.Date; task.DueTime = date.TimeOfDay;
+            }
+            return task;
         }
-        public static string TodoLine(Todo t) { return (t.Done ? "1" : "0") + (t.Due.HasValue ? "@" + t.Due.Value.ToString("yyyyMMdd", CultureInfo.InvariantCulture) : "") + "|" + t.Text; }
-        static Todo NextDueTodo() { return todos.Where(t => !t.Done).OrderBy(t => t.Due ?? DateTime.MaxValue).FirstOrDefault(); }
+
+        public static string TodoLine(Todo t)
+        {
+            var due = t.Due.HasValue ? "@" + t.Due.Value.ToString("yyyyMMdd", CultureInfo.InvariantCulture) +
+                (t.DueTime.HasValue ? "T" + t.DueTime.Value.ToString(@"hhmm", CultureInfo.InvariantCulture) : "") : "";
+            return (t.Done ? "1" : "0") + due + "|" + t.Text;
+        }
+
+        static string TaskTimeLabel(TimeSpan? time)
+        {
+            return time.HasValue ? time.Value.ToString(@"hh\:mm", CultureInfo.InvariantCulture) : "";
+        }
+
+        static bool TryReadTaskTime(string input, out TimeSpan? time)
+        {
+            time = null;
+            if (string.IsNullOrWhiteSpace(input)) return true;
+            TimeSpan value;
+            if (!TimeSpan.TryParseExact(input.Trim(), @"hh\:mm", CultureInfo.InvariantCulture, out value)) return false;
+            time = value;
+            return true;
+        }
+
+        static bool TryReadTaskSchedule(string dateText, string timeText, out DateTime? date, out TimeSpan? time)
+        {
+            date = null; time = null;
+            if (string.IsNullOrWhiteSpace(dateText)) return string.IsNullOrWhiteSpace(timeText);
+            DateTime value;
+            if (!DateTime.TryParseExact(dateText.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out value)) return false;
+            date = value;
+            return TryReadTaskTime(timeText, out time);
+        }
+
+        static Todo NextDueTodo() { return todos.Where(t => !t.Done).OrderBy(t => t.Due ?? DateTime.MaxValue).ThenBy(t => t.DueTime ?? TimeSpan.MaxValue).FirstOrDefault(); }
         // журнал error.log: ошибки и важные события (запуск, смена мониторов); больше 1 МБ — прежний уходит в error.old.log
         public static void Log(Exception ex) { WriteLog(ex.ToString()); }
         public static void Info(string s) { WriteLog("· " + s); }
@@ -1715,19 +1781,25 @@ namespace FlowBar
             "<Border Name='Bd' CornerRadius='8' Background='{TemplateBinding Background}' BorderBrush='{TemplateBinding BorderBrush}' BorderThickness='{TemplateBinding BorderThickness}'>" +
             "<ScrollViewer Name='PART_ContentHost' Padding='{TemplateBinding Padding}' Focusable='False' VerticalScrollBarVisibility='{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}' HorizontalScrollBarVisibility='{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}'/></Border>" +
             "<ControlTemplate.Triggers><Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Bd' Property='BorderBrush' Value='{Binding SelectionBrush, RelativeSource={RelativeSource TemplatedParent}}'/></Trigger></ControlTemplate.Triggers></ControlTemplate>");
-        static void StyleInputs(DependencyObject root, Color fg)
+        static void StyleInputs(DependencyObject root, Color fg, Color? tint = null)
         {
             foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
             {
                 var tb = child as TextBox;
                 if (tb != null)
                 {
-                    tb.Background = Frozen(fg, 0x14); tb.Foreground = Frozen(fg, 255); tb.CaretBrush = Frozen(fg, 255);
-                    tb.BorderBrush = Frozen(fg, 0x40); tb.BorderThickness = new Thickness(1); tb.Padding = new Thickness(8, 6, 8, 6);
-                    tb.SelectionBrush = Accent; tb.Template = RoundedTextBox; // углы 8 — как у карточек и переключателей, рамка фокуса берёт цвет акцента из SelectionBrush
+                    tb.Background = Frozen(tint ?? fg, tint.HasValue ? (byte)0x0E : (byte)0x14); tb.Foreground = Frozen(fg, 255); tb.CaretBrush = Frozen(fg, 255);
+                    tb.BorderBrush = Frozen(tint ?? fg, tint.HasValue ? (byte)0x49 : (byte)0x40); tb.BorderThickness = new Thickness(1);
+                    if (tb.ReadLocalValue(Control.PaddingProperty) == DependencyProperty.UnsetValue) tb.SetCurrentValue(Control.PaddingProperty, new Thickness(8, 6, 8, 6));
+                    tb.SelectionBrush = Frozen(tint ?? AccentColor, 255); tb.Template = RoundedTextBox; // углы 8 — как у карточек и переключателей, рамка фокуса берёт цвет акцента из SelectionBrush
                 }
                 var ctl = child as Control; if (ctl != null && !(child is TextBox)) ctl.Foreground = Frozen(fg, 255);
-                StyleInputs(child, fg);
+                var combo = child as ComboBox; if (combo != null) StyleChoice(combo, fg, tint);
+                var check = child as CheckBox;
+                if (check != null && check.ReadLocalValue(Control.TemplateProperty) == DependencyProperty.UnsetValue) check.Style = PlainCheckStyle();
+                var group = child as Expander;
+                if (group != null && group.ReadLocalValue(Control.TemplateProperty) == DependencyProperty.UnsetValue) group.Template = CardExpanderTemplate.Value;
+                StyleInputs(child, fg, tint);
             }
         }
 
@@ -1786,10 +1858,10 @@ namespace FlowBar
             N.SetWindowLongPtr(hwnd, -20, new IntPtr(ex | 0x08000000 | 0x80)); // не забирать фокус, не показываться в Alt+Tab
             HwndSource.FromHwnd(hwnd).AddHook(WndProc);
             if (primary && !DemoMode) RegisterShellHookWindow(hwnd); // мигание окон «требует внимания»
-            if (primary && !DemoMode) N.RegisterHotKey(hwnd, 1, 0x1 | 0x4000, 0x54); // Alt+T
-            if (primary && !DemoMode) N.RegisterHotKey(hwnd, 2, 0x1 | 0x2 | 0x4000, 0x42); // Ctrl+Alt+B — перейти на панель с клавиатуры
+            if (primary) HookMinimizeEvents();
+            ApplyHotkeys();
             // стрелки и Tab ходят по плиткам по кругу, Esc возвращает в прежнее окно
-            PreviewKeyDown += (o, ke) => { if (ke.Key == System.Windows.Input.Key.Escape && backTo != IntPtr.Zero) { N.SetForegroundWindow(backTo); backTo = IntPtr.Zero; ke.Handled = true; } };
+            PreviewKeyDown += (o, ke) => { if (ke.Key != System.Windows.Input.Key.Escape) return; if (preview != null) { FoldPreview(); ke.Handled = true; } if (backTo != IntPtr.Zero) { N.SetForegroundWindow(backTo); backTo = IntPtr.Zero; ke.Handled = true; } };
             ApplyStyle();
             if (HideTb) SetTaskbar(false);
             InitAutoHide();
@@ -1797,15 +1869,14 @@ namespace FlowBar
         }
         IntPtr WndProc(IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled)
         {
-            if (msg == 0x312 && w.ToInt32() == 1) { ShowTodos(); handled = true; }
-            if (msg == 0x312 && w.ToInt32() == 2) { FocusBar(); handled = true; }
+            if (msg == 0x312 && DispatchHotkey(w.ToInt32())) handled = true;
             if (msg == ShellHookMsg && primary)
             {
                 int code = w.ToInt32();
                 if (code == 0x8006 /* HSHELL_FLASH */) { if (l != N.GetForegroundWindow() && flashing.Add(l)) { All(b => b.lastKey = null); if (C("notify", "1") != "0" && !QuietNow) BounceApp(l); /* окно программы замигало — на скрытой панели подпрыгивает её значок */ } if (IsConsent(l)) BringConsent(l); }
                 else if ((code == 4 || code == 0x8004 /* окно стало активным */ || code == 2 /* закрыто */) && flashing.Remove(l)) All(b => b.lastKey = null);
                 // активное окно сменилось — подложка переезжает сразу, а не при опросе раз в секунду
-                if (code == 4 || code == 0x8004) Dispatcher.BeginInvoke(new Action(() => All(b => b.RefreshApps())));
+                if (code == 1 || code == 2 || code == 4 || code == 6 || code == 0x8004 || code == 0x8006) QueueWindowRefresh();
             }
             if (msg == AppBarMsg && w.ToInt32() == 1) { reserveKey = null; Place(); } // ABN_POSCHANGED: соседние панели сдвинулись
             if (msg == TaskbarCreatedMsg && (DateTime.Now - Tray.Broadcast).TotalSeconds > 5) { appBar = false; reserveKey = null; Place(); if (HideTb) SetTaskbar(false); } // перезапуск Проводника: регистрация полосы потеряна
@@ -1844,7 +1915,7 @@ namespace FlowBar
         // место под панель: её высота и отступ от края экрана; со стороны окон отступа нет — развёрнутое окно заканчивается у самой панели
         void Reserve()
         {
-            if (hwnd == IntPtr.Zero) return;
+            if (hwnd == IntPtr.Zero || shuttingDown) return;
             bool want = !DemoMode && !AutoHide; // постоянная панель — окна обрезаются по ней, скрываемая — окна на весь экран (отдельного выключателя нет)
             int h = (int)Math.Ceiling((BarH + Gap) * MonScale);
             if (VerticalBar) h = (int)Math.Ceiling((SideWidth + Gap) * MonScale);
@@ -1878,7 +1949,7 @@ namespace FlowBar
         static void WorkAreaChanged() { SendNotifyMessage(new IntPtr(0xFFFF), 0x1A /* WM_SETTINGCHANGE */, new IntPtr(0x2F), null); }
         void EnsureWorkArea()
         {
-            if (hwnd == IntPtr.Zero || DemoMode) return; // пример для сверки (--demo) рабочую область не трогает: убитый процесс не вернул бы её, и окна оставались бы без полосы внизу
+            if (hwnd == IntPtr.Zero || DemoMode || shuttingDown) return;
             var mi = new MonInfo { cbSize = Marshal.SizeOf(typeof(MonInfo)) }; if (!GetMonitorInfo(mon, ref mi)) return;
             var m = mi.rcMonitor; var w = m; var cur = mi.rcWork;
             if (!(!AutoHide && HideTb))
@@ -2042,9 +2113,9 @@ namespace FlowBar
                     grid.Children.Insert(0, page);
                 }
             }
-            bool active = ws.Any(w => w.H == fg);
+            bool active = ws.Any(w => w.H == fg && !N.IsIconic(w.H));
             int local = ws.Count(w => w.Mon == mon), remote = Elsewhere(path).Count;
-            if (local + remote > 0) grid.Children.Add(Indicator(ws.Any(w => w.Mon == mon && w.H == fg), local, remote));
+            if (local + remote > 0) grid.Children.Add(Indicator(active && ws.Any(w => w.Mon == mon && w.H == fg), local, remote));
             bool flash = AddBadge(grid, ws);
             string name = PinName(path);
             var tile = Tile(grid, ws.Count == 0 ? name : null, () => Activate(path, ws), m => AppMenu(m, path, ws, isPinned));
@@ -2065,9 +2136,9 @@ namespace FlowBar
             }
             else if (flash) { tile.Base = Color.FromArgb(0x70, 0xF0, 0x90, 0x20); tile.Background = new SolidColorBrush(tile.Base); } // окно мигает — требует внимания
             tile.MouseDown += (s, e) => { if (e.ChangedButton == MouseButton.Middle && path != null) Launch(path); };
-            if (ws.Count == 0 && remote > 0)
-                tile.ToolTip = name + "\n" + WindowIndicatorStatus(local, remote) + "\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно.";
-            tile.MouseEnter += (s, e) => HoverStart(tile, ws.Count == 0 && remote > 1 ? Elsewhere(path) : ws);
+            if (local + remote > 0)
+                tile.ToolTip = name + "\n" + WindowIndicatorStatus(local, remote) + (ws.Count == 0 ? "\nКлик — переключиться. Shift+клик или средняя кнопка — новое окно." : "");
+            tile.MouseEnter += (s, e) => HoverStart(tile, ws.Count == 0 && remote > 0 ? Elsewhere(path) : ws);
             // меню по правой кнопке важнее предпросмотра: предпросмотр закрывается в момент нажатия и не мешает, пока меню открывается и открыто
             tile.PreviewMouseRightButtonDown += (s, e) => { previewBlockUntil = DateTime.Now.AddSeconds(2); ClosePreview(); };
             tile.AllowDrop = true;
@@ -2124,7 +2195,7 @@ namespace FlowBar
                 FoldPreview();
                 return;
             }
-            if (wasOpen && !previewPinned && foldPreview != null && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0)
+            if (wasOpen && !previewPinned && (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0)
             {
                 previewPinned = true;
                 previewMiss = 0;
@@ -2138,13 +2209,20 @@ namespace FlowBar
             if (ws.Count == 0)
             {
                 var other = Elsewhere(path);
-                if (other.Count > 1 && !ctrl && anchor is Border) ShowPreview((Border)anchor, other, true);
+                if ((other.Count > 1 || other.Count == 1 && C("preview.open", "delay") == "click") && !ctrl && anchor is Border) ShowPreview((Border)anchor, other, true);
                 else if (other.Count > 0) { int j = other.FindIndex(w => w.H == fg); ActivateWin(other[(j + 1) % other.Count].H); }
                 else if (path != null) Launch(path);
                 return;
             }
             int i = ws.FindIndex(w => w.H == fg);
-            if (ws.Count == 1) { if (i == 0) N.ShowWindow(ws[0].H, 6); else ActivateWin(ws[0].H); return; } // повторный клик — свернуть
+            if (ws.Count == 1 && !ctrl && C("preview.open", "delay") == "click" && anchor is Border) { ShowPreview((Border)anchor, ws, true); return; }
+            if (ws.Count == 1)
+            {
+                var h = ws[0].H;
+                if (i == 0 && !N.IsIconic(h)) { SuppressMinimizedPreview(h); N.ShowWindow(h, 6); QueueWindowRefresh(); }
+                else ActivateWin(h);
+                return;
+            }
             if (ctrl) { ActivateWin(ws[(i + 1) % ws.Count].H); return; } // Ctrl+клик — по кругу
             // несколько окон — как в Windows: клик показывает миниатюры, выбор окна — по ним
             Border tile = anchor as Border;
@@ -2172,31 +2250,33 @@ namespace FlowBar
                 m.Items.Add(MenuHead(IconFor(hp) ?? IconFor(Target(hp)), PinName(hp), detail));
             }
             var windows = MenuBranch("Окна (" + shown.Count + ")");
+            MenuItem singlePlacement = null;
             foreach (var w in shown)
             {
                 var h = w.H;
                 var title = TitleOf(h);
                 if (string.IsNullOrWhiteSpace(title)) title = PinName(w.Path);
-                var label = title + (w.Mon != mon ? " · другой экран" : "");
-                var wi = Item("Окна (", () => { if (N.IsWindow(h)) ActivateWin(h); });
-                var titleLine = new TextBlock { Text = title, MaxWidth = 255, TextTrimming = TextTrimming.CharacterEllipsis };
-                var close = Cross("Закрыть окно «" + title + "»", () =>
+                var caption = title + " · " + DisplayName(w.Mon);
+                if (shown.Count == 1)
                 {
-                    CloseGuarded();
-                    if (N.IsWindow(h)) N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero);
-                });
-                close.Width = close.Height = 20; close.Margin = new Thickness(8, 0, 0, 0);
-                close.PreviewMouseLeftButtonDown += (s, e) => e.Handled = true;
-                close.PreviewMouseLeftButtonUp += (s, e) => { e.Handled = true; close.Invoke(); };
-                var row = new DockPanel(); DockPanel.SetDock(close, Dock.Right); row.Children.Add(close);
-                row.Children.Add(w.Mon == mon ? (UIElement)titleLine : VS(titleLine,
-                    new TextBlock { Text = "Другой экран", FontSize = 10.5, Opacity = 0.72, Margin = new Thickness(0, 2, 0, 0) }));
-                wi.Header = row;
-                wi.ToolTip = label;
-                System.Windows.Automation.AutomationProperties.SetName(wi, label);
-                windows.Items.Add(wi);
+                    var open = Item("Перейти к окну", () => { if (N.IsWindow(h)) ActivateWin(h); });
+                    open.ToolTip = caption;
+                    windows.Items.Add(open);
+                    singlePlacement = MenuBranch("Разместить или перенести");
+                    AddWindowActions(singlePlacement, h);
+                    continue;
+                }
+                var item = MenuBranch(caption);
+                item.ToolTip = caption;
+                item.Items.Add(Item("Перейти к окну", () => { if (N.IsWindow(h)) ActivateWin(h); }));
+                var placement = MenuBranch("Разместить или перенести");
+                AddWindowActions(placement, h);
+                if (placement.Items.Count > 0) item.Items.Add(placement);
+                item.Items.Add(Item("Закрыть окно", () => { if (N.IsWindow(h)) N.PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); }));
+                windows.Items.Add(item);
             }
-            MenuSection(m, windows.Items.Count == 1 ? TakeOnlyMenuItem(windows) : windows.Items.Count > 1 ? windows : null,
+            MenuSection(m, shown.Count == 1 ? TakeOnlyMenuItem(windows) : shown.Count > 1 ? windows : null,
+                singlePlacement != null && singlePlacement.Items.Count > 0 ? singlePlacement : null,
                 path == null ? null : Item(shown.Count == 0 ? "Открыть" : "Открыть новое окно", () => Launch(path)));
             // при закреплении/откреплении значок остаётся на своём месте
             if (path != null)
@@ -2273,9 +2353,9 @@ namespace FlowBar
         bool PreviewBlocked { get { return menusOpen > 0 || DateTime.Now < previewBlockUntil; } }
         void HoverStart(Border tile, List<Win> ws)
         {
-            if (ws.Count == 0 || PreviewBlocked) return;
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
-            t.Tick += (s, e) => { t.Stop(); if (!dragging && !PreviewBlocked && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
+            if (ws.Count == 0 || PreviewBlocked || HoverAfterMinimize(ws) || C("preview.open", "delay") == "click" || previewPinned) return;
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(C("preview.open", "delay") == "instant" ? 1 : 400) };
+            t.Tick += (s, e) => { t.Stop(); if (!dragging && !previewPinned && !PreviewBlocked && !HoverAfterMinimize(ws) && tile.IsMouseOver && previewFor != tile) ShowPreview(tile, ws); };
             t.Start();
         }
         bool previewPinned;
@@ -2319,12 +2399,14 @@ namespace FlowBar
             return body;
         }
 
+        int previewArrangeOpen;
         void ShowPreview(Border tile, List<Win> ws, bool pinned = false)
         {
             if (!pinned && PreviewBlocked) return; // меню по правой кнопке в приоритете
             ClosePreview(); previewPinned = pinned; TipHide(true);
             var windows = ws.Where(item => N.IsWindow(item.H)).Take(12).ToList(); // было 6: окна сверх шести молча пропадали из миниатюр; высота ячеек сама уменьшается под число рядов
             if (windows.Count == 0) return;
+            previewNormalWindows = new HashSet<IntPtr>(windows.Where(item => !N.IsIconic(item.H)).Select(item => item.H));
             bool folder = windows.Count > 1;
             const double padding = 8, margin = 4;
             double available = scr.Bounds.Width / MonScale - 2 * (padding + 5);
@@ -2333,7 +2415,7 @@ namespace FlowBar
             int columns = Math.Min(windows.Count, Math.Max(1, (int)(available / span)));
             int rows = (windows.Count + columns - 1) / columns;
             double panelSpace = VerticalBar ? 0 : BarH;
-            double slotHeight = Math.Min(136, Math.Max(folder ? 42 : 54, Math.Floor((scr.Bounds.Height / MonScale - panelSpace - (folder ? 95 : 32)) / rows - 46)));
+            double slotHeight = Math.Min(136, Math.Max(folder ? 42 : 54, Math.Floor((scr.Bounds.Height / MonScale - panelSpace - (folder ? 95 : 32)) / rows - 60)));
             var w = new Window
             {
                 WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, Topmost = true, ShowInTaskbar = false, ShowActivated = false,
@@ -2345,6 +2427,7 @@ namespace FlowBar
             var transforms = new Dictionary<Border, TransformGroup>();
             // закрытое из миниатюр окно (вкладка) пропадает из окна предпросмотра, остальные остаются; пусто — окно закрывается
             var cells = new Dictionary<IntPtr, Border>(); Action<IntPtr> dismiss = null;
+            var arrangementMenus = new List<FlowMenu>();
             foreach (var win in windows)
             {
                 var h = win.H;
@@ -2355,16 +2438,34 @@ namespace FlowBar
                 close.MouseLeave += (s, e) => close.Background = Brushes.Transparent;
                 var head = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
                 DockPanel.SetDock(close, Dock.Right); head.Children.Add(close);
+                var controls = new FlowMenu();
+                AddWindowActions(controls, h);
+                if (controls.Items.Count > 0)
+                {
+                    arrangementMenus.Add(controls);
+                    controls.Opened += (s, e) => previewArrangeOpen++;
+                    controls.Closed += (s, e) => { if (previewArrangeOpen > 0) previewArrangeOpen--; };
+                    var arrange = Act(G("", 11), "Расположение окна", () => { controls.IsOpen = true; });
+                    arrange.Width = arrange.Height = 22;
+                    arrange.ToolTip = "Расположение окна · " + DisplayName(MonOf(h));
+                    controls.PlacementTarget = arrange;
+                    arrange.PreviewMouseLeftButtonDown += (s, e) => e.Handled = true;
+                    arrange.PreviewMouseLeftButtonUp += (s, e) => { e.Handled = true; controls.IsOpen = true; };
+                    DockPanel.SetDock(arrange, Dock.Right); head.Children.Add(arrange);
+                }
                 var image = IconFor(win.Path);
                 if (image != null)
                 {
                     var icon = new Image { Source = image, Width = 16, Height = 16, Margin = new Thickness(0, 0, 7, 0) };
                     DockPanel.SetDock(icon, Dock.Left); head.Children.Add(icon);
                 }
-                var label = Txt(title, 12, true); label.ToolTip = title; head.Children.Add(label);
+                var label = Txt(title, 12, true); label.ToolTip = title;
+                var display = Txt(DisplayName(MonOf(h)), 10, false); display.Opacity = 0.75;
+                head.Children.Add(VS(label, display));
                 var slot = new Border { Height = slotHeight, Margin = new Thickness(3), Background = Frozen(CardFg, 0x09) };
                 var frame = new Border { CornerRadius = new CornerRadius(7), BorderThickness = new Thickness(1), BorderBrush = Frozen(CardFg, 0x20), Child = slot };
-                var cell = Act(VS(head, frame), title, () => { ClosePreview(); ActivateWin(h); });
+                var cell = Act(VS(head, frame), title, () => ChooseThumbnail(h));
+                cell.Tag = h;
                 cell.Width = span - margin * 2; cell.Margin = new Thickness(margin); cell.Padding = new Thickness(7);
                 cell.CornerRadius = new CornerRadius(12); cell.BorderThickness = new Thickness(1);
                 var restFill = folder ? PopupFill(false) : Frozen(CardFg, 0x0A);
@@ -2436,6 +2537,7 @@ namespace FlowBar
             };
             double progress = 0, motionFrom = 0, motionTo = pinned ? 1 : 0.76, motionDuration = 385;
             Action<double> arrangeFan = null;
+            IntPtr chosenWindow = IntPtr.Zero;
             EventHandler animate = null; // задан только если веер открыт с движением
             Action<bool> position = refresh =>
             {
@@ -2486,6 +2588,7 @@ namespace FlowBar
                 for (int i = 0; i < row.Children.Count; i++)
                 {
                     var cell = (Border)row.Children[i];
+                    if (chosenWindow != IntPtr.Zero && cell.Tag is IntPtr && (IntPtr)cell.Tag == chosenWindow) continue;
                     var transform = transforms[cell];
                     var scale = (ScaleTransform)transform.Children[0];
                     var shift = (TranslateTransform)transform.Children[1];
@@ -2548,6 +2651,7 @@ namespace FlowBar
                         System.Windows.Media.CompositionTarget.Rendering += animate;
                     };
                     spreadPreview = () => { if (!foldingFolder) move(1, 190); };
+                    animateThumbnailChoice = h => { chosenWindow = h; move(0, 140); };
                     foldPreview = () =>
                     {
                         if (foldingFolder) return;
@@ -2563,6 +2667,8 @@ namespace FlowBar
             var anchorWindow = Window.GetWindow(tile);
             w.Closed += (s, e) =>
             {
+                foreach (var menu in arrangementMenus) menu.IsOpen = false;
+                previewArrangeOpen = 0;
                 stopMotion();
                 if (!folder) return;
                 tile.LayoutUpdated -= anchorLayout;
@@ -2607,22 +2713,35 @@ namespace FlowBar
             };
             if (!folder) Glass(w, face, face.CornerRadius.TopLeft, 0);
             preview = w; previewFor = tile; previewMiss = 0;
+            previewEscapeDown = (GetAsyncKeyState(0x1B) & 0x8000) != 0;
             w.Show(); hoverT.Start();
         }
         void PreviewHoverCheck()
         {
             if (preview == null) { hoverT.Stop(); return; }
-            previewMiss = previewFor.IsMouseOver || preview.IsMouseOver ? 0 : previewMiss + 1;
-            if (previewMiss >= (previewPinned ? 12 : 3)) FoldPreview(); // ¾ секунды на переход курсора со значка на миниатюру; открытые кликом ждут дольше
+            var minimized = previewNormalWindows.FirstOrDefault(h => !N.IsWindow(h) || N.IsIconic(h));
+            if (minimized != IntPtr.Zero) { SuppressMinimizedPreview(minimized); return; }
+            bool escape = (GetAsyncKeyState(0x1B) & 0x8000) != 0;
+            bool pressed = escape && !previewEscapeDown;
+            previewEscapeDown = escape;
+            if (pressed && previewPinned && previewArrangeOpen == 0) { ClosePreview(); return; }
+            if (previewPinned || selectingThumbnail) return;
+            previewMiss = previewFor.IsMouseOver || preview.IsMouseOver || previewArrangeOpen > 0 ? 0 : previewMiss + 1;
+            if (previewMiss >= 15) FoldPreview();
         }
         void ClosePreview()
         {
+            if (thumbnailSelection != null) { thumbnailSelection.Stop(); thumbnailSelection = null; }
+            HidePlacementOutline();
+            previewPinned = false;
+            previewNormalWindows.Clear();
             foldPreview = null; previewFolding = false;
             spreadPreview = null;
             foreach (var t in thumbs) N.DwmUnregisterThumbnail(t);
             thumbs.Clear();
             if (preview != null) { preview.Close(); preview = null; }
             previewFor = null; hoverT.Stop();
+            selectingThumbnail = false; animateThumbnailChoice = null;
         }
 
         // ---------- виджеты ----------
@@ -2765,9 +2884,9 @@ namespace FlowBar
             body.Children.Add(head("Город"));
             var input = new TextBox { Text = C("wxCity", ""), Padding = new Thickness(6, 4, 6, 4), ToolTip = "Название города — Enter для поиска" };
             var results = new StackPanel();
-            input.KeyDown += async (s, e) =>
+            Action findCity = async () =>
             {
-                if (e.Key != System.Windows.Input.Key.Enter || input.Text.Trim() == "") return;
+                if (input.Text.Trim() == "") { input.Focus(); return; }
                 results.Children.Clear(); results.Children.Add(Txt("Поиск…", 11, false));
                 try
                 {
@@ -2791,7 +2910,8 @@ namespace FlowBar
                 }
                 catch (Exception ex) { results.Children.Clear(); results.Children.Add(Txt("Ошибка поиска: " + ex.Message, 11, false)); }
             };
-            body.Children.Add(input); body.Children.Add(results);
+            input.KeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.Enter) { e.Handled = true; findCity(); } };
+            body.Children.Add(input); body.Children.Add(CardActions(Btn("Найти", findCity, true))); body.Children.Add(results);
             if (wxError != null && C("wxLat", "") != "") body.Children.Add(CardActions(Btn("Повторить загрузку", () => { if (panel != null) panel.Close(); UpdateWeather(); }, true)));
             var cityName = C("wxCity", "");
             ShowPanel(cityName == "" ? "Погода" : "Погода — " + cityName, body, 340, wx == null ? input : null);
@@ -2837,7 +2957,7 @@ namespace FlowBar
             {
                 Action<string, double, string> lim = (name, pct, reset) =>
                 {
-                    body.Children.Add(line(name + ": " + (double.IsNaN(pct) ? "—" : Math.Round(pct) + "% занято · " + Math.Round(100 - pct) + "% осталось") + (reset != "—" && reset != "" ? " · сброс " + (reset == "ждём" ? "уже прошёл, ждём ответа Claude Code" : "через " + reset) : "")));
+                    body.Children.Add(line(name + ": " + (double.IsNaN(pct) ? "—" : Math.Round(100 - pct) + "% осталось") + (reset != "—" && reset != "" ? " · сброс " + (reset == "ждём" ? "уже прошёл, ждём ответа Claude Code" : "через " + reset) : "")));
                     if (!double.IsNaN(pct)) body.Children.Add(Meter(pct, 310));
                 };
                 lim("5 часов (сессия)", ls.ClP5, ls.ClR5); lim("Неделя", ls.ClPW, ls.ClRW);
@@ -2851,8 +2971,7 @@ namespace FlowBar
                     "Проценты 5-часового и недельного лимитов Claude Code сообщает только своей строке состояния. FlowBar может подключиться к ней — ваша нынешняя строка состояния продолжит работать как прежде."));
                 if (!ClaudeBridge.On) { var bb = Btn("Подключить проценты", () => { if (panel != null) panel.Close(); ConnectClaudePct(); }, true); bb.HorizontalAlignment = HorizontalAlignment.Left; bb.Margin = new Thickness(0, 8, 0, 0); body.Children.Add(bb); }
             }
-            body.Children.Add(head("Показывать на панели"));
-            foreach (var r in ClRows) { var k = r[0]; body.Children.Add(CheckRow(r[1], null, ClSel.Contains(k), on => SetClRow(k, on))); }
+            body.Children.Add(CardActions(Btn("Настроить виджет Claude", () => ShowSettingsPage("connect", 2))));
 
             var bs = ClaudeUsage.BlockStart(msgs, now);
             var h1 = head("Текущее 5-часовое окно — токены");
@@ -2881,9 +3000,9 @@ namespace FlowBar
                 col.Children.Add(new Rectangle { Fill = Accent, RadiusX = 2, RadiusY = 2, VerticalAlignment = VerticalAlignment.Bottom, Height = Math.Max(2, 44.0 * perDay[d] / maxD), Opacity = d == 0 ? 1 : 0.6, ToolTip = Tok(perDay[d]) });
                 Grid.SetColumn(col, 6 - d); days.Children.Add(col);
             }
-            body.Children.Add(days);
+            if (week.Count > 0) body.Children.Add(days);
 
-            body.Children.Add(head("Модели за 7 дней"));
+            if (week.Count > 0) body.Children.Add(head("Модели за 7 дней"));
             long total = Math.Max(1, week.Sum(m => m.Weight));
             foreach (var g in week.GroupBy(m => ClaudeUsage.ModelName(m.Model)).Select(g => new { Name = g.Key, W = g.Sum(m => m.Weight) }).OrderByDescending(g => g.W).Take(4))
             {
@@ -2932,7 +3051,7 @@ namespace FlowBar
         static FrameworkElement anchor; static DateTime anchorAt; // плитка, по которой только что кликнули: карточка откроется у неё
         static uint stickyPid; // процесс программы, по значку трея которой только что нажали: карточка трея не закрывается, пока работают с ней
         Action<TextBlock> headEditor; // выставляется перед ShowPanel и сразу забирается им
-        void ShowPanel(string title, UIElement body, double width, IInputElement focus, Action tick = null)
+        void ShowPanel(string title, UIElement body, double width, IInputElement focus, Action tick = null, Func<bool> dismiss = null, Color? inputTint = null)
         {
             var edit = headEditor; headEditor = null; // забираем сразу: ранний выход ниже не должен оставить его для другой карточки
             ClosePreview(); TipHide(true);
@@ -2974,7 +3093,7 @@ namespace FlowBar
             if (title == "Значки трея") { head.Text = ""; if (back == null) top.Visibility = Visibility.Collapsed; } // сетка значков говорит сама за себя; стрелка «Назад» остаётся
             DockPanel.SetDock(top, Dock.Top); sp.Children.Add(top);
             sp.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Padding = new Thickness(0, 0, 6, 0), Margin = new Thickness(0, 0, -6, 0) });
-            StyleInputs(sp, fg);
+            StyleInputs(sp, fg, inputTint);
             var face = new Border { Background = CardFill, CornerRadius = new CornerRadius(16), Padding = new Thickness(16), BorderThickness = new Thickness(1), BorderBrush = CardEdge, Child = sp };
             // тень — отдельный слой позади: эффект на самом контейнере с текстом заставлял WPF рисовать буквы через промежуточный растр, и они мылились
             var shade = new Border { CornerRadius = face.CornerRadius, Background = Frozen(CardBg, 255), Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 24, ShadowDepth = 4, Direction = IsTop ? 90 : 270, Opacity = 0.32 } };
@@ -3028,7 +3147,7 @@ namespace FlowBar
                 watch.Start();
             })); // из «…» модуль тянут на панель — карточка остаётся
             // Esc закрывает карточку и возвращает фокус на плитку, если на панель пришли с клавиатуры
-            w.PreviewKeyDown += (o, e) => { if (e.Key != System.Windows.Input.Key.Escape) return; e.Handled = true; w.Close(); if (backTo != IntPtr.Zero && from != null) { N.SetForegroundWindow(hwnd); Keyboard.Focus(from); } };
+            w.PreviewKeyDown += (o, e) => { if (e.Key != System.Windows.Input.Key.Escape) return; e.Handled = true; if (dismiss != null && dismiss()) return; w.Close(); if (backTo != IntPtr.Zero && from != null) { N.SetForegroundWindow(hwnd); Keyboard.Focus(from); } };
             w.Closed += (o, e) => { closed = true; stickyPid = 0; lastClosedTitle = title; lastClosedAt = DateTime.Now; if (panel == w) { panel = null; panelTick = null; panelBuild = null; } };
             panel = w; panelTitle = title; panelTick = tick;
             w.Show(); w.Activate();
@@ -3036,81 +3155,200 @@ namespace FlowBar
 
         void ShowTodos()
         {
-            var remList = new StackPanel { Margin = new Thickness(0, 4, -4, 0) };
-            var list = new StackPanel { Margin = new Thickness(-8, 0, -4, 0) }; var count = Txt("", 11, false); count.Opacity = 0.6; count.Margin = new Thickness(0, -6, 0, 6);
-            var input = new TextBox { Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 8, 0, 0), ToolTip = "Новая задача — Enter" };
-            Action render = null;
+            if (reminders == null) LoadReminders();
+            var tint = TaskAccent;
+            var summary = CardStatus("");
+            summary.Foreground = Frozen(tint, 255);
+            summary.Margin = new Thickness(0, 1, 0, 3);
+            var filters = new StackPanel { Margin = new Thickness(0, 10, 0, 7) };
+            var list = new StackPanel();
+            var feedback = CardStatus("");
+            var undoArea = new StackPanel();
+            var input = new TextBox { Margin = new Thickness(0, 5, 0, 0), MinHeight = 32, MaxHeight = 100,
+                TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            System.Windows.Automation.AutomationProperties.SetName(input, "Текст задачи");
+            var formTitle = Txt("Новая задача", 13.5, true);
+            var schedule = new TaskSchedule();
+            Todo editing = null, removed = null;
+            int removedIndex = -1, tab = 0, shownTab = -1, seenTasks = -1, seenReminders = -1;
+            DateTime shownDay = DateTime.MinValue;
+            Action render = null, submit = null, reset = null;
+            var add = TaskButton("Добавить", () => submit(), true);
+            var cancel = TaskButton("Отмена", () => reset());
+            cancel.Visibility = Visibility.Collapsed;
+            Border voice;
+            var voiceControls = VoiceTaskControls(input, true, () =>
+            {
+                reset(); tab = 0; feedback.Text = "Задачи добавлены."; render();
+            }, available =>
+            {
+                add.IsEnabled = cancel.IsEnabled = schedule.IsEnabled = available;
+            }, out voice);
+            voice.HorizontalAlignment = HorizontalAlignment.Center;
+            voice.Margin = new Thickness(0, 6, 0, 3);
+            var actions = CardActions(add, cancel);
+            actions.Margin = new Thickness(0, 7, 0, 0);
+            var composer = TaskSurface(VS(formTitle, input, voice, schedule, actions, voiceControls), true);
+            composer.Padding = new Thickness(12, 10, 12, 5);
+            Action setActionLabel = () =>
+            {
+                bool edit = editing != null;
+                formTitle.Text = edit ? "Редактирование задачи" : "Новая задача";
+                string label = edit ? "Сохранить" : "Добавить";
+                ((TextBlock)add.Child).Text = label;
+                System.Windows.Automation.AutomationProperties.SetName(add, label);
+                cancel.Visibility = edit ? Visibility.Visible : Visibility.Collapsed;
+            };
+            reset = () =>
+            {
+                editing = null; input.Clear(); schedule.Set(null, null); setActionLabel();
+            };
+            submit = () =>
+            {
+                if (!add.IsEnabled) return;
+                var text = input.Text.Trim();
+                if (text.Length == 0) { feedback.Text = "Введите текст задачи."; feedback.Visibility = Visibility.Visible; input.Focus(); return; }
+                var due = schedule.Date;
+                var dueTime = schedule.Time;
+                if (editing == null)
+                {
+                    todos.Add(new Todo { Text = text, Due = due, DueTime = dueTime });
+                    if (tab != 0 && (tab != 1 || due == null || due > DateTime.Today)) tab = 0;
+                    feedback.Text = "Задача добавлена.";
+                }
+                else
+                {
+                    editing.Text = text; editing.Due = due; editing.DueTime = dueTime;
+                    feedback.Text = "Задача обновлена.";
+                }
+                reset(); SaveTodos(); render(); input.Focus();
+            };
+            input.KeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.Enter) { e.Handled = true; submit(); } };
+            Action<Todo> editTask = task =>
+            {
+                editing = task; input.Text = task.Text; schedule.Set(task.Due, task.DueTime);
+                setActionLabel();
+                input.Focus(); input.SelectAll();
+            };
             render = () =>
             {
-                list.Children.Clear();
-                if (todos.Count == 0) list.Children.Add(new TextBlock { Text = "Задач нет — введите ниже и нажмите Enter", Opacity = 0.6, Margin = new Thickness(8, 0, 0, 0) });
-                // сначала несделанные; строка — круглая отметка, текст и крестик, который виден при наведении
-                string lastGroup = null;
-                foreach (var td in todos.OrderBy(x => x.Done).ThenBy(x => x.Due ?? DateTime.MaxValue).ToList())
+                DateTime today = DateTime.Today;
+                seenTasks = todoVersion; seenReminders = reminderVersion; shownDay = today;
+                int active = todos.Count(t => !t.Done), done = todos.Count - active;
+                summary.Visibility = todos.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+                summary.Text = "В работе " + active + "   ·   Готово " + done;
+                if (shownTab != tab)
                 {
-                    var t = td;
-                    string group = t.Done ? "Завершённые" : t.Due < DateTime.Today ? "Просроченные" : t.Due == DateTime.Today ? "Сегодня" : "Позже";
-                    if (lastGroup != group) { list.Children.Add(CardHead(group)); lastGroup = group; }
-                    var mark = new TextBlock { Text = "\uE73E", FontFamily = Icons, FontSize = 10, Foreground = Frozen(OnAccent, 255), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Opacity = t.Done ? 1 : 0 };
-                    var ring = new Border { Width = 18, Height = 18, CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1.5), Child = mark, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 1, 10, 0),
-                        BorderBrush = t.Done ? Accent : Frozen(CardFg, 0x70), Background = t.Done ? Accent : Brushes.Transparent };
-                    var tx = new TextBlock { Text = t.Text, TextWrapping = TextWrapping.Wrap, FontSize = 12.5, Opacity = t.Done ? 0.45 : 1, VerticalAlignment = VerticalAlignment.Center };
-                    if (t.Done) tx.TextDecorations = TextDecorations.Strikethrough;
-                    var del = Cross("Удалить задачу «" + t.Text + "»", () => { todos.Remove(t); SaveTodos(); render(); }); del.Opacity = 0;
-                    var dp = new DockPanel { Margin = new Thickness(8, 6, 4, 6) }; DockPanel.SetDock(del, Dock.Right); DockPanel.SetDock(ring, Dock.Left);
-                    dp.Children.Add(del); dp.Children.Add(ring);
-                    dp.Children.Add(t.Due.HasValue ? (UIElement)VS(tx, CardStatus(t.Due.Value.ToString("d MMM"))) : tx);
-                    Press row = null;
-                    row = Act(dp, (t.Done ? "Сделано: " : "Задача: ") + t.Text, () =>
+                    shownTab = tab; filters.Children.Clear();
+                    filters.Children.Add(Seg(new[] { "В работе", "Сегодня", "Готово", "Напоминания" }, tab, i =>
                     {
-                        t.Done = !t.Done; SaveTodos();
-                        // отметка заполняется, текст гаснет — затем список перестраивается (сделанные уходят вниз)
-                        ring.Background = t.Done ? Accent : Brushes.Transparent; ring.BorderBrush = t.Done ? Accent : Frozen(CardFg, 0x70);
-                        mark.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(t.Done ? 1 : 0, TimeSpan.FromMilliseconds(120)));
-                        tx.TextDecorations = t.Done ? TextDecorations.Strikethrough : null;
-                        tx.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(t.Done ? 0.45 : 1, TimeSpan.FromMilliseconds(180)));
-                        var later = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Motion ? 420 : 0) }; later.Tick += (o2, e2) => { later.Stop(); render(); }; later.Start();
-                    });
-                    row.CornerRadius = new CornerRadius(8);
-                    row.ContextMenu = new FlowMenu();
-                    foreach (var choice in new[] { Tuple.Create("Сегодня", (DateTime?)DateTime.Today), Tuple.Create("Завтра", (DateTime?)DateTime.Today.AddDays(1)), Tuple.Create("Без срока", (DateTime?)null) })
-                        row.ContextMenu.Items.Add(Item(choice.Item1, () => { t.Due = choice.Item2; SaveTodos(); render(); }));
-                    // напомнить об этой задаче уведомлением
-                    row.ContextMenu.Items.Add(new Separator());
-                    foreach (var rc in RemindChoices())
-                    { var at = rc.Item2; row.ContextMenu.Items.Add(Item("Напомнить " + rc.Item1, () => { AddReminder(at, t.Text); render(); })); }
-                    row.MouseEnter += (s, e) => { Fade(row, Color.FromArgb(0x14, CardFg.R, CardFg.G, CardFg.B), 100); del.Opacity = 0.75; };
-                    row.MouseLeave += (s, e) => { Fade(row, Colors.Transparent, 140); del.Opacity = 0; };
-                    list.Children.Add(row);
+                        if (i == tab) return;
+                        shownTab = tab = i;
+                        feedback.Text = ""; render();
+                    }, true, tint));
                 }
-                int left = todos.Count(x => !x.Done);
-                count.Text = todos.Count == 0 ? "" : left == 0 ? "Всё сделано" : "Осталось " + left + " из " + todos.Count;
-                // ожидающие напоминания (свои и поставленные агентами): время, текст, крестик отмены
-                remList.Children.Clear();
-                if (reminders == null) LoadReminders();
-                if (reminders.Count > 0) remList.Children.Add(H("Напоминания"));
-                foreach (var r0 in reminders.OrderBy(x => x.At).ToList())
+                composer.Visibility = tab < 2 || editing != null ? Visibility.Visible : Visibility.Collapsed;
+                feedback.Visibility = feedback.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+                undoArea.Children.Clear();
+                if (removed != null) undoArea.Children.Add(CardActions(TaskButton("Вернуть удалённую задачу", () =>
                 {
-                    var r = r0;
-                    var when = Txt(r.At.Date == DateTime.Today ? r.At.ToString("HH:mm") : r.At.ToString("d MMM HH:mm"), 11.5, true); when.Width = 86; when.Opacity = 0.85;
-                    var what = new TextBlock { Text = r.Text, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 12 };
-                    var x = Cross("Отменить напоминание «" + r.Text + "»", () => { reminders.Remove(r); SaveReminders(); render(); });
-                    var dp = new DockPanel { Margin = new Thickness(0, 1, 4, 1) }; DockPanel.SetDock(x, Dock.Right); DockPanel.SetDock(when, Dock.Left); dp.Children.Add(x); dp.Children.Add(when); dp.Children.Add(what);
-                    remList.Children.Add(dp);
+                    todos.Insert(Math.Min(removedIndex, todos.Count), removed); removed = null; tab = 0;
+                    feedback.Text = "Задача возвращена."; SaveTodos(); render();
+                })));
+                list.Children.Clear();
+                if (tab == 3)
+                {
+                    if (reminders.Count == 0) list.Children.Add(CardStatus("Нет активных напоминаний. Их можно поставить в меню задачи."));
+                    foreach (var reminder in reminders.OrderBy(r => r.At))
+                    {
+                        string when = reminder.At.Date == today ? "Сегодня, " + reminder.At.ToString("HH:mm") : reminder.At.ToString("d MMM, HH:mm");
+                        var text = Txt(reminder.Text, 12.5, true); text.TextWrapping = TextWrapping.Wrap;
+                        var stop = Cross("Отменить напоминание «" + reminder.Text + "»", () => { reminders.Remove(reminder); SaveReminders(); render(); });
+                        var row = new DockPanel(); DockPanel.SetDock(stop, Dock.Right); row.Children.Add(stop);
+                        row.Children.Add(VS(text, CardStatus(when))); list.Children.Add(TaskSurface(row));
+                    }
+                    return;
                 }
-            };
-            var dueDate = new DatePicker { Margin = new Thickness(0, 5, 0, 0) };
-            // remList объявлен выше render
-            System.Windows.Automation.AutomationProperties.SetName(dueDate, "Срок новой задачи");
-            input.KeyDown += (s, e) =>
-            {
-                if (e.Key != System.Windows.Input.Key.Enter || input.Text.Trim() == "") return;
-                todos.Add(new Todo { Text = input.Text.Trim(), Due = dueDate.SelectedDate }); input.Text = ""; dueDate.SelectedDate = null; SaveTodos(); render();
+                var visible = todos.Where(t => tab == 2 ? t.Done : !t.Done && (tab != 1 || t.Due.HasValue && t.Due.Value.Date <= today))
+                    .OrderBy(t => t.Due ?? DateTime.MaxValue).ThenBy(t => t.DueTime ?? TimeSpan.MaxValue).ToList();
+                if (visible.Count == 0)
+                {
+                    if (tab == 1) list.Children.Add(CardStatus("На сегодня и раньше задач нет."));
+                    if (tab == 2) list.Children.Add(CardStatus("Выполненные задачи появятся здесь."));
+                    return;
+                }
+                string previousGroup = null;
+                foreach (var task in visible)
+                {
+                    string group = task.Done ? null : !task.Due.HasValue ? "Без срока" : task.Due.Value.Date < today ? "Просрочено" :
+                        task.Due.Value.Date == today ? "Сегодня" : task.Due.Value.Date == today.AddDays(1) ? "Завтра" : "Позже";
+                    if (group != null && group != previousGroup)
+                    {
+                        var dateGroup = CardHead(group); dateGroup.Foreground = Frozen(tint, 255); list.Children.Add(dateGroup);
+                    }
+                    previousGroup = group;
+                    var text = Txt(task.Text, 13, !task.Done); text.TextWrapping = TextWrapping.Wrap;
+                    if (task.Done) { text.TextDecorations = TextDecorations.Strikethrough; text.Opacity = 0.72; }
+                    var doneBox = CheckRow(task.Text, null, task.Done, doneNow =>
+                    {
+                        task.Done = doneNow; SaveTodos(); render();
+                    }, TaskCheckTemplate());
+                    doneBox.Content = text; doneBox.Margin = new Thickness(0, 3, 0, 0);
+                    System.Windows.Automation.AutomationProperties.SetName(doneBox, (task.Done ? "Вернуть в работу: " : "Выполнить: ") + task.Text);
+                    var menu = new FlowMenu();
+                    menu.Items.Add(Item("Редактировать", () =>
+                    {
+                        composer.Visibility = Visibility.Visible; editTask(task); composer.BringIntoView();
+                    }));
+                    foreach (var choice in new[] { Tuple.Create("На сегодня", (DateTime?)today), Tuple.Create("На завтра", (DateTime?)today.AddDays(1)), Tuple.Create("Снять срок", (DateTime?)null) })
+                        if (task.Due != choice.Item2) menu.Items.Add(Item(choice.Item1, () =>
+                        {
+                            task.Due = choice.Item2;
+                            if (!task.Due.HasValue) task.DueTime = null;
+                            if (editing == task) schedule.Set(task.Due, task.DueTime);
+                            SaveTodos(); render();
+                        }));
+                    if (!task.Done)
+                    {
+                        var remind = Item("Напомнить", () => { });
+                        foreach (var choice in RemindChoices())
+                            remind.Items.Add(Item(choice.Item1, () =>
+                            {
+                                var now = RemindChoices().FirstOrDefault(x => x.Item1 == choice.Item1);
+                                if (now != null)
+                                {
+                                    AddReminder(now.Item2, task.Text); feedback.Text = "Напоминание · " + now.Item2.ToString("d MMM, HH:mm"); render();
+                                }
+                            }));
+                        menu.Items.Add(remind);
+                    }
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(Item("Удалить задачу", () =>
+                    {
+                        removed = task; removedIndex = todos.IndexOf(task);
+                        if (editing == task) reset();
+                        todos.Remove(task); feedback.Text = "Задача удалена."; SaveTodos(); render();
+                    }));
+                    var more = TaskButton("…", () => { menu.IsOpen = true; });
+                    more.Padding = new Thickness(9, 4, 9, 4); more.Margin = new Thickness(7, 0, 0, 0);
+                    more.VerticalAlignment = VerticalAlignment.Top;
+                    more.ToolTip = "Действия с задачей";
+                    System.Windows.Automation.AutomationProperties.SetName(more, "Действия: " + task.Text);
+                    menu.PlacementTarget = more;
+                    menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+                    var row = new DockPanel { ContextMenu = menu };
+                    DockPanel.SetDock(more, Dock.Right); row.Children.Add(more);
+                    row.Children.Add(task.Due.HasValue ?
+                        VS(doneBox, Mg(SHint("Срок · " + task.Due.Value.ToString(task.Due.Value.Year == today.Year ? "d MMM" : "d MMM yyyy") +
+                            (task.DueTime.HasValue ? ", " + TaskTimeLabel(task.DueTime) : "")), 26, 5, 0, 0)) : (UIElement)doneBox);
+                    list.Children.Add(TaskSurface(row));
+                }
             };
             render();
-            var hint = Txt("Правый клик по задаче — срок и напоминание", 10.5, false); hint.Opacity = 0.55; hint.Margin = new Thickness(0, 6, 0, 0);
-            var body = new StackPanel(); body.Children.Add(count); body.Children.Add(list); body.Children.Add(input); body.Children.Add(dueDate); body.Children.Add(hint); body.Children.Add(remList);
-            ShowPanel("Задачи", body, 320, input);
+            ShowPanel("Задачи", VS(summary, composer, filters, feedback, undoArea, list), 416, input, () =>
+            {
+                if (seenTasks != todoVersion || seenReminders != reminderVersion || shownDay != DateTime.Today) render();
+            }, null, tint);
         }
 
         // ---------- инструменты: таймер, секундомер, валюта, файлы, корзина ----------
@@ -3274,8 +3512,8 @@ namespace FlowBar
             var btns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
             var startB = Btn("Старт", start, true);
             btns.Children.Add(startB);
-            btns.Children.Add(Btn("Сброс", () => { timerRunning = false; timerLeft = TimeSpan.Zero; err.Text = ""; }));
-            btns.Children.Add(Btn("Сохранить", () =>
+            btns.Children.Add(Btn("Сбросить",  () => { timerRunning = false; timerLeft = TimeSpan.Zero; err.Text = ""; }));
+            btns.Children.Add(Btn("Сохранить пресет", () =>
             {
                 var x = secs(); if (x == null || x == 0) { err.Text = "Сначала введите длительность"; return; }
                 var list = C("timer.presets", "").Split(',').Where(p => p != "").ToList();
@@ -3326,7 +3564,7 @@ namespace FlowBar
             btns.Children.Add(startB);
             var lapB = Btn("Круг", () => { if (sw.IsRunning) { laps.Add(sw.Elapsed); renderLaps(); } });
             btns.Children.Add(lapB);
-            btns.Children.Add(Btn("Сброс", () =>
+            btns.Children.Add(Btn("Сбросить",  () =>
             {
                 if (sw.Elapsed > TimeSpan.Zero) File.AppendAllLines(F("stopwatch.txt"), new[] { DateTime.Now.ToString("d MMM HH:mm") + "|" + sw.Elapsed.Ticks });
                 sw.Reset(); laps.Clear(); renderLaps();
@@ -3442,7 +3680,7 @@ namespace FlowBar
             };
             searchTb.TextChanged += (s, e) => { query = searchTb.Text; render(); };
             amount.TextChanged += (s, e) => render();
-            body.Children.Add(amount); body.Children.Add(result); body.Children.Add(pairHost); body.Children.Add(searchTb);
+            body.Children.Add(amount); body.Children.Add(result); body.Children.Add(pairHost); body.Children.Add(FormField(searchTb, "Поиск валюты"));
             body.Children.Add(new ScrollViewer { Content = list, MaxHeight = 330, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }); body.Children.Add(status);
             render();
             LoadRates().ContinueWith(t => Dispatcher.BeginInvoke(render));
@@ -3531,7 +3769,7 @@ namespace FlowBar
             var v = new StackPanel();
             var search = new TextBox { Margin = new Thickness(0, 0, 0, 8) };
             System.Windows.Automation.AutomationProperties.SetName(search, "Поиск программы");
-            v.Children.Add(search);
+            v.Children.Add(FormField(search, "Найти программу"));
             var list = new StackPanel();
             v.Children.Add(new ScrollViewer { Content = list, MaxHeight = 380, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
             var progs = StartMenuApps();
@@ -3649,25 +3887,83 @@ namespace FlowBar
 
         void ShowNotes()
         {
-            var box = new TextBox { Text = unsavedNote ?? SafeFile.Read(F("notes.txt")) ?? "", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 220, Padding = new Thickness(6), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-            // сохраняем через полсекунды после последнего нажатия и при закрытии карточки, а не на каждую букву
+            All(b => { if (b != this && b.panel != null && b.panelTitle == "Заметки") b.panel.Close(); });
+            var saved = unsavedNote ?? SafeFile.Read(F("notes.txt")) ?? "";
+            var box = new TextBox
+            {
+                Text = saved, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+                Height = 250, FontSize = 14, VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            };
+            System.Windows.Automation.AutomationProperties.SetName(box, "Текст заметки");
+            var editor = new Grid { Margin = new Thickness(0, 3, 0, 0) };
+            editor.Children.Add(box);
+            var prompt = Txt("Запишите идею, список или черновик…", 13, false);
+            prompt.IsHitTestVisible = false; prompt.Opacity = 0.60;
+            prompt.Margin = new Thickness(9, 7, 8, 0); prompt.TextWrapping = TextWrapping.Wrap;
+            editor.Children.Add(prompt);
+            var status = CardStatus("");
+            var notice = CardStatus("");
+            notice.Visibility = Visibility.Collapsed;
             var save = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             bool dirty = unsavedNote != null;
-            var status = Txt(dirty ? "Не сохранено с прошлого раза" : "", 10, false); status.Opacity = 0.7; status.Margin = new Thickness(0, 6, 0, 0); status.TextWrapping = TextWrapping.Wrap;
             Border retry = null;
             Func<bool> flush = () =>
             {
-                save.Stop(); if (!dirty) return true;
+                save.Stop();
+                if (!dirty) return true;
                 string err;
-                if (SaveText(F("notes.txt"), box.Text, out err)) { dirty = false; unsavedNote = null; live.Note = null; status.Text = "Сохранено"; retry.Visibility = Visibility.Collapsed; return true; }
-                unsavedNote = box.Text; status.Text = "Не сохранено: " + err; retry.Visibility = Visibility.Visible; return false; // флаг не сбрасываем — повторим
+                if (SaveText(F("notes.txt"), box.Text, out err))
+                {
+                    dirty = false; unsavedNote = null; live.Note = null;
+                    status.Text = "Сохранено"; retry.Visibility = Visibility.Collapsed;
+                    return true;
+                }
+                unsavedNote = box.Text; status.Text = "Не удалось сохранить заметку.";
+                retry.Visibility = Visibility.Visible; retry.ToolTip = err;
+                return false;
             };
-            retry = Btn("Повторить сохранение", () => flush(), true); retry.HorizontalAlignment = HorizontalAlignment.Left; retry.Margin = new Thickness(0, 8, 0, 0); retry.Visibility = dirty ? Visibility.Visible : Visibility.Collapsed;
+            retry = Btn("Повторить сохранение", () => flush(), true);
+            retry.Visibility = dirty ? Visibility.Visible : Visibility.Collapsed;
+            var copy = Btn("Скопировать", () =>
+            {
+                if (box.Text.Length == 0) return;
+                try { Clipboard.SetText(box.SelectionLength > 0 ? box.SelectedText : box.Text); notice.Text = "Скопировано."; }
+                catch (Exception ex) { Log(ex); notice.Text = "Буфер обмена занят. Повторите попытку."; }
+                notice.Visibility = Visibility.Visible;
+            });
+            copy.ToolTip = "Копирует выделенный текст или всю заметку.";
+            Action updateEditor = () =>
+            {
+                bool empty = box.Text.Length == 0;
+                prompt.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+                copy.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+            };
+            updateEditor();
+            status.Text = dirty ? "Есть несохранённые изменения." : "Автосохранение";
             save.Tick += (s, e) => flush();
-            box.TextChanged += (s, e) => { dirty = true; save.Stop(); save.Start(); };
-            box.Unloaded += (s, e) => { if (!flush()) Notify("Заметка не сохранена", "Текст сохранён в памяти FlowBar и не потерян. " + status.Text, true, "\uE7BA", "Повторить", RetryNote, "notes"); };
-            var nb = new StackPanel(); nb.Children.Add(box); nb.Children.Add(status); nb.Children.Add(retry);
-            ShowPanel("Заметки", nb, 340, box);
+            box.TextChanged += (s, e) =>
+            {
+                dirty = true; status.Text = "Сохраняем…";
+                notice.Visibility = Visibility.Collapsed; updateEditor();
+                save.Stop(); save.Start();
+            };
+            box.PreviewKeyDown += (s, e) =>
+            {
+                if (e.Key != System.Windows.Input.Key.S || Keyboard.Modifiers != ModifierKeys.Control) return;
+                e.Handled = true; flush();
+            };
+            box.Unloaded += (s, e) =>
+            {
+                if (!flush()) Notify("Заметка не сохранена", "Последний текст остаётся доступен в открытом FlowBar.", true, "\uE7BA", "Повторить", RetryNote, "notes");
+            };
+            var footer = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
+            copy.Margin = new Thickness(8, 0, 0, 0);
+            DockPanel.SetDock(copy, Dock.Right); footer.Children.Add(copy);
+            status.Margin = new Thickness(0); status.VerticalAlignment = VerticalAlignment.Center; footer.Children.Add(status);
+            retry.HorizontalAlignment = HorizontalAlignment.Left; retry.Margin = new Thickness(0, 10, 0, 0);
+            var voice = Btn("Задача из заметки…", () => ShowVoiceTask(box.SelectionLength > 0 ? box.SelectedText : box.Text));
+            voice.HorizontalAlignment = HorizontalAlignment.Left; voice.Margin = new Thickness(0, 8, 0, 0);
+            ShowPanel("Заметки", VS(editor, footer, notice, retry, voice), 440, box);
         }
 
         static string unsavedNote; // текст, который не удалось записать: не теряется до удачной записи
@@ -3746,10 +4042,18 @@ namespace FlowBar
             All(b => b.Render());
         }
 
-        // события календарей + сбросы лимитов ИИ в общей ленте
+        const string TaskCalendarName = "Сроки задач";
+
+        // Даты задач читаются из той же записи, которую редактирует список задач.
         static List<CalEvent> AllEvents()
         {
             var list = calEvents.ToList(); var now = DateTime.Now;
+            foreach (var task in todos.Where(t => t.Due.HasValue))
+            {
+                var day = task.Due.Value.Date;
+                var start = task.DueTime.HasValue ? day + task.DueTime.Value : day;
+                list.Add(new CalEvent { Title = task.Text, Cal = TaskCalendarName, Start = start, End = start, AllDay = !task.DueTime.HasValue, Task = task });
+            }
             if (codex != null)
             {
                 if (codex.R5 > now) list.Add(new CalEvent { Title = "Сброс 5-часового лимита Codex", Cal = "Лимиты ИИ", Start = codex.R5, End = codex.R5 });
@@ -3759,9 +4063,10 @@ namespace FlowBar
             if (bs != null) list.Add(new CalEvent { Title = "Сброс 5-часового окна Claude", Cal = "Лимиты ИИ", Start = bs.Value.AddHours(5), End = bs.Value.AddHours(5) });
             return list.OrderBy(e => e.Start).ToList();
         }
-        static bool OnDay(CalEvent e, DateTime d) { return e.Start < d.AddDays(1) && (e.End > d || (e.End == e.Start && e.Start >= d)); }
+        static bool OnDay(CalEvent e, DateTime d) { return e.Task != null ? e.Start.Date == d.Date : e.Start.Date <= d.Date && (e.End > d || (e.End == e.Start && e.Start >= d)); }
         static string When(CalEvent e)
         {
+            if (e.Task != null) return e.Task.DueTime.HasValue ? TaskTimeLabel(e.Task.DueTime) : "Срок";
             if (e.AllDay) return (e.End - e.Start).TotalDays > 1 ? "до " + e.End.AddDays(-1).ToString("d MMM") : "весь день";
             return e.End > e.Start ? e.Start.ToString("HH:mm") + "–" + e.End.ToString("HH:mm") : e.Start.ToString("HH:mm");
         }
@@ -3870,7 +4175,8 @@ namespace FlowBar
                 var key = def[0];
                 var box = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
                 var cb = new CheckBox { Content = Txt(def[2], 12, true), IsChecked = On(key), VerticalContentAlignment = VerticalAlignment.Center };
-                RoutedEventHandler onA = (s, e) => { cfg["auto." + key] = cb.IsChecked == true ? "1" : "0"; SaveCfg(); }; cb.Checked += onA; cb.Unchecked += onA;
+                var parameters = new StackPanel { Visibility = cb.IsChecked == true ? Visibility.Visible : Visibility.Collapsed };
+                RoutedEventHandler onA = (s, e) => { cfg["auto." + key] = cb.IsChecked == true ? "1" : "0"; SaveCfg(); parameters.Visibility = cb.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }; cb.Checked += onA; cb.Unchecked += onA;
                 box.Children.Add(cb);
                 var desc = Txt(def[3], 11, false); desc.TextWrapping = TextWrapping.Wrap; desc.Opacity = 0.7; desc.Margin = new Thickness(20, 2, 0, 0);
                 box.Children.Add(desc);
@@ -3889,7 +4195,7 @@ namespace FlowBar
                         else err.Text = "неверное значение";
                     };
                     line.Children.Add(tb); line.Children.Add(err);
-                    box.Children.Add(line);
+                    parameters.Children.Add(line);
                 };
                 Func<string, bool> minutes = v => { int n; return int.TryParse(v, out n) && n >= 0 && n <= 60; };
                 if (key == "pauseMusic") field("За сколько минут", "auto.pauseMin", "1", minutes);
@@ -3900,6 +4206,7 @@ namespace FlowBar
                     field("С", "auto.quietFrom", "22:00", v => ParseHm(v) != null);
                     field("До", "auto.quietTo", "08:00", v => ParseHm(v) != null);
                 }
+                box.Children.Add(parameters);
                 body.Children.Add(box);
             }
 
@@ -3914,12 +4221,105 @@ namespace FlowBar
             return body;
         }
 
+        static DateTime MonthStart(DateTime day) { return new DateTime(day.Year, day.Month, 1); }
+        static bool TryMoveMonth(DateTime month, int offset, out DateTime next)
+        {
+            int index = (month.Year - 1) * 12 + month.Month - 1 + offset;
+            next = month;
+            if (index < 0 || index >= 9999 * 12) return false;
+            next = new DateTime(index / 12 + 1, index % 12 + 1, 1);
+            return true;
+        }
+
+        static DockPanel MonthHeader(DateTime month, Action<int> move, Action today)
+        {
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+            foreach (int offset in new[] { 1, -1 })
+            {
+                var button = Act(G(offset > 0 ? "\uE76C" : "\uE76B", 11), offset > 0 ? "Следующий месяц" : "Предыдущий месяц", () => move(offset));
+                button.Padding = new Thickness(9, 6, 9, 6); button.Tag = offset;
+                button.ToolTip = System.Windows.Automation.AutomationProperties.GetName(button);
+                button.MouseEnter += (s, e) => Fade(button, Color.FromArgb(0x22, CardFg.R, CardFg.G, CardFg.B), 120);
+                button.MouseLeave += (s, e) => Fade(button, Colors.Transparent, 140);
+                DockPanel.SetDock(button, Dock.Right); header.Children.Add(button);
+            }
+            if (today != null)
+            {
+                var jump = Btn("Сегодня", today);
+                jump.Padding = new Thickness(8, 4, 8, 4);
+                DockPanel.SetDock(jump, Dock.Right); header.Children.Add(jump);
+            }
+            var name = CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(month.Month);
+            var title = Txt(char.ToUpper(name[0]) + name.Substring(1) + " " + month.Year, 14, true);
+            title.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(title);
+            return header;
+        }
+
+        static Panel MonthCells(DateTime month, DateTime? selected, Action<DateTime> choose, Dictionary<DateTime, List<string>> marks = null)
+        {
+            var fmt = CultureInfo.CurrentCulture.DateTimeFormat;
+            var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = 7 };
+            KeyboardNavigation.SetDirectionalNavigation(grid, KeyboardNavigationMode.Contained);
+            for (int i = 0; i < 7; i++)
+            {
+                var day = fmt.GetShortestDayName((DayOfWeek)((i + 1) % 7));
+                var label = Txt(char.ToUpper(day[0]) + day.Substring(1), 10.5, false);
+                label.HorizontalAlignment = HorizontalAlignment.Center;
+                label.Opacity = 0.7; label.Margin = new Thickness(0, 0, 0, 4);
+                grid.Children.Add(label);
+            }
+            int shift = ((int)month.DayOfWeek + 6) % 7;
+            for (int i = 0; i < 42; i++)
+            {
+                long ticks = month.Ticks + (i - shift) * TimeSpan.TicksPerDay;
+                if (ticks < 0 || ticks > DateTime.MaxValue.Ticks) { grid.Children.Add(new Border()); continue; }
+                var day = new DateTime(ticks);
+                bool current = day == DateTime.Today, picked = day == selected, inMonth = day.Month == month.Month;
+                List<string> calendars = null;
+                if (marks != null) marks.TryGetValue(day, out calendars);
+                bool filled = marks == null ? picked : current;
+                var label = Txt(day.Day.ToString(), 12, current || picked || calendars != null);
+                label.HorizontalAlignment = HorizontalAlignment.Center;
+                if (filled) label.Foreground = Frozen(OnAccent, 255);
+                var content = VS(label);
+                content.VerticalAlignment = VerticalAlignment.Center;
+                if (marks != null)
+                {
+                    var dots = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Height = 5, Margin = new Thickness(0, 2, 0, 0) };
+                    if (calendars != null) foreach (var calendar in calendars.Take(3))
+                        dots.Children.Add(new Ellipse { Width = 4.5, Height = 4.5, Margin = new Thickness(1, 0, 1, 0), Fill = filled ? Frozen(OnAccent, 255) : CalBrush(calendar) });
+                    content.Children.Add(dots);
+                }
+                var cell = Act(content, day.ToString("D"), () => choose(day));
+                cell.Height = marks == null ? 29 : 38; cell.Margin = new Thickness(1.5);
+                cell.CornerRadius = new CornerRadius(7); cell.ToolTip = day.ToString("D"); cell.Tag = day;
+                cell.Background = filled ? Accent : inMonth ? Frozen(CardFg, 0x0E) : Brushes.Transparent;
+                cell.BorderThickness = new Thickness(!filled && (current || picked) ? 1.5 : 0);
+                cell.BorderBrush = Accent; cell.Opacity = inMonth ? 1 : 0.5;
+                if (!filled)
+                {
+                    var rest = ((SolidColorBrush)cell.Background).Color;
+                    cell.MouseEnter += (s, e) => Fade(cell, Color.FromArgb(0x24, CardFg.R, CardFg.G, CardFg.B), 100);
+                    cell.MouseLeave += (s, e) => Fade(cell, rest, 140);
+                }
+                string state = picked ? "Выбрано" : current ? "Сегодня" : "";
+                if (calendars != null) state += (state == "" ? "" : " · ") + "Есть события";
+                System.Windows.Automation.AutomationProperties.SetItemStatus(cell, state);
+                grid.Children.Add(cell);
+            }
+            return grid;
+        }
+
         // Календарь: месяц слева, повестка выбранного дня справа; на узком экране — одна колонка.
         // Подключение ссылок iCal — в «Подключения → Календари» (CalFeedsEditor); здесь просмотр и фильтр календарей.
-        void ShowCalendar()
+        void ShowCalendar() { ShowCalendarOn(DateTime.Today); }
+
+        void ShowCalendarOn(DateTime selected, bool showTasks = false)
         {
-            DateTime shown = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1), selected = DateTime.Today;
+            selected = selected.Date;
+            DateTime shown = MonthStart(selected);
             var hidden = new HashSet<string>(C("cal.hidden", "").Split('|').Where(x => x != ""));
+            if (showTasks) hidden.Remove(TaskCalendarName);
             Func<CalEvent, bool> vis = e => !hidden.Contains(e.Cal ?? "");
             bool wide = scr.WorkingArea.Width / MonScale >= 760;
             var monthHost = new StackPanel(); var filterHost = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
@@ -3928,84 +4328,37 @@ namespace FlowBar
             var right = new StackPanel { Width = wide ? 264 : 300 };
             right.Children.Add(new ScrollViewer { Content = agenda, MaxHeight = 330, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }); right.Children.Add(foot);
             Action render = null, renderMonth = null, renderFilters = null;
-            Func<string, string, Action, Press> navBtn = (glyph, name, a) =>
-            {
-                var b = new Press { MinWidth = 30, Height = 28, Padding = new Thickness(8, 0, 8, 0), CornerRadius = new CornerRadius(7), Background = new SolidColorBrush(Colors.Transparent), Cursor = Cursors.Hand, ToolTip = name, Invoke = a, Margin = new Thickness(2, 0, 0, 0) };
-                b.Child = glyph.Length == 1 && glyph[0] >= '' ? (UIElement)G(glyph, 11) : Txt(glyph, 11, true);
-                System.Windows.Automation.AutomationProperties.SetName(b, name);
-                b.MouseEnter += (s, e) => Fade(b, Color.FromArgb(0x22, CardFg.R, CardFg.G, CardFg.B), 120);
-                b.MouseLeave += (s, e) => Fade(b, Colors.Transparent, 160);
-                b.MouseLeftButtonUp += (s, e) => a();
-                return b;
-            };
             renderMonth = () =>
             {
                 monthHost.Children.Clear();
-                var fmt = CultureInfo.CurrentCulture.DateTimeFormat;
-                // шапка: месяц и год, «Сегодня», переключение месяцев — без дублирующей крупной даты
-                var hdr = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
-                var next = navBtn("", "Следующий месяц", () => { shown = shown.AddMonths(1); renderMonth(); }); DockPanel.SetDock(next, Dock.Right); hdr.Children.Add(next);
-                var prev = navBtn("", "Предыдущий месяц", () => { shown = shown.AddMonths(-1); renderMonth(); }); DockPanel.SetDock(prev, Dock.Right); hdr.Children.Add(prev);
-                var today = navBtn("Сегодня", "Перейти к сегодняшнему дню", () => { selected = DateTime.Today; shown = new DateTime(selected.Year, selected.Month, 1); renderMonth(); render(); }); DockPanel.SetDock(today, Dock.Right); hdr.Children.Add(today);
-                var mname = fmt.GetMonthName(shown.Month);
-                var title = Txt(char.ToUpper(mname[0]) + mname.Substring(1) + " " + shown.Year, 15, true); title.VerticalAlignment = VerticalAlignment.Center;
-                hdr.Children.Add(title);
-                monthHost.Children.Add(hdr);
-
-                var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = 7 };
-                for (int i = 0; i < 7; i++)
+                monthHost.Children.Add(MonthHeader(shown, offset =>
                 {
-                    var dn = fmt.GetShortestDayName((DayOfWeek)((i + 1) % 7));
-                    var t = Txt(char.ToUpper(dn[0]) + dn.Substring(1), 10, false); t.HorizontalAlignment = HorizontalAlignment.Center; t.Opacity = 0.55; t.Margin = new Thickness(0, 0, 0, 4);
-                    grid.Children.Add(t);
-                }
-                // метки дня — цвета календарей, в которых есть события (до трёх)
+                    DateTime next;
+                    if (TryMoveMonth(shown, offset, out next)) { shown = next; renderMonth(); }
+                }, () => { selected = DateTime.Today; shown = MonthStart(selected); renderMonth(); render(); }));
+                // Метки календарей, в которых есть события.
                 var marks = new Dictionary<DateTime, List<string>>();
+                DateTime endMonth;
+                if (!TryMoveMonth(shown, 2, out endMonth)) endMonth = DateTime.MaxValue;
                 foreach (var e in AllEvents().Where(vis))
-                    for (var d = e.Start.Date; d <= (e.End > e.Start ? e.End.AddTicks(-1) : e.Start).Date && d < shown.AddMonths(2); d = d.AddDays(1))
+                    for (var d = e.Start.Date; d <= (e.End > e.Start ? e.End.AddTicks(-1) : e.Start).Date && d < endMonth && d < DateTime.MaxValue.Date; d = d.AddDays(1))
                     {
-                        if (d < shown.AddDays(-7)) continue;
-                        List<string> l; if (!marks.TryGetValue(d, out l)) marks[d] = l = new List<string>();
-                        if (!l.Contains(e.Cal ?? "")) l.Add(e.Cal ?? "");
+                        if ((shown - d).TotalDays > 7) continue;
+                        List<string> calendars;
+                        if (!marks.TryGetValue(d, out calendars)) marks[d] = calendars = new List<string>();
+                        if (!calendars.Contains(e.Cal ?? "")) calendars.Add(e.Cal ?? "");
                     }
-                var first = shown.AddDays(-(((int)shown.DayOfWeek + 6) % 7));
-                for (int i = 0; i < 42; i++)
+                monthHost.Children.Add(MonthCells(shown, selected, day =>
                 {
-                    var d = first.AddDays(i); var day = d;
-                    bool isToday = d == DateTime.Today, sel = d == selected, inMonth = d.Month == shown.Month;
-                    List<string> cals; marks.TryGetValue(d, out cals);
-                    var cellText = Txt(d.Day.ToString(), 12, isToday || cals != null); cellText.HorizontalAlignment = HorizontalAlignment.Center;
-                    if (isToday) cellText.Foreground = Frozen(OnAccent, 255);
-                    var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-                    stack.Children.Add(cellText);
-                    var dots = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Height = 5, Margin = new Thickness(0, 2, 0, 0) };
-                    if (cals != null) foreach (var cal in cals.Take(3)) dots.Children.Add(new Ellipse { Width = 4.5, Height = 4.5, Margin = new Thickness(1, 0, 1, 0), Fill = isToday ? Frozen(OnAccent, 255) : CalBrush(cal) });
-                    stack.Children.Add(dots);
-                    var cell = new Press
-                    {
-                        Height = 38, Margin = new Thickness(1.5), CornerRadius = new CornerRadius(9), Cursor = Cursors.Hand, Child = stack,
-                        Background = isToday ? (Brush)Accent : new SolidColorBrush(inMonth ? Color.FromArgb(0x0E, CardFg.R, CardFg.G, CardFg.B) : Colors.Transparent),
-                        BorderThickness = new Thickness(sel && !isToday ? 1.5 : 0), BorderBrush = Accent, Opacity = inMonth ? 1 : 0.35, ToolTip = d.ToString("D")
-                    };
-                    if (!isToday)
-                    {
-                        var rest = ((SolidColorBrush)cell.Background).Color;
-                        cell.MouseEnter += (s, e) => Fade(cell, Color.FromArgb(0x24, CardFg.R, CardFg.G, CardFg.B), 100);
-                        cell.MouseLeave += (s, e) => Fade(cell, rest, 140);
-                    }
-                    cell.Invoke = () => { selected = day; if (day.Month != shown.Month) shown = new DateTime(day.Year, day.Month, 1); renderMonth(); render(); };
-                    cell.MouseLeftButtonUp += (s, e) => cell.Invoke();
-                    System.Windows.Automation.AutomationProperties.SetName(cell, d.ToString("D") + (cals != null ? ", есть события" : ""));
-                    grid.Children.Add(cell);
-                }
-                monthHost.Children.Add(grid);
+                    selected = day; shown = MonthStart(day); renderMonth(); render();
+                }, marks));
             };
             // фильтр календарей — компактные метки; скрытый календарь пропадает и из меток дней, и из повестки
             renderFilters = () =>
             {
                 filterHost.Children.Clear();
                 var names = AllEvents().Select(e => e.Cal ?? "").Concat(calFeeds.Select(FeedName)).Where(n => n != "").Distinct().ToList();
-                if (names.Count < 2) return;
+                if (names.Count < 2 && !names.Any(hidden.Contains)) return;
                 foreach (var n0 in names)
                 {
                     var n = n0; bool on = !hidden.Contains(n);
@@ -4030,7 +4383,9 @@ namespace FlowBar
                 var bar = new Border { Width = 3, CornerRadius = new CornerRadius(1.5), Background = CalBrush(e.Cal), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 1, 0, 1) };
                 var info = new StackPanel();
                 var t = Txt(e.Title, 12, true); t.TextTrimming = TextTrimming.CharacterEllipsis; t.ToolTip = e.Title; info.Children.Add(t); // длинное название не растягивает карточку
-                var sub = Txt((withDate ? When(e) + " · " : "") + e.Cal + (string.IsNullOrEmpty(e.Location) ? "" : " · " + e.Location), 10, false); sub.Opacity = 0.6; sub.TextTrimming = TextTrimming.CharacterEllipsis; info.Children.Add(sub);
+                if (e.Task != null) t.TextWrapping = TextWrapping.Wrap;
+                if (e.Task != null && e.Task.Done) { t.TextDecorations = TextDecorations.Strikethrough; t.Opacity = 0.65; }
+                var sub = Txt((withDate && (e.Task == null || e.Task.DueTime.HasValue) ? When(e) + " · " : "") + (e.Task != null && e.Task.Done ? "Выполнено · " : "") + e.Cal + (string.IsNullOrEmpty(e.Location) ? "" : " · " + e.Location), 10, false); sub.Opacity = 0.6; sub.TextTrimming = TextTrimming.CharacterEllipsis; info.Children.Add(sub);
                 Grid.SetColumn(bar, 1); Grid.SetColumn(info, 2);
                 g.Children.Add(time); g.Children.Add(bar); g.Children.Add(info);
                 into.Children.Add(g);
@@ -4050,13 +4405,13 @@ namespace FlowBar
                     // нет подключений и пустой день — разные состояния
                     if (calFeeds.Count == 0)
                     {
-                        var none = Txt("Календари не подключены. Пока видны только сбросы лимитов ИИ.", 11, false); none.Opacity = 0.65; none.TextWrapping = TextWrapping.Wrap; agenda.Children.Add(none);
+                        var none = Txt("На выбранную дату ничего нет. Здесь появятся задачи со сроком и события подключённых календарей.", 11, false); none.Opacity = 0.65; none.TextWrapping = TextWrapping.Wrap; agenda.Children.Add(none);
                         var cb = Btn("Подключить календарь", () => ShowSettingsPage("connect", 1), true); cb.HorizontalAlignment = HorizontalAlignment.Left; cb.Margin = new Thickness(0, 8, 0, 0); agenda.Children.Add(cb);
                     }
                     else { var none = Txt("Событий нет", 11, false); none.Opacity = 0.6; agenda.Children.Add(none); }
                 }
                 foreach (var e in day) row(e, agenda, false);
-                var later = all.Where(e => e.Start >= d.AddDays(1) && e.Start < d.AddDays(15)).OrderBy(e => e.Start).Take(4).ToList();
+                var later = all.Where(e => e.Start.Date > d && (e.Start.Date - d).Days < 15).OrderBy(e => e.Start).Take(4).ToList();
                 if (later.Count > 0)
                 {
                     var lh = Txt("Далее", 11, true); lh.Opacity = 0.8; lh.Margin = new Thickness(0, 12, 0, 2); agenda.Children.Add(lh);
@@ -4068,8 +4423,13 @@ namespace FlowBar
             };
             renderMonth(); renderFilters(); render();
             // календари обновились — перерисовать, сохранив выбранный день
-            var seen = calUpdated; bool seenBusy = calBusy;
-            Action tick = () => { if (calUpdated != seen || calBusy != seenBusy) { seen = calUpdated; seenBusy = calBusy; renderMonth(); renderFilters(); render(); } };
+            var seen = calUpdated; bool seenBusy = calBusy; int seenTasks = todoVersion;
+            Action tick = () =>
+            {
+                if (calUpdated == seen && calBusy == seenBusy && seenTasks == todoVersion) return;
+                seen = calUpdated; seenBusy = calBusy; seenTasks = todoVersion;
+                renderMonth(); renderFilters(); render();
+            };
             FrameworkElement body;
             if (wide)
             {
@@ -4153,8 +4513,14 @@ namespace FlowBar
                 // период меняет и график, и список приложений — данные одни и те же
                 segHost.Children.Clear(); segHost.Children.Add(Seg(new[] { "Сегодня", "7 дней", "Месяц", "Лента" }, stPeriod, i => { stPeriod = i; render(); }, true));
                 host.Children.Clear();
-                if (stPeriod == 2) { host.Children.Add(ScreenMonth()); return; }
-                if (stPeriod == 3) { host.Children.Add(ScreenTimeline(screen)); return; }
+                if (stPeriod == 2 || stPeriod == 3)
+                {
+                    var today = Txt(ScreenTime.Fmt(screen.Total) + " сегодня", 22, true); today.FontFamily = Display;
+                    host.Children.Add(Mg(today, 0, 10));
+                    host.Children.Add(CardHead(stPeriod == 2 ? "История · по дням" : "История · лента за сегодня"));
+                    host.Children.Add(stPeriod == 2 ? ScreenMonth() : ScreenTimeline(screen));
+                    return;
+                }
                 bool day = stPeriod == 0;
                 int total = day ? days[0].Total : days.Take(7).Sum(x => x.Total), prev = day ? days[1].Total : days.Skip(7).Sum(x => x.Total);
                 var big = Txt(ScreenTime.Fmt(total), 30, true); big.FontFamily = Display; big.Margin = new Thickness(0, 12, 0, 0); host.Children.Add(big);
@@ -4183,7 +4549,12 @@ namespace FlowBar
                         marks.Children.Add(t);
                     }
                 }
-                host.Children.Add(chart); host.Children.Add(marks);
+                if (vals.Any(v => v > 0))
+                {
+                    host.Children.Add(CardHead(day ? "История · по часам" : "История · по дням"));
+                    host.Children.Add(chart); host.Children.Add(marks);
+                }
+                else host.Children.Add(CardStatus("За этот период пока нет данных."));
                 var apps = new Dictionary<string, int>();
                 var pathOf = new Dictionary<string, string>();
                 foreach (var dd in days.Take(day ? 1 : 7)) foreach (var kv in dd.Apps)
@@ -4191,8 +4562,7 @@ namespace FlowBar
                     var nice = NiceApp(kv.Key); int cc; apps.TryGetValue(nice, out cc); apps[nice] = cc + kv.Value;
                     string pth; if (!pathOf.ContainsKey(nice) && ScreenTime.Paths.TryGetValue(kv.Key, out pth)) pathOf[nice] = pth;
                 }
-                var head = Txt(day ? "Приложения сегодня" : "Приложения за 7 дней", 12, true); head.Margin = new Thickness(0, 12, 0, 0); host.Children.Add(head);
-                if (apps.Count == 0) { var none = Txt("Пока нет данных", 11, false); none.Opacity = 0.6; host.Children.Add(none); }
+                if (apps.Count > 0) host.Children.Add(CardHead(day ? "Приложения сегодня" : "Приложения за 7 дней"));
                 int top = apps.Count == 0 ? 1 : apps.Values.Max();
                 foreach (var kv in apps.OrderByDescending(a => a.Value).Take(8))
                 {
@@ -4213,9 +4583,13 @@ namespace FlowBar
                 }
             };
             render();
-            // способ подсчёта — короткой подписью с подсказкой, а не абзацем
-            var rule = Txt("ⓘ Как считается", 10.5, false); rule.Opacity = 0.55; rule.Margin = new Thickness(0, 12, 0, 0); rule.HorizontalAlignment = HorizontalAlignment.Left;
-            rule.ToolTip = "Считается время активного окна, пока с компьютером работают: если клавиатурой и мышью не пользовались больше 2 минут, время не идёт — так и для видео без касаний."; rule.Visibility = Visibility.Collapsed; body.Children.Add(rule); // пояснение о подсчёте — только во всплывающей подсказке модуля
+            var method = new Expander
+            {
+                Header = "Как считается экранное время",
+                Content = CardStatus("FlowBar считает время активного окна. Если клавиатурой и мышью не пользовались две минуты, счётчик останавливается."),
+                Margin = new Thickness(0, 12, 0, 0)
+            };
+            body.Children.Add(method);
             ShowPanel("Экранное время", body, 360, null);
         }
     }
@@ -4238,8 +4612,10 @@ namespace FlowBar
     // а после сбоя — сторожем. Если прошлый запуск не завершился штатно, исходным считается сохранённое тогда.
     static class Taskbar
     {
+        internal const string InstanceMutex = "FlowBar_single_instance", RestoreMutex = "FlowBar_taskbar_restore";
         public static bool WasVisible = true; public static int OrigState = -1;
-        static readonly string StateFile = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FlowBar", "taskbar.txt");
+        internal static readonly string StateFile = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FlowBar", "taskbar.txt");
+        internal static bool CanRestore { get; private set; }
         static N.APPBARDATA Data(int lParam) { return new N.APPBARDATA { cbSize = Marshal.SizeOf(typeof(N.APPBARDATA)), hWnd = Tray.Explorer(), lParam = (IntPtr)lParam }; }
         public static int GetState() { var d = Data(0); return (int)N.SHAppBarMessage(4 /* ABM_GETSTATE */, ref d).ToUInt32(); }
         static void SetState(int st) { var d = Data(st); N.SHAppBarMessage(10 /* ABM_SETSTATE */, ref d); }
@@ -4249,17 +4625,67 @@ namespace FlowBar
         }
         public static void Remember()
         {
-            if (File.Exists(StateFile) && LoadSaved()) return;
-            var h = Tray.Explorer(); WasVisible = h == IntPtr.Zero || N.IsWindowVisible(h); OrigState = GetState();
-            try { Directory.CreateDirectory(System.IO.Path.GetDirectoryName(StateFile)); File.WriteAllText(StateFile, OrigState + "|" + (WasVisible ? "1" : "0")); } catch { }
+            if (File.Exists(StateFile) && LoadSaved() && OrigState >= 0) { CanRestore = true; return; }
+            var h = Tray.Explorer();
+            if (h == IntPtr.Zero) return;
+            WasVisible = N.IsWindowVisible(h);
+            OrigState = GetState();
+            try
+            {
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(StateFile));
+                File.WriteAllText(StateFile, OrigState + "|" + (WasVisible ? "1" : "0"));
+                CanRestore = true;
+            }
+            catch (Exception ex) { Bar.Log(ex); }
+        }
+        internal static void WithRestoreLock(Action action)
+        {
+            using (var gate = new System.Threading.Mutex(false, RestoreMutex))
+            {
+                try { gate.WaitOne(); } catch (System.Threading.AbandonedMutexException) { }
+                try { action(); } finally { gate.ReleaseMutex(); }
+            }
+        }
+
+        internal static bool TakeMutex(System.Threading.Mutex mutex)
+        {
+            try { return mutex.WaitOne(0); } catch (System.Threading.AbandonedMutexException) { return true; }
+        }
+
+        internal static void RestoreAfterExit(string stateFile)
+        {
+            WithRestoreLock(() =>
+            {
+                using (var instance = new System.Threading.Mutex(false, InstanceMutex))
+                {
+                    if (!TakeMutex(instance)) return; // новая копия уже запускается
+                    instance.ReleaseMutex();
+                }
+                if (!File.Exists(stateFile)) return; // штатный выход уже вернул панель
+                for (int attempt = 0; attempt < 16; attempt++)
+                {
+                    if (Restore(true, true, stateFile)) return;
+                    if (attempt == 4 && !Tray.HasShell)
+                        try { using (Process.Start(new ProcessStartInfo("explorer.exe") { UseShellExecute = true })) { } } catch { }
+                    System.Threading.Thread.Sleep(250);
+                }
+            });
         }
         // вернуть как было до FlowBar; final — FlowBar завершается, файл состояния больше не нужен
-        public static void Restore(bool force, bool final)
+        public static bool Restore(bool force, bool final, string stateFile = null)
         {
             if (OrigState < 0) LoadSaved();
+            if (Tray.Explorer() == IntPtr.Zero) return false;
             if (OrigState >= 0 && GetState() != OrigState) SetState(OrigState);
             if (WasVisible || force) Set(true);
-            if (final) try { File.Delete(StateFile); } catch { }
+            var main = Tray.Explorer();
+            if (final && main != IntPtr.Zero && N.IsWindowVisible(main) && (OrigState < 0 || GetState() == OrigState))
+            {
+                Tray.AnnounceExplorerTray();
+                try { File.Delete(stateFile ?? StateFile); } catch { }
+                return true;
+            }
+            return false;
         }
         public static void Set(bool show)
         {
@@ -4289,12 +4715,12 @@ namespace FlowBar
             {
                 // сторож: отдельный процесс ждёт завершения панели — даже аварийного или через «Снять задачу» — и возвращает панель Windows
                 int pid, st = -1; int.TryParse(args[wi + 1], out pid);
-                if (wi + 2 < args.Length) int.TryParse(args[wi + 2], out st);
+                if (wi + 2 < args.Length && !int.TryParse(args[wi + 2], out st)) st = -1;
                 Taskbar.OrigState = st; Taskbar.WasVisible = !(wi + 3 < args.Length && args[wi + 3] == "0");
                 Process p = null; try { p = Process.GetProcessById(pid); } catch { }
                 try { System.Threading.EventWaitHandle ev; if (p != null && System.Threading.EventWaitHandle.TryOpenExisting("FlowBar_watch_ready_" + pid, out ev)) { ev.Set(); ev.Dispose(); } } catch { }
                 if (p != null) try { p.WaitForExit(); } catch { }
-                Taskbar.Restore(true, true); return 0;
+                Taskbar.RestoreAfterExit(wi + 4 < args.Length ? args[wi + 4] : Taskbar.StateFile); return 0;
             }
             // команды работающей панели: открыть раздел или сохранить снимки окон (для приёмки и ярлыков)
             int oi = Array.IndexOf(args, "--open"), si = Array.IndexOf(args, "--shot");
@@ -4339,9 +4765,11 @@ namespace FlowBar
         public static Process Watch;
         public static bool StartWatch()
         {
+            if (!Taskbar.CanRestore) Taskbar.WithRestoreLock(Taskbar.Remember);
+            if (!Taskbar.CanRestore) return false;
             var me = Process.GetCurrentProcess(); var exe = Assembly.GetExecutingAssembly().Location;
             var rust = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(exe), "flowbar-watch.exe");
-            var a = me.Id + " " + Taskbar.OrigState + " " + (Taskbar.WasVisible ? "1" : "0");
+            var a = me.Id + " " + Taskbar.OrigState + " " + (Taskbar.WasVisible ? "1" : "0") + " \"" + Taskbar.StateFile + "\"";
             using (var ready = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.ManualReset, "FlowBar_watch_ready_" + me.Id))
                 foreach (var psi in new[] { File.Exists(rust) ? new ProcessStartInfo(rust, a) : null, new ProcessStartInfo(exe, "--watch " + a) })
                 {
@@ -4364,14 +4792,15 @@ namespace FlowBar
         static int RunBar(Process me)
         {
             bool created;
-            var mtx = new System.Threading.Mutex(true, Bar.DemoMode ? "FlowBar_demo_instance" : "FlowBar_single_instance", out created);
+            var mtx = new System.Threading.Mutex(true, Bar.DemoMode ? "FlowBar_demo_instance" : Taskbar.InstanceMutex, out created);
+            if (!created) created = Taskbar.TakeMutex(mtx); // сторож мог создать свободный мьютекс для проверки
             // перезапуск после сбоя: старый процесс ещё умирает и держит мьютекс (из другого потока его не отпустить) — ждём, пока ОС его освободит
             if (!created && Environment.GetCommandLineArgs().Contains("--afterfail"))
                 try { created = mtx.WaitOne(8000); } catch (System.Threading.AbandonedMutexException) { created = true; }
             if (!created) return 0;
             // с правами администратора сообщения от обычных процессов (Проводник, команды --open, установщик новой версии) иначе не доходят
             foreach (var m in new[] { "FlowBarOpen", "FlowBarShot", "FlowBarAppBar", "TaskbarCreated" }) ChangeWindowMessageFilter(N.RegisterWindowMessage(m), 1);
-            if (!Bar.DemoMode) { Taskbar.Remember(); Bar.WatchOk = StartWatch(); }
+            if (!Bar.DemoMode) { Taskbar.WithRestoreLock(Taskbar.Remember); Bar.WatchOk = StartWatch(); }
             System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; // TLS 1.2
             // Панель Windows возвращается при любом завершении, чтобы не оставить пользователя без неё
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
@@ -4406,7 +4835,12 @@ namespace FlowBar
             var started = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) }; started.Tick += (s, e) => { started.Stop(); Bar.Info("запуск:\r\n" + Bar.SysInfo()); if (!Bar.DemoMode) Bar.PlaceStartNow(); }; started.Start();
             if (!Bar.DemoMode)
             {
-                var note = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) }; note.Tick += (s, e) => { note.Stop(); Bar.ShowUpdateNote(); }; note.Start();
+                var note = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) }; note.Tick += (s, e) =>
+                {
+                    note.Stop();
+                    Bar.ShowStartupWindow();
+                };
+                note.Start();
             }
             app.Run();
             GC.KeepAlive(mtx);
@@ -4455,6 +4889,11 @@ namespace FlowBar
                 Bar.BugReportEndpoint("https://secret@example.com") == null && Bar.BugReportEndpoint("https://example.com/?key=abc") == null &&
                 Bar.ReadBugReportReceipt("{\"ok\":true,\"report_id\":\"FB-123\"}") == "FB-123",
                 "Bug report: safe log fields, HTTPS endpoint and delivery receipt");
+            var starter = Bar.ParseLayout(Bar.StarterLayout, Enumerable.Empty<string>());
+            fails += check(Bar.IsFirstRun(0, false, false) && !Bar.IsFirstRun(1, true, false) &&
+                !Bar.IsFirstRun(0, true, false) && !Bar.IsFirstRun(0, false, true) &&
+                new HashSet<string>(starter.Where(x => x.Value).Select(x => x.Key)).SetEquals(new[] { "media", "vol", "todos", "lang" }),
+                "First run: starter widgets, existing settings and demo");
             // обновление: резервная копия берёт личные файлы (и вложенные папки), но не кэш, журнал и прежние копии
             {
                 var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "flowbar-selftest-" + Guid.NewGuid().ToString("N"));
@@ -4513,6 +4952,9 @@ namespace FlowBar
             fails += check(!Bar.ParseTodo("без флага").Done, "ParseTodo legacy");
             var dated = Bar.ParseTodo("0@20261112|задача | тест");
             fails += check(dated.Due == new DateTime(2026, 11, 12) && Bar.TodoLine(dated) == "0@20261112|задача | тест", "Task due date preserves old separators");
+            var midnightTask = Bar.ParseTodo("0@20261112T0000|задача | тест");
+            fails += check(midnightTask.Due == new DateTime(2026, 11, 12) && midnightTask.DueTime == TimeSpan.Zero &&
+                Bar.TodoLine(midnightTask) == "0@20261112T0000|задача | тест", "Task deadline preserves explicit midnight and old separators");
             var st = new ScreenTime { Day = "2026-01-01" };
             st.Add("Chrome | Web", 9); st.Add("Chrome | Web", 9); st.Add("Code", 23);
             var back = ScreenTime.Parse("2026-01-01", st.Lines().Concat(new[] { "мусор", "h|99|5" }));
@@ -4636,6 +5078,16 @@ namespace FlowBar
             var noWid = Bar.ParseLayout(Bar.NoWidgets, new[] { "zzz-new" });
             fails += check(noWid.Count > 10 && noWid.Where(x => x.Key != "zzz-new").All(x => !x.Value), "First install layout: every widget hidden, only shortcuts");
             var shr = new Dictionary<string, string> { { "style", "Midnight" }, { "size", "L" }, { "wxCity", "Сухум" }, { "cl.prevStatus", "powershell -File x" }, { "accent", "#4CC2FF" }, { "align", "diagonal" }, { "view.cpu", "min" }, { "view.net@\\\\.\\DISPLAY2", "min" }, { "menus", "glass" }, { "sliders", "bogus" } };
+            var importCurrent = new Dictionary<string, string> { { "style", "White" }, { "size", "L" }, { "widgets@screen2", "cpu" } };
+            var importInput = new Dictionary<string, string> { { "style", "Black" }, { "size", "L" }, { "widgets@screen1", "net" }, { "mon.compact.screen1", "vol" }, { "view.cpu@missing", "min" } };
+            var importScreens = new Dictionary<string, string> { { "screen1", "screen2" }, { "also", "screen2" } };
+            int importSkipped; bool importConflict;
+            var import = Bar.ImportChanges(importInput, importScreens, importCurrent, out importSkipped, out importConflict);
+            fails += check(import.Count == 3 && import["widgets@screen2"] == "net" && import["mon.compact.screen2"] == "vol" && importSkipped == 1 &&
+                !importConflict && importCurrent["widgets@screen2"] == "cpu", "Import preview: remaps screens, skips unchanged settings, leaves configuration intact");
+            importInput["widgets@also"] = "ram";
+            Bar.ImportChanges(importInput, importScreens, importCurrent, out importSkipped, out importConflict);
+            fails += check(importConflict, "Import preview: monitor settings cannot overwrite the same destination twice");
             int shSkip; string shErr; var shBack = Bar.ReadShareCode(Bar.MakeShareCode(shr), out shSkip, out shErr);
             fails += check(shBack != null && shBack.Count == 5 && shBack["menus"] == "glass" && !shBack.ContainsKey("sliders") && shBack["size"] == "L" && shBack["accent"] == "#4CC2FF" && shBack["view.cpu"] == "min" && !shBack.ContainsKey("wxCity") && !shBack.ContainsKey("cl.prevStatus") && !shBack.ContainsKey("align") && !shBack.Keys.Any(k => k.Contains("@")), "Settings code: round trip, private, invalid and per-monitor keys dropped");
             fails += check(Bar.ReadShareCode("мусор", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode("FBS1:AAAA", out shSkip, out shErr) == null && shErr != null && Bar.ReadShareCode(new string('A', 200000), out shSkip, out shErr) == null && shErr.Contains("большой"), "Settings code: garbage and oversized text rejected");
