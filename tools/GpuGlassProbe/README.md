@@ -6,9 +6,13 @@
 dotnet run --project .\tools\GpuGlassProbe -c Release -- DISPLAY2
 dotnet run --project .\tools\GpuGlassProbe -c Release -- DISPLAY1 --ios
 dotnet run --project .\tools\GpuGlassProbe -c Release -- all
+dotnet run --project .\tools\GpuGlassProbe -c Release -- all --minimize
+dotnet run --project .\tools\GpuGlassProbe -c Release -- all --minimize --ios
 ```
 
 Запускать в обычной интерактивной сессии Windows. Для сборки теста нужен .NET 10 SDK. Сборка самой панели выполняется штатным скриптом `build.ps1`.
+
+Режим `--minimize` проверяет кромку преломления на неподвижном фоне. Он трижды сворачивает и возвращает тестовое окно на каждом выбранном мониторе и проверяет цвет после каждого перехода.
 
 Тест меняет цвет своей подложки до 320 раз в секунду на каждом экране. Он считывает один пиксель готового буфера DirectX и считает уникальные изменения. Эта частота характеризует рендерер. Частота видимых на дисплее кадров ограничена режимом монитора и работой композитора Windows. `capture_to_read` измеряет время от обновления рабочего стола до чтения готового пикселя.
 

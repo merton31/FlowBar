@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -73,7 +73,7 @@ namespace FlowBar
             // «Матовое стекло» остаётся матовым и с преломлением: без своего радиуса — заметное размытие (до 8 px рассчитывается на видеокарте), а не почти прозрачное
             double blur = GlassRadius >= 0 ? GlassRadius : Material == "frost" ? 6 : ios ? 3.6 : 1.1;
             return new LensSettings { Profile = profile, Width = (float)(LensWidth * scale),
-                Shift = (float)((ios ? 9 : 20) * LensStrength / 100 * scale), Blur = (int)Math.Round(Math.Min(48, blur * scale)) };
+                Shift = (float)((ios ? 9 : 20) * LensStrength / 100 * scale), Blur = GlassBlurLimit((int)Math.Round(Math.Min(48, blur * scale))) };
         }
         static float PanelFallbackBlur(double scale, LensSettings lens)
         {
@@ -206,7 +206,7 @@ namespace FlowBar
                 return;
             }
             var view = new Rect(stripScroll.TranslatePoint(new Point(0, 0), root), stripScroll.RenderSize);
-            var bounds = new List<Rect>(); int lastSecKey = -1; // кнопки края (трей, свернуть) сливаются с правой секцией, только если справа системная
+            var bounds = new List<Rect>(); var sectionIds = new List<int>(); int lastSecKey = -1; // кнопки края (трей, свернуть) сливаются с правой секцией, только если справа системная
             foreach (var group in tokenOf.Where(kv => kv.Key.IsVisible && kv.Key.IsMeasureValid).GroupBy(kv => SectionOf(kv.Value)).OrderBy(g => SecRank(g.Key)))
             {
                 var span = Rect.Empty;
@@ -216,7 +216,7 @@ namespace FlowBar
                     cell.Intersect(view);
                     if (!cell.IsEmpty) span.Union(cell);
                 }
-                if (!span.IsEmpty) { bounds.Add(span); lastSecKey = group.Key; }
+                if (!span.IsEmpty) { bounds.Add(span); sectionIds.Add(group.Key); lastSecKey = group.Key; }
             }
             var buttons = Rect.Empty;
             foreach (var item in rowPanel.Children.OfType<FrameworkElement>().Where(el => el.IsVisible && el != stripScroll))
@@ -230,15 +230,16 @@ namespace FlowBar
             if (!buttons.IsEmpty)
             {
                 if (bounds.Count > 0 && lastSecKey == 2) bounds[bounds.Count - 1] = Rect.Union(bounds.Last(), buttons);
-                else bounds.Add(buttons);
+                else { bounds.Add(buttons); sectionIds.Add(2); }
             }
+            var sections = sectionIds.Where((id, i) => bounds[i].Width > 4).ToArray();
             var rects = bounds.Where(r => r.Width > 4).Select(r =>
             {
                 double left = Math.Max(0, Math.Round(r.Left - 3));
                 double right = Math.Min(root.ActualWidth, Math.Round(r.Right + 3));
                 return new Rect(left, 0, Math.Max(1, right - left), root.ActualHeight);
             }).ToList();
-            var key = string.Join("|", rects.Select(r => r.ToString()));
+            var key = (directEdit ? "edit|" : "") + string.Join("|", rects.Select(r => r.ToString()));
             if (!force && !sectionPrismPulse && key == sectionKey) return;
             sectionKey = key;
             bool pulse = sectionPrismPulse; sectionPrismPulse = false;
@@ -259,7 +260,8 @@ namespace FlowBar
                 var shape = new Border
                 {
                     Width = r.Width, Height = r.Height, CornerRadius = new CornerRadius(radius),
-                    BorderThickness = new Thickness(1), Background = MaterialFill(Cur, glass), BorderBrush = MaterialEdge(Cur, glass, pulse)
+                    BorderThickness = new Thickness(1), Background = AdaptivePanelSectionFill(glass, sections[i]), Tag = sections[i],
+                    BorderBrush = directEdit ? Accent : SectionAccentColor(sections[i]).HasValue ? Frozen(SectionAccentColor(sections[i]).Value, 125) : MaterialEdge(Cur, glass, pulse)
                 };
                 Canvas.SetLeft(shape, r.X); Canvas.SetTop(shape, r.Y); sectionSurface.Children.Add(shape);
                 if (!glass || hwnd == IntPtr.Zero) continue;
@@ -273,7 +275,7 @@ namespace FlowBar
                 if (i >= sectionBackdrops.Count) continue;
                 var lens = PanelLens(sc);
                 sectionBackdrops[i].SetLens(hwnd, windowRect.L + (int)Math.Round((origin.X + r.X) * sc), windowRect.T + (int)Math.Round((origin.Y + r.Y) * sc),
-                    (int)Math.Round(r.Width * sc), (int)Math.Round(r.Height * sc), radius * sc, IsVisible, PanelFallbackBlur(sc, lens), lens, scr.Bounds, scr.DeviceName);
+                    (int)Math.Round(r.Width * sc), (int)Math.Round(r.Height * sc), radius * sc, IsVisible, PanelFallbackBlur(sc, lens), PanelCaptureLens(sc), scr.Bounds, scr.DeviceName);
             }
             if (!glass && sectionBackdrops.Count > 0) ClearSectionBackdrops();
         }
@@ -345,7 +347,7 @@ namespace FlowBar
             return brush;
         }
 
-        void MaterialSettings(StackPanel c, Action again, Action<string> preview, Func<string, bool, Press> themeCard, Func<List<Press>, Border> shelf, Action refreshThemes)
+        void MaterialSettings(StackPanel c, Action again, Action<string> preview, Action refreshThemes)
         {
             Action refresh = () => { SaveCfg(); All(b => b.ApplyStyle()); preview(null); };
             c.Children.Add(SSub("Материал панели"));
@@ -359,6 +361,9 @@ namespace FlowBar
                     v => { cfg["material.diffusion"] = Math.Round(v).ToString(); refresh(); }, "Плотность стекла")));
             if (WantsGlass(Cur))
             {
+                c.Children.Add(SwitchRow("Адаптивное стекло", "Усиливает тонировку, когда фон мешает читать значки и подписи.", AdaptiveGlass,
+                    enabled => { cfg["material.adaptive"] = enabled ? "1" : "0"; refresh(); All(b => b.PaintSections(true)); }));
+                GlassPerformanceSettings(c, again);
                 var why = Backdrop.Why;
                 if (why != null)
                 {
@@ -395,21 +400,14 @@ namespace FlowBar
                 v => { cfg["material.edge"] = Math.Round(v).ToString(); refresh(); }, "Кромка")));
             if (Material != "metal")
             {
-                var tints = new[] { "", "#8CC9F4", "#E2A570", "#A897D7" };
-                c.Children.Add(SetRow("Оттенок", null, Seg(new[] { "По теме", "Холодный", "Тёплый", "Лиловый" },
-                    Math.Max(0, Array.IndexOf(tints, C("material.tint", ""))),
-                    i => { cfg["material.tint"] = tints[i]; refresh(); })));
+                c.Children.Add(SetRow("Оттенок материала", "Цвет подложки. Акцент кнопок и индикаторов меняется отдельно.",
+                    ColourPicker("material.tint", Cur.Ac, () => { refresh(); again(); })));
             }
             c.Children.Add(CardActions(Btn("Сбросить материал", () =>
             {
                 foreach (var k in new[] { "material", "material.diffusion", "material.blur", "material.edge", "material.tint", "material.refraction", "material.lensStrength", "material.lensWidth", "material.lensTint", "opacity" }) cfg.Remove(k);
                 SaveCfg(); ClosePanels(); RebuildAll(); again();
             })));
-
-            c.Children.Add(SSub("Палитры"));
-            var paletteRow = new[] { "Бумага", "Табло", "White", "Midnight" }.Select(key => themeCard(key, true)).ToList();
-            c.Children.Add(SHint("Под названием: фон, текст и акцент."));
-            c.Children.Add(shelf(paletteRow));
 
             c.Children.Add(SSub("Предпросмотр и движение"));
             c.Children.Add(SetRow("Обои предпросмотра", null, Seg(SceneNames, SceneIndex, i => { cfg["preview.scene"] = i.ToString(); SaveCfg(); preview(null); })));
@@ -515,7 +513,7 @@ namespace FlowBar
 
         Action<string> refreshPreview;
 
-        static readonly HashSet<string> LookKeys = new HashSet<string> { "style", "material", "material.edge", "material.tint", "material.diffusion", "material.blur", "material.refraction", "material.lensStrength", "material.lensWidth", "material.lensTint", "accent", "opacity", "size", "pos", "width", "gap", "align", "widgets", "seq", "bar.sections", "appMax", "search", "edgeBtns" };
+        static readonly HashSet<string> LookKeys = new HashSet<string> { "style", "material", "material.edge", "material.tint", "material.diffusion", "material.blur", "material.refraction", "material.lensStrength", "material.lensWidth", "material.lensTint", "material.performance", "material.adaptive", "accent.section.0", "accent.section.1", "accent.section.2", "accent", "opacity", "size", "pos", "width", "gap", "align", "widgets", "seq", "bar.sections", "appMax", "search", "edgeBtns" };
         static bool IsAppearanceKey(string key)
         {
             var name = key.Split('@')[0];
@@ -524,6 +522,128 @@ namespace FlowBar
         static string rememberedAppearance;
         Dictionary<string, string> candidateAppearance;
         string candidateAppearanceDate;
+        string[] candidatePreset;
+
+        static readonly string[][] StylePresets = {
+            new[] { "Графит", "Тёмная панель с голубыми индикаторами.", "Black", "theme", "#4CC2FF", "100", "off" },
+            new[] { "Фарфор", "Светлая панель с тёплым акцентом.", "White", "theme", "#B84D22", "100", "off" },
+            new[] { "Индиго", "Сине-чёрная панель с сиреневыми деталями.", "Midnight", "theme", "#A78BFA", "95", "off" },
+            new[] { "Ледяное стекло", "Стеклянная панель с бирюзовым акцентом.", "iOS Glass", "theme", "#22B8A9", "75", "auto" }
+        };
+
+        static readonly string[] PresetMaterialKeys = { "style", "material", "accent", "opacity", "material.refraction", "material.tint",
+            "material.edge", "material.diffusion", "material.blur", "material.lensStrength", "material.lensWidth", "material.lensTint" };
+
+        static void SetStylePreset(Dictionary<string, string> view, string[] preset)
+        {
+            foreach (var k in PresetMaterialKeys) view.Remove(k);
+            view["style"] = preset[2];
+            view["material"] = preset[3];
+            view["accent"] = preset[4];
+            view["opacity"] = preset[5];
+            view["material.refraction"] = preset[6];
+        }
+
+        static Dictionary<string, string> SnapshotPreset(string[] preset)
+        {
+            var view = cfg.Where(kv => IsAppearanceKey(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value);
+            SetStylePreset(view, preset);
+            return view;
+        }
+
+        void ApplyStylePreset()
+        {
+            if (candidatePreset == null) return;
+            previousPresetAppearance = cfg.Where(kv => PresetMaterialKeys.Contains(kv.Key) || kv.Key == "appearance.schedule").ToDictionary(kv => kv.Key, kv => kv.Value);
+            SetStylePreset(cfg, candidatePreset);
+            candidatePreset = null;
+            cfg["appearance.schedule"] = "off";
+            SaveCfg(); ClosePanels(); RebuildAll(); RestyleWindows();
+        }
+
+        void StylePresetPicker(StackPanel c, Action<string> preview)
+        {
+            c.Children.Add(SSub("Готовые оформления"));
+            c.Children.Add(SHint("Выберите вариант, сравните его с текущим видом внизу и нажмите «Применить оформление»."));
+            var cards = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+            foreach (var preset in StylePresets)
+            {
+                var p = preset;
+                var st = Styles[p[2]];
+                Color colour; TryReadColor(p[4], out colour);
+                var sample = new Border { Height = 26, Background = Frozen(st.Bg, 255), CornerRadius = new CornerRadius(6), Padding = new Thickness(9, 0, 0, 0),
+                    Child = new Ellipse { Width = 12, Height = 12, Fill = Frozen(colour, 255), HorizontalAlignment = HorizontalAlignment.Left } };
+                var hint = SHint(p[1]); hint.MinHeight = 31;
+                var body = VS(sample, Mg(Txt(p[0], 13, true), 0, 7, 0, 3), hint);
+                body.VerticalAlignment = VerticalAlignment.Top;
+                var card = Act(body, "Примерить " + p[0], () =>
+                {
+                    candidateTheme = null; candidateAppearance = null; candidatePreset = p; preview(null);
+                });
+                card.Background = Frozen(CardFg, 0x0D); card.BorderBrush = Frozen(CardFg, 0x24); card.BorderThickness = new Thickness(1);
+                card.Width = 144; card.MinHeight = 120; card.Padding = new Thickness(9); card.Margin = new Thickness(0, 0, 8, 8);
+                cards.Children.Add(card);
+            }
+            c.Children.Add(cards);
+        }
+
+        static readonly string[][] ColourFamilies = {
+            new[] { "Синий", "#B8DDFF", "#4CC2FF", "#1764C0" }, new[] { "Фиолетовый", "#DDD1FF", "#A78BFA", "#7048B6" },
+            new[] { "Розовый", "#FFD1E8", "#F472B6", "#AE386B" }, new[] { "Красный", "#FFCBC6", "#F87171", "#B43239" },
+            new[] { "Оранжевый", "#FFD3AE", "#FB923C", "#B84D22" }, new[] { "Жёлтый", "#FFF0AE", "#FACC15", "#997018" },
+            new[] { "Зелёный", "#C2F3C7", "#4ADE80", "#227949" }, new[] { "Бирюзовый", "#B8F4EE", "#2DD4BF", "#16796F" },
+            new[] { "Серый", "#E3E5E9", "#9BA2AD", "#535C69" }
+        };
+
+        static FrameworkElement ColourPicker(string key, Color fallback, Action refresh)
+        {
+            var chosen = C(key, "");
+            Action<string> pick = hex => { if (hex == "") cfg.Remove(key); else cfg[key] = hex; refresh(); };
+            var palette = new WrapPanel { Margin = new Thickness(0, 6, 0, 3) };
+            var themeColour = Btn("Цвет темы", () => pick(""));
+            themeColour.Tag = "settings-colour:" + key + ":theme";
+            if (chosen == "") System.Windows.Automation.AutomationProperties.SetItemStatus(themeColour, "Выбран");
+            var body = VS(palette);
+            foreach (var group in ColourFamilies)
+            {
+                var tones = new WrapPanel();
+                for (int i = 1; i <= 3; i++)
+                {
+                    var hex = group[i]; Color colour; TryReadColor(hex, out colour);
+                    var dot = new Ellipse { Width = 20, Height = 20, Fill = Frozen(colour, 255), Stroke = Frozen(CardFg, 0x42) };
+                    var label = group[0] + " · " + (i == 1 ? "светлый" : i == 2 ? "средний" : "тёмный");
+                    var isSelected = string.Equals(chosen, hex, StringComparison.OrdinalIgnoreCase);
+                    var button = Act(dot, label, () => pick(hex));
+                    button.Tag = "settings-colour:" + key + ":" + hex;
+                    button.Width = 28; button.Height = 28; button.CornerRadius = new CornerRadius(14);
+                    button.BorderThickness = new Thickness(1);
+                    button.BorderBrush = isSelected ? Frozen(CardFg, 255) : Brushes.Transparent;
+                    if (isSelected) System.Windows.Automation.AutomationProperties.SetItemStatus(button, "Выбран");
+                    button.ToolTip = label + " · " + hex; tones.Children.Add(button);
+                }
+                palette.Children.Add(Mg(VS(Mg(Txt(group[0], 11, false), 3, 0, 0, 3), tones), 0, 0, 13, 7));
+            }
+            var code = new TextBox { Width = 92, MaxLength = 7, Text = chosen == "" ? string.Format("#{0:X2}{1:X2}{2:X2}", fallback.R, fallback.G, fallback.B) : chosen,
+                Padding = new Thickness(8, 4, 8, 4), VerticalContentAlignment = VerticalAlignment.Center };
+            System.Windows.Automation.AutomationProperties.SetName(code, "Код цвета HEX");
+            var error = SHint(""); error.Visibility = Visibility.Collapsed;
+            System.Windows.Automation.AutomationProperties.SetLiveSetting(error, System.Windows.Automation.AutomationLiveSetting.Polite);
+            Action apply = () =>
+            {
+                var hex = code.Text.Trim();
+                if (!System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$"))
+                { error.Text = "Введите цвет в формате #RRGGBB."; error.Visibility = Visibility.Visible; return; }
+                pick(hex.ToUpperInvariant());
+            };
+            code.KeyDown += (s, e) => { if (e.Key == System.Windows.Input.Key.Enter) { e.Handled = true; apply(); } };
+            var controls = new WrapPanel();
+            controls.Children.Add(Mg(code, 0, 0, 8, 4));
+            controls.Children.Add(Mg(Btn("Применить цвет", apply), 0, 0, 8, 4));
+            controls.Children.Add(Mg(themeColour, 0, 0, 0, 4));
+            body.Children.Add(controls);
+            body.Children.Add(error);
+            return body;
+        }
         static string SnapshotAppearance()
         {
             var pairs = cfg.Where(kv => IsAppearanceKey(kv.Key)).OrderBy(kv => kv.Key);
@@ -569,6 +689,7 @@ namespace FlowBar
                 c.Children.Add(ThemeSwatch(theme, fields[0] + " · " + ThemeName(theme), false, () =>
                 {
                     candidateAppearance = values;
+                    candidatePreset = null;
                     candidateAppearanceDate = fields[0];
                     if (refreshPreview != null) refreshPreview(null);
                 }));
@@ -697,7 +818,9 @@ namespace FlowBar
                 bool selected = settingsPreviewMonitor == b || settingsPreviewMonitor == null && sc.Primary;
                 var display = new Grid();
                 display.Children.Add(new Border { Background = Frozen(CardFg, 0x14), CornerRadius = new CornerRadius(5) });
-                var label = Txt(sc.Primary ? "Основной" : sc.Bounds.Width + " × " + sc.Bounds.Height, 10, true);
+                var name = DisplayName(MonitorId(sc));
+                var label = Txt(name + (sc.Primary ? " · основной" : "") + "\n" + sc.Bounds.Width + " × " + sc.Bounds.Height, 10, true);
+                label.TextAlignment = TextAlignment.Center;
                 label.HorizontalAlignment = HorizontalAlignment.Center; label.VerticalAlignment = VerticalAlignment.Center;
                 display.Children.Add(label);
                 if (b != null)
@@ -732,7 +855,7 @@ namespace FlowBar
             var edges = new[] { "", "bottom", "top", "left", "right" };
             var sizes = new[] { "", "S", "M", "L", "XL" };
             var suffix = "@" + target.scr.DeviceName;
-            content.Children.Add(SetRow("Расположение на мониторе", null, Seg(new[] { "Общее", "Снизу", "Сверху", "Слева", "Справа" },
+            content.Children.Add(SetRow("Расположение на мониторе", "Общее значение берётся из настроек панели.", Seg(new[] { "Общее", "Снизу", "Сверху", "Слева", "Справа" },
                 Math.Max(0, Array.IndexOf(edges, C("pos" + suffix, ""))), i => set("pos", edges[i]), true)));
             content.Children.Add(SetRow("Размер на мониторе", null, Seg(new[] { "Общий", "S", "M", "L", "XL" },
                 Math.Max(0, Array.IndexOf(sizes, C("size" + suffix, ""))), i => set("size", sizes[i]), true)));
@@ -928,18 +1051,26 @@ namespace FlowBar
         void ShowBattery()
         {
             var body = new StackPanel();
-            var value = Txt("", 36, true);
-            var status = CardStatus("");
+            var value = Txt("", 36, true); value.FontFamily = Display;
+            var details = new StackPanel();
+            details.Children.Add(CardHead("Подробности"));
+            TextBlock power, remaining;
+            details.Children.Add(KV("Питание", "", out power));
+            var remainingRow = KV("Осталось по оценке Windows", "", out remaining); details.Children.Add(remainingRow);
+            var empty = CardStatus("Батарея не обнаружена.");
             var progress = new FillBar(270, 5);
-            body.Children.Add(value); body.Children.Add(progress); body.Children.Add(status);
+            body.Children.Add(value); body.Children.Add(progress); body.Children.Add(empty); body.Children.Add(details);
             body.Children.Add(CardActions(Btn("Параметры питания", () => Launch("ms-settings:batterysaver"))));
             Action tick = () =>
             {
                 var s = live;
                 value.Text = s.HasBat ? Math.Round(s.Bat * 100) + "%" : "—";
                 progress.Set(s.HasBat ? s.Bat : double.NaN);
-                status.Text = !s.HasBat ? "Батарея не обнаружена." : s.Charging ? "Подключено питание · идёт зарядка"
-                    : s.BatSec > 0 ? "От батареи · осталось около " + Until(TimeSpan.FromSeconds(s.BatSec)) : "От батареи · время работы неизвестно";
+                details.Visibility = progress.Visibility = s.HasBat ? Visibility.Visible : Visibility.Collapsed;
+                empty.Visibility = s.HasBat ? Visibility.Collapsed : Visibility.Visible;
+                power.Text = s.Charging ? "Подключено к сети" : "От батареи";
+                remainingRow.Visibility = !s.Charging && s.BatSec > 0 ? Visibility.Visible : Visibility.Collapsed;
+                if (s.BatSec > 0) remaining.Text = Until(TimeSpan.FromSeconds(s.BatSec));
             };
             tick();
             ShowPanel("Батарея", body, 310, null, tick);
@@ -963,16 +1094,27 @@ namespace FlowBar
         {
             var body = new StackPanel();
             var downloads = new Border(); var uploads = new Border();
-            var receive = Txt("", 12, true); var send = Txt("", 12, true); var vpn = CardStatus("");
-            foreach (var element in new UIElement[] { receive, downloads, send, uploads, vpn }) body.Children.Add(element);
-            body.Children.Add(CardActions(Btn("История системы", ShowSystem), Btn("Сеть Windows", () => Launch("ms-settings:network"))));
+            TextBlock receive, send;
+            body.Children.Add(Txt("Сейчас", 13, true));
+            body.Children.Add(KV("↓ Приём", "", out receive));
+            body.Children.Add(KV("↑ Отдача", "", out send));
+            var history = new StackPanel();
+            history.Children.Add(CardHead("История · до 28 секунд"));
+            history.Children.Add(Txt("↓ Приём", 11, false)); history.Children.Add(downloads);
+            history.Children.Add(Txt("↑ Отдача", 11, false)); history.Children.Add(uploads);
+            body.Children.Add(history);
+            body.Children.Add(CardHead("Подробности"));
+            TextBlock connection;
+            body.Children.Add(KV("Подключение", "", out connection));
+            body.Children.Add(CardActions(Btn("История системы", () => { sysMetric = 2; ShowSystem(); }), Btn("Сеть Windows", () => Launch("ms-settings:network"))));
             Action refresh = () =>
             {
                 var s = live;
-                receive.Text = "↓ Приём · " + RateRu(s.Rx); send.Text = "↑ Отдача · " + RateRu(s.Tx);
+                receive.Text = RateRu(s.Rx); send.Text = RateRu(s.Tx);
+                history.Visibility = s.RxHist.Count > 0 || s.TxHist.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
                 downloads.Child = NetworkDots(s.RxHist, "Приём", Accent);
                 uploads.Child = NetworkDots(s.TxHist, "Отдача", Frozen(CardFg, 0x90));
-                vpn.Text = ConnKind(s.NetKind) + (s.NetVpn ? " · VPN" : "");
+                connection.Text = ConnKind(s.NetKind) + (s.NetVpn ? " · VPN" : "");
             };
             refresh();
             ShowPanel("Сеть", body, 355, null, refresh);
@@ -1248,7 +1390,8 @@ namespace FlowBar
                 if (picker.ShowDialog(settings) != true || !DesktopExtensions.Contains(Path.GetExtension(picker.FileName))) return;
                 CloseDesktopMedia(true);
                 cfg["desktop.media"] = picker.FileName; SaveCfg(); again();
-            }), Btn("Убрать фон", () =>
+            }));
+            if (path.Length > 0) actions.Children.Add(Btn("Убрать фон", () =>
             {
                 CloseDesktopMedia(true);
                 cfg.Remove("desktop.media"); SaveCfg(); again();

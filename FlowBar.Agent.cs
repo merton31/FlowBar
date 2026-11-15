@@ -23,7 +23,7 @@ namespace FlowBar
 
         // инструмент: имя, описание, свойства «имя:тип:описание» через «;», обязательные через «,»
         public static readonly string[][] Tools = {
-            new[] { "add_task", "Добавить задачу в список задач FlowBar.", "text:string:Текст задачи;due:string:Срок — дата ГГГГ-ММ-ДД (необязательно)", "text" },
+            new[] { "add_task", "Добавить задачу в список задач FlowBar.", "text:string:Текст задачи;due:string:Срок — дата ГГГГ-ММ-ДД (необязательно);time:string:Время ЧЧ:ММ при указанной дате (необязательно)", "text" },
             new[] { "list_tasks", "Показать задачи FlowBar: несделанные и сделанные.", "", "" },
             new[] { "complete_task", "Отметить задачу сделанной. Ищется по части текста.", "text:string:Текст задачи или его часть", "text" },
             new[] { "add_note", "Дописать строку в заметки FlowBar.", "text:string:Текст заметки", "text" },
@@ -84,7 +84,7 @@ namespace FlowBar
             return js.Serialize(resp);
         }
         // запрос работающей панели
-        static KeyValuePair<bool, string> Ask(string tool, Dictionary<string, object> args)
+        internal static KeyValuePair<bool, string> Ask(string tool, Dictionary<string, object> args)
         {
             try
             {
@@ -146,7 +146,8 @@ namespace FlowBar
             reminders = new List<Reminder>();
             foreach (var l in Lines("reminders.txt")) { int i = l.IndexOf('|'); DateTime at; if (i > 0 && DateTime.TryParseExact(l.Substring(0, i), "yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out at)) reminders.Add(new Reminder { At = at, Text = l.Substring(i + 1) }); }
         }
-        static void SaveReminders() { Persist("напоминания", () => SafeFile.WriteLines(F("reminders.txt"), reminders.OrderBy(r => r.At).Select(r => r.At.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) + "|" + r.Text.Replace("\r", " ").Replace("\n", " ")))); }
+        static int reminderVersion;
+        static void SaveReminders() { reminderVersion++; Persist("напоминания", () => SafeFile.WriteLines(F("reminders.txt"), reminders.OrderBy(r => r.At).Select(r => r.At.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) + "|" + r.Text.Replace("\r", " ").Replace("\n", " ")))); }
         static void AddReminder(DateTime at, string text) { if (reminders == null) LoadReminders(); reminders.Add(new Reminder { At = at, Text = text }); SaveReminders(); }
         // варианты «напомнить»: подпись и время
         public static List<Tuple<string, DateTime>> RemindChoices() { return RemindChoices(DateTime.Now); }
@@ -192,13 +193,18 @@ namespace FlowBar
                 case "add_task":
                     {
                         if (text == "") return no("Пустой текст задачи.");
-                        DateTime due; bool hasDue = DateTime.TryParseExact(AStr(a, "due"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out due);
-                        if (AStr(a, "due") != "" && !hasDue) return no("Срок нужен в виде ГГГГ-ММ-ДД.");
-                        todos.Add(new Todo { Text = text.Replace("\r", " ").Replace("\n", " "), Due = hasDue ? (DateTime?)due : null }); p.SaveTodos();
-                        return ok("Задача добавлена: " + text + (hasDue ? " (до " + due.ToString("d MMMM") + ")" : ""));
+                        DateTime? due; TimeSpan? time;
+                        if (!TryReadTaskSchedule(AStr(a, "due"), AStr(a, "time"), out due, out time))
+                            return no("Укажите дату ГГГГ-ММ-ДД и при необходимости время ЧЧ:ММ.");
+                        var task = new Todo { Text = text.Replace("\r", " ").Replace("\n", " "), Due = due, DueTime = time };
+                        todos.Add(task);
+                        try { WriteTodos(); }
+                        catch (Exception) { todos.Remove(task); return no("Не удалось сохранить задачу."); }
+                        todoVersion++; p.UpdateTodoTile();
+                        return ok("Задача добавлена: " + text);
                     }
                 case "list_tasks":
-                    return ok(todos.Count == 0 ? "Задач нет." : string.Join("\n", todos.OrderBy(t => t.Done).Select(t => (t.Done ? "[x] " : "[ ] ") + t.Text + (t.Due.HasValue ? " (до " + t.Due.Value.ToString("d MMMM") + ")" : ""))));
+                    return ok(todos.Count == 0 ? "Задач нет." : string.Join("\n", todos.OrderBy(t => t.Done).Select(t => (t.Done ? "[x] " : "[ ] ") + t.Text + (t.Due.HasValue ? " (до " + t.Due.Value.ToString("d MMMM") + (t.DueTime.HasValue ? ", " + TaskTimeLabel(t.DueTime) : "") + ")" : ""))));
                 case "complete_task":
                     {
                         var t = todos.FirstOrDefault(x => !x.Done && x.Text.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0);

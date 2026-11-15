@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -28,7 +28,7 @@ namespace FlowBar
             {
                 this.local = Math.Min(2, local); this.remote = Math.Min(2, remote);
                 this.active = active; this.accent = accent;
-                localWidth = active ? Math.Max(6, Math.Round(tileHeight * (this.local == 1 ? 0.34 : 0.17))) : 6;
+                localWidth = active ? Math.Max(7, Math.Round(tileHeight * (this.local == 1 ? 0.31 : 0.16))) : 4;
                 if (remote > 0) localWidth = Math.Min(localWidth, 8);
                 Width = 2 + this.local * localWidth + this.remote * 7 + Math.Max(0, this.local + this.remote - 1) * 2;
                 Height = 6;
@@ -155,9 +155,10 @@ namespace FlowBar
             }
             if (samples.Count == 0) return;
             indicatorReadPending = true;
+            var monitor = scr.Bounds;
             Task.Run(() =>
             {
-                try { ReadIndicatorBand(band, samples); }
+                try { ReadIndicatorBand(monitor, band, samples); }
                 catch (Exception) { /* Keep the outlined theme color if the desktop cannot be read. */ }
                 Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
                 {
@@ -183,11 +184,16 @@ namespace FlowBar
             catch (InvalidOperationException) { return PixelRect.Empty; }
         }
 
-        static void ReadIndicatorBand(PixelRect band, List<IndicatorSample> samples)
+        static void ReadIndicatorBand(PixelRect monitor, PixelRect band, List<IndicatorSample> samples)
         {
             using (var image = new LensDib())
             {
-                if (!image.CopyFromDesktop(band)) return;
+                var pixels = new int[band.Width * band.Height];
+                if (!SharedDesktopStrip.Read(monitor, band, pixels, false))
+                {
+                    if (!image.CopyFromDesktop(band)) return;
+                    Marshal.Copy(image.Pixels, pixels, 0, pixels.Length);
+                }
                 foreach (var sample in samples)
                 {
                     var r = sample.Rect;
@@ -195,20 +201,20 @@ namespace FlowBar
                     for (int i = 1; i <= 3; i++)
                     {
                         int x = r.Left + r.Width * i / 4;
-                        ReadIndicatorPixel(image, band, sample, x, r.Top - 2);
-                        ReadIndicatorPixel(image, band, sample, x, r.Bottom + 1);
+                        ReadIndicatorPixel(pixels, band, sample, x, r.Top - 2);
+                        ReadIndicatorPixel(pixels, band, sample, x, r.Bottom + 1);
                     }
-                    ReadIndicatorPixel(image, band, sample, r.Left - 2, r.Top + r.Height / 2);
-                    ReadIndicatorPixel(image, band, sample, r.Right + 1, r.Top + r.Height / 2);
+                    ReadIndicatorPixel(pixels, band, sample, r.Left - 2, r.Top + r.Height / 2);
+                    ReadIndicatorPixel(pixels, band, sample, r.Right + 1, r.Top + r.Height / 2);
                 }
             }
         }
 
-        static void ReadIndicatorPixel(LensDib image, PixelRect band, IndicatorSample sample, int x, int y)
+        static void ReadIndicatorPixel(int[] pixels, PixelRect band, IndicatorSample sample, int x, int y)
         {
             if (!band.Contains(new PixelPoint(x, y))) return;
-            int offset = ((y - band.Top) * band.Width + x - band.Left) * 4;
-            double level = AppWindowIndicator.Luminance(Marshal.ReadInt32(image.Pixels, offset));
+            int offset = (y - band.Top) * band.Width + x - band.Left;
+            double level = AppWindowIndicator.Luminance(pixels[offset]);
             sample.Darkest = Math.Min(sample.Darkest, level);
             sample.Lightest = Math.Max(sample.Lightest, level);
             sample.Valid = true;

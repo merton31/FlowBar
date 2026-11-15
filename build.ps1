@@ -8,9 +8,14 @@ $previewAssets = @('light','dark','color') | ForEach-Object { "/resource:$PSScri
 $elementalAssets = Get-ChildItem -LiteralPath "$PSScriptRoot\assets\elemental" -Filter '*.png' -File | ForEach-Object { "/resource:$($_.FullName),FlowBar.Elemental.$($_.Name)" }
 $musicSource = "$PSScriptRoot\FlowBar.MusicArt.cs"
 $reportSource = "$PSScriptRoot\FlowBar.BugReport.cs"
+$workflowSource = "$PSScriptRoot\FlowBar.Workflow.cs"
+$nextSource = "$PSScriptRoot\FlowBar.Next.cs"
+$voiceSource = "$PSScriptRoot\FlowBar.Voice.cs"
+$voiceOrbSource = "$PSScriptRoot\FlowBar.VoiceOrb.cs"
+$taskScheduleSource = "$PSScriptRoot\FlowBar.TaskSchedule.cs"
 # FlowBar.manifest — масштаб по мониторам; рядом с exe должен лежать FlowBar.exe.config (включает пересчёт WPF при смене масштаба)
 & "$fw\csc.exe" /nologo /target:winexe /optimize /unsafe "/out:$OutputPath" "/resource:$PSScriptRoot\CHANGELOG.md,FlowBar.CHANGELOG.md" "/resource:$PSScriptRoot\assets\Glass.hlsl,FlowBar.Glass.hlsl" $previewAssets $elementalAssets /win32manifest:"$PSScriptRoot\FlowBar.manifest" /win32icon:"$PSScriptRoot\assets\FlowBar.ico" $musicSource $reportSource `
-  /r:"$wpf\PresentationFramework.dll" /r:"$wpf\PresentationCore.dll" /r:"$wpf\WindowsBase.dll" /r:"$wpf\UIAutomationProvider.dll" /r:"$wpf\UIAutomationTypes.dll" /r:"$wpf\UIAutomationClient.dll" `
+  $workflowSource $nextSource $voiceSource $voiceOrbSource $taskScheduleSource "/resource:$PSScriptRoot\assets\voice-orb.png,FlowBar.VoiceOrb.png" /r:"$wpf\PresentationFramework.dll" /r:"$wpf\PresentationCore.dll" /r:"$wpf\WindowsBase.dll" /r:"$wpf\UIAutomationProvider.dll" /r:"$wpf\UIAutomationTypes.dll" /r:"$wpf\UIAutomationClient.dll" `
   /r:System.Xaml.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:Microsoft.VisualBasic.dll /r:System.Management.dll /r:"$fw\System.Runtime.dll" /r:"$fw\System.Runtime.InteropServices.WindowsRuntime.dll" `
   /r:"$wm\Windows.Foundation.winmd" /r:"$wm\Windows.Graphics.winmd" /r:"$wm\Windows.Media.winmd" /r:"$wm\Windows.Devices.winmd" /r:"$wm\Windows.Storage.winmd" /r:"$wm\Windows.Networking.winmd" /r:"$wm\Windows.UI.winmd" /r:System.Numerics.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:"$fw\System.Numerics.Vectors.dll" `
   "$PSScriptRoot\FlowBar.cs" "$PSScriptRoot\FlowBar.Design.cs" "$PSScriptRoot\FlowBar.MenuMotion.cs" "$PSScriptRoot\FlowBar.Cards.cs" "$PSScriptRoot\FlowBar.ThemeCarousel.cs" "$PSScriptRoot\FlowBar.StyleMixer.cs" "$PSScriptRoot\FlowBar.SpotifyNext.cs" "$PSScriptRoot\FlowBar.Indicators.cs" "$PSScriptRoot\FlowBar.Glass.cs" "$PSScriptRoot\FlowBar.Refraction.cs" "$PSScriptRoot\FlowBar.LensWindow.cs" "$PSScriptRoot\FlowBar.GpuLens.cs" "$PSScriptRoot\FlowBar.Tray.cs" "$PSScriptRoot\FlowBar.Update.cs" "$PSScriptRoot\FlowBar.Agent.cs" "$PSScriptRoot\FlowBar.Sliders.cs" "$PSScriptRoot\FlowBar.Appearance.cs" "$PSScriptRoot\FlowBar.Themes.cs"

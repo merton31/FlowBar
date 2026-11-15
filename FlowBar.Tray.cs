@@ -114,11 +114,22 @@ namespace FlowBar
 
         static void KeepOnTop() { if (wnd != IntPtr.Zero) SetWindowPos(wnd, new IntPtr(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10); }
 
-        // панель Проводника — первое окно Shell_TrayWnd, которое не наше
+        internal static bool HasShell { get { return GetShellWindow() != IntPtr.Zero; } }
+        internal static void AnnounceExplorerTray()
+        {
+            SendNotifyMessage(new IntPtr(0xFFFF), RegisterWindowMessage("TaskbarCreated"), IntPtr.Zero, IntPtr.Zero);
+        }
+
+        // Сторож и установщик также вызывают этот метод из другого процесса.
         public static IntPtr Explorer()
         {
+            uint shellPid;
+            if (GetWindowThreadProcessId(GetShellWindow(), out shellPid) == 0) return IntPtr.Zero;
             for (var h = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null); h != IntPtr.Zero; h = FindWindowEx(IntPtr.Zero, h, "Shell_TrayWnd", null))
-                if (h != wnd) return h;
+            {
+                uint pid;
+                if (GetWindowThreadProcessId(h, out pid) != 0 && pid == shellPid) return h;
+            }
             return IntPtr.Zero;
         }
 

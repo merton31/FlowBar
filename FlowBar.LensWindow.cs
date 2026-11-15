@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -102,16 +103,17 @@ namespace FlowBar
                 var mode = new DisplayMode { Size = 220 };
                 refreshRate = EnumDisplaySettings(device, -1, ref mode) && mode.Frequency >= 24 ? Math.Min(mode.Frequency, 360) : 60;
             }
+            int frequency = Bar.GlassFrequency(refreshRate);
             var covered = bounds;
             N.RECT windowRect;
             if (!PreferGpu && N.GetWindowRect(parent, out windowRect))
                 covered = PixelRect.Union(bounds, PixelRect.FromLTRB(windowRect.L, windowRect.T, windowRect.R, windowRect.B));
             if (wanted != null && wanted.Target == bounds && wanted.Monitor == monitor && wanted.Covered == covered && wanted.Radius == radius &&
-                wanted.Frequency == refreshRate && wanted.Lens.SameAs(material)) return true;
+                wanted.Frequency == frequency && wanted.Lens.SameAs(material)) return true;
             IntPtr accelerated = PreferGpu && material.Blur <= 8 && !string.IsNullOrEmpty(device) &&
                 monitor.Contains(bounds) && now >= Interlocked.Read(ref gpuRetryAt) ? PrepareGpuHost() : IntPtr.Zero;
             wanted = new Request { Target = bounds, Monitor = monitor, Covered = covered, Radius = radius, Lens = material,
-                Frequency = refreshRate, Display = device, GpuHost = accelerated };
+                Frequency = frequency, Display = device, GpuHost = accelerated };
             if (queuedStart == null)
                 queuedStart = dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(StartCapture));
             return true;
@@ -171,7 +173,7 @@ namespace FlowBar
                     if (request == null)
                     {
                         if (gpu != null) { gpu.Dispose(); gpu = null; }
-                        active = null; wake.WaitOne(); continue;
+                        sampler.Suspend(); active = null; wake.WaitOne(); continue;
                     }
                     long start = Stopwatch.GetTimestamp();
                     try
@@ -185,8 +187,11 @@ namespace FlowBar
                                     gpu = new GpuLens(request.Display, request.Monitor, request.Target, request.GpuHost,
                                         request.Lens.Profile == LensProfile.Ios, false, (float)request.Radius,
                                         request.Lens.Width, request.Lens.Shift, request.Lens.Blur);
+                                    gpu.MeasurementActive = () => Bar.MeasuringGlass;
+                                    gpu.Measurement = Bar.MeasureGlassFrame;
                                 }
                                 catch (Exception ex) { ReportGpuFailure(request, ex); }
+                            if (gpu != null) sampler.Suspend();
                             if (gpu == null) sampler.Prepare(request.Target, request.Monitor, request.Covered, request.Radius, request.Lens);
                             active = request; unchanged = 0;
                         }
@@ -206,6 +211,8 @@ namespace FlowBar
                                         gpuShown = true;
                                     }));
                                 }
+                                if (request.Frequency < 144)
+                                    clock.Wait(Math.Max(Stopwatch.Frequency / 4000, Stopwatch.Frequency / request.Frequency - (Stopwatch.GetTimestamp() - start)));
                                 continue;
                             }
                             catch (Exception ex)
@@ -217,7 +224,9 @@ namespace FlowBar
                             }
                         }
                         PixelRect damage;
-                        if (sampler.Sample(out damage)) { unchanged = 0; Publish(request, sampler.Map, damage); }
+                        bool sampled = sampler.Sample(out damage);
+                        Bar.MeasureGlassFrame(false, 0, 0, 0, true);
+                        if (sampled) { unchanged = 0; Publish(request, sampler.Map, damage, start); }
                         else if (unchanged < 20) unchanged++;
                     }
                     catch (Exception ex)
@@ -254,7 +263,8 @@ namespace FlowBar
             gpuShown = gpuHostVisible = false;
         }
 
-        void Publish(Request request, GlassLensMap map, PixelRect region)
+        long readyStamp;
+        void Publish(Request request, GlassLensMap map, PixelRect region, long stamp)
         {
             lock (gate)
             {
@@ -271,7 +281,7 @@ namespace FlowBar
                     }
                 pixelRequest = request;
                 readyRegion = ready == request ? PixelRect.Union(readyRegion, region) : region;
-                ready = request;
+                ready = request; readyStamp = stamp;
                 if (presentQueued) return;
                 presentQueued = true;
                 dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(PresentLatest));
@@ -281,13 +291,14 @@ namespace FlowBar
         void PresentLatest()
         {
             PixelRect bounds, damage;
+            long stamp;
             try
             {
                 lock (gate)
                 {
                     presentQueued = false;
                     if (disposing || ready == null || ready != wanted) return;
-                    bounds = ready.Target;
+                    bounds = ready.Target; stamp = readyStamp;
                     damage = readyRegion;
                     output.Resize(bounds.Size);
                     if (!shown || bounds != presentedBounds || damage.Size == bounds.Size)
@@ -305,6 +316,7 @@ namespace FlowBar
                     N.SetWindowPos(host, owner, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0x10 | 0x40);
                 if (!shown) Bar.Info("преломление: рисует процессор, " + bounds.Width + "×" + bounds.Height);
                 shown = true; presentedBounds = bounds;
+                Bar.MeasureGlassFrame(true, stamp, 0, 0, false);
             }
             catch (Exception ex) { Fail(ex); }
         }
@@ -461,10 +473,69 @@ namespace FlowBar
         }
     }
 
+    internal static class SharedDesktopStrip
+    {
+        sealed class Strip
+        {
+            internal readonly Dictionary<object, PixelRect> Areas = new Dictionary<object, PixelRect>();
+            internal readonly LensDib Dib = new LensDib();
+            internal PixelRect Bounds;
+            internal long Stamp;
+        }
+        static readonly object gate = new object();
+        static readonly Dictionary<PixelRect, Strip> strips = new Dictionary<PixelRect, Strip>();
+
+        internal static void Add(object owner, PixelRect monitor, PixelRect source)
+        {
+            lock (gate)
+            {
+                Strip strip;
+                if (!strips.TryGetValue(monitor, out strip)) { strip = new Strip(); strips.Add(monitor, strip); }
+                strip.Areas[owner] = source;
+            }
+        }
+
+        internal static void Remove(object owner, PixelRect monitor)
+        {
+            lock (gate)
+            {
+                Strip strip;
+                if (!strips.TryGetValue(monitor, out strip)) return;
+                strip.Areas.Remove(owner);
+                if (strip.Areas.Count != 0) return;
+                strip.Dib.Dispose(); strips.Remove(monitor);
+            }
+        }
+
+        internal static bool Read(PixelRect monitor, PixelRect area, int[] frame, bool refresh)
+        {
+            lock (gate)
+            {
+                Strip strip;
+                if (!strips.TryGetValue(monitor, out strip) || strip.Areas.Count < 2) return false;
+                long now = Stopwatch.GetTimestamp();
+                if (!strip.Bounds.Contains(area) || now - strip.Stamp >= Stopwatch.Frequency / (refresh ? 450 : 45))
+                {
+                    if (!refresh) return false;
+                    var bounds = PixelRect.Empty;
+                    foreach (var part in strip.Areas.Values) bounds = bounds.IsEmpty ? part : PixelRect.Union(bounds, part);
+                    if ((long)bounds.Width * bounds.Height > 500000 || !bounds.Contains(area) || !strip.Dib.CopyFromDesktop(bounds)) return false;
+                    strip.Stamp = Stopwatch.GetTimestamp(); strip.Bounds = bounds;
+                }
+                for (int y = 0; y < area.Height; y++)
+                {
+                    int offset = ((y + area.Top - strip.Bounds.Top) * strip.Bounds.Width + area.Left - strip.Bounds.Left) * 4;
+                    Marshal.Copy(strip.Dib.Pixels + offset, frame, y * area.Width, area.Width);
+                }
+                return true;
+            }
+        }
+    }
+
     internal sealed class LensSampler : IDisposable
     {
         readonly LensDib input = new LensDib();
-        PixelRect source, target, coveredPixels;
+        PixelRect source, target, coveredPixels, monitorArea;
         int[] frame, previous;
         int coverage;
         bool dirty;
@@ -472,6 +543,8 @@ namespace FlowBar
 
         public void Prepare(PixelRect target, PixelRect monitor, PixelRect covered, double radius, LensSettings lens)
         {
+            Suspend();
+            monitorArea = monitor;
             this.target = target;
             source = target;
             source.Inflate(lens.Padding, lens.Padding);
@@ -487,14 +560,18 @@ namespace FlowBar
             Map = new GlassLensMap(target, source, monitor, radius, lens, covered);
             coverage = lens.Padding + (int)Math.Ceiling(Math.Max(radius, lens.Width));
             dirty = true;
+            SharedDesktopStrip.Add(this, monitorArea, source);
         }
 
         public bool Sample(out PixelRect region)
         {
             region = PixelRect.Empty;
-            if (!input.CopyFromDesktop(source))
-                throw new InvalidOperationException("Windows не дала прочитать область под панелью.");
-            Marshal.Copy(input.Pixels, frame, 0, frame.Length);
+            if (!SharedDesktopStrip.Read(monitorArea, source, frame, true))
+            {
+                if (!input.CopyFromDesktop(source))
+                    throw new InvalidOperationException("Windows не дала прочитать область под панелью.");
+                Marshal.Copy(input.Pixels, frame, 0, frame.Length);
+            }
             for (int y = coveredPixels.Top; y < coveredPixels.Bottom; y++)
                 Array.Clear(frame, y * source.Width + coveredPixels.Left, coveredPixels.Width);
             var changes = dirty ? new PixelRect(0, 0, source.Width, source.Height) : FindChanges();
@@ -527,6 +604,7 @@ namespace FlowBar
             return left < right ? PixelRect.FromLTRB(left, top, right, bottom) : PixelRect.Empty;
         }
 
-        public void Dispose() { input.Dispose(); }
+        public void Suspend() { SharedDesktopStrip.Remove(this, monitorArea); }
+        public void Dispose() { Suspend(); input.Dispose(); }
     }
 }

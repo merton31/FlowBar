@@ -143,16 +143,6 @@ namespace FlowBar
             if (res.Count == 0) { error = "В коде нет подходящих настроек."; return null; }
             return res;
         }
-        // применить код из буфера обмена; результат — текст для пользователя
-        static string ImportShareCode(string code)
-        {
-            int skipped; string err; var kv = ReadShareCode(code, out skipped, out err);
-            if (kv == null) return err;
-            foreach (var p in kv) cfg[p.Key] = p.Value;
-            SaveCfg(); ClosePanels(); RebuildAll(); All(b => { b.reserveKey = null; b.Place(); }); RestyleWindows();
-            return "Применено настроек: " + kv.Count + (skipped > 0 ? "; пропущено: " + skipped + " (нет такой темы или значение не подошло)" : "") + ".";
-        }
-
         // первая папка тем: один файл-образец с пояснениями; он же рабочая тема
         static void EnsureThemesDir()
         {

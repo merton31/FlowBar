@@ -26,3 +26,5 @@ README.txt
 
 # разовые скрипты правок
 tools/patch_*.py
+
+!assets/voice-orb.png
