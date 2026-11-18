@@ -1,30 +1,16 @@
 # сборка и выпуски — в GitHub Releases, не в коде
+bin/
+obj/
+build/
 *.exe
 *.zip
 *.pdb
-watch/target/
-tools/GpuGlassProbe/bin/
-tools/GpuGlassProbe/obj/
 
 # снимки экрана и рабочие материалы: могут содержать личные окна и файлы
 *.png
 *.jpg
 *.mp4
-!assets/preview/light.jpg
-!assets/preview/dark.jpg
-!assets/preview/color.jpg
-!assets/FlowBar.ico
-!assets/logo.png
-!assets/elemental/*.png
-shots-*/
-
-# внутренние отчёты и планы (локальные пути, черновики)
-Отчёт*.md
-*эталон*.md
-Планы.md
-README.txt
-
-# разовые скрипты правок
-tools/patch_*.py
-
-!assets/voice-orb.png
+# ресурсы приложения: логотипы сервисов для превью, шарик диктовки и превью в README
+!source/Services/*.png
+!source/voice-orb.png
+!assets/preview/*.png
