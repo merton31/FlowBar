@@ -216,6 +216,7 @@ internal sealed partial class DockWindow
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException or UnauthorizedAccessException or DllNotFoundException or EntryPointNotFoundException)
             {
+                ErrorLog.Write(ex, wifi ? "Wi-Fi list" : "Bluetooth list");
                 note.Text = L10n.T(wifi ? "Could not read the list of networks." : "Could not read Bluetooth devices.");
             }
             finally { busy = false; }
@@ -223,8 +224,9 @@ internal sealed partial class DockWindow
         return reload;
     }
 
-    private void QuickToggleSurface(Window window, Border shell, string id)
+    private void QuickToggleSurface(Window window, Border shell, string id, FrameworkElement? anchor = null)
     {
+        if (id == "Quick Toggles") { QuickPanel(window, shell, anchor); return; }
         var panel = Stack();
         panel.Margin = new(12);
         var header = (FrameworkElement)Right(Text(id, 17, true), CloseButton(window));

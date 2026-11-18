@@ -58,11 +58,13 @@ internal sealed class RadioController
             catch (OperationCanceledException)
             {
                 if (!process.HasExited) process.Kill();
+                ErrorLog.Note("Radios", "Windows radio control did not respond in time");
                 return "Windows radio control did not respond.";
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
+            ErrorLog.Write(ex, "Radios");
             return "Windows radio controls are unavailable.";
         }
         finally { operation.Release(); }

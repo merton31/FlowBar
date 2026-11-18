@@ -64,13 +64,15 @@ internal static class Dictation
             await media.StartRecordToStorageFileAsync(profile, file);
             wavPath = file.Path;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            ErrorLog.Write(ex, "Microphone");
             media.Dispose();
             throw new DictationException("Allow desktop apps to use the microphone in Windows.");
         }
-        catch (Exception) when (!Fixture)
+        catch (Exception ex) when (!Fixture)
         {
+            ErrorLog.Write(ex, "Microphone");
             media.Dispose();
             throw new DictationException("The microphone could not be started.");
         }

@@ -52,7 +52,10 @@ internal sealed partial class DockWindow
         if (popover && closeOnDeactivate && !smoke) window.Deactivated += (_, _) => Dispatcher.BeginInvoke(() =>
         {
             if (!window.IsActive && window.IsVisible && !window.OwnedWindows.Cast<Window>().Any(child => child.IsVisible))
+            {
+                if (IsMouseOver) closedByFocus = (key, Environment.TickCount64);
                 window.Close();
+            }
         });
         draw(window, shell);
         window.Show();
@@ -192,6 +195,7 @@ internal sealed partial class DockWindow
                         }
                         catch (Exception ex) when (Updates.IsUpdateError(ex))
                         {
+                            ErrorLog.Write(ex, "Update");
                             updateStatus.Text = L10n.T("The update could not be installed. Check the connection and try again.");
                         }
                         finally { updateButton.IsEnabled = true; }
@@ -199,6 +203,9 @@ internal sealed partial class DockWindow
                     AddRow(content, "Updates", updateButton);
                     updateStatus.Margin = new(4, 2, 0, 6);
                     content.Children.Add(updateStatus);
+                    var reportButton = Button(Text("Report a problem…", 13, false, Paper), () => OpenBugReport(), Brush("#3A3A3C"), 12);
+                    reportButton.Padding = new(12, 5, 12, 5);
+                    AddRow(content, "Report a problem", reportButton);
                     // агенты (Claude Code, Codex) подключаются к LumaDock командой «LumaDock.exe --mcp» (см. AgentServer.cs)
                     // Глобальные сочетания клавиш: нажмите кнопку и сочетание с Alt, Ctrl, Shift или Win; Backspace очищает
                     var hotkeyStatus = Text("", 12, false, Muted);
@@ -588,6 +595,7 @@ internal sealed partial class DockWindow
         if (P.AutoHide)
             DockToggle(dock, "Show on desktop", P.ShowOnDesktop, v => P.ShowOnDesktop = v, "Keep the dock visible while the desktop is active.");
         DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Sound, network switches and the tray icon always stay in the dock.");
+        DockToggle(dock, "Pinned apps stay in place", P.StickyPinnedApps, v => P.StickyPinnedApps = v, "When the dock is full, only open apps scroll with the mouse wheel; if off, all apps scroll.");
         if (System.Windows.Forms.Screen.AllScreens.Length > 1)
             DockToggle(dock, "All monitors", P.AllMonitors, v => P.AllMonitors = v, "Show the dock on every connected monitor.");
         DockToggle(dock, "Lock dock", P.Locked, v => P.Locked = v, "Prevent dragging and rearranging items.");
@@ -786,17 +794,36 @@ internal sealed partial class DockWindow
             _ => null
         };
 
+    // Для самопроверки: щелчок по виджету сразу после того, как его окно закрылось от потери фокуса, окно не открывает; позже или по другому виджету открывает
+    internal string? ReopenCheck()
+    {
+        closedByFocus = ("Notes", Environment.TickCount64);
+        if (OpenWidget("Notes") is not null || surfaces.ContainsKey("Notes")) return "второе нажатие открыло окно заново";
+        if (closedByFocus.Key is not null) return "отметка закрытия не сброшена после нажатия";
+        closedByFocus = ("Notes", Environment.TickCount64 - 5000);
+        var late = OpenWidget("Notes");
+        late?.Close();
+        if (late is null) return "нажатие через несколько секунд не открыло окно";
+        closedByFocus = ("Weather", Environment.TickCount64);
+        var other = OpenWidget("Notes");
+        other?.Close();
+        closedByFocus = default;
+        return other is null ? "закрытие одного виджета помешало открыть другой" : "";
+    }
+
     public Window? OpenWidget(string id, FrameworkElement? anchor = null)
     {
         var destination = NativeWidgetAction(id);
         if (destination is not null) { destination(); return null; }
         if (surfaces.TryGetValue(id, out var current) && !smoke) { current.Close(); return null; }
+        // окно только что закрылось само от щелчка по этому же виджету: это и есть «второе нажатие», заново не открываем
+        if (closedByFocus.Key == id && Environment.TickCount64 - closedByFocus.At < 1500) { closedByFocus = default; return null; }
         if (id is "Weather" or "Weather Details" or "Today & Forecast" or "Weather Status" or "Hourly" or "Sunrise & Sunset" or "Clock & Weather")
             return Surface(id, id == "Weather" ? 560 : 510, id == "Weather" ? 620 : 550, true,
                 (window, shell) => Weather(shell, window, id), anchor);
         if (id is "Quick Toggles" or "Wi-Fi" or "Bluetooth")
-            return Surface(id, 390, id == "Quick Toggles" ? 382 : 500, true,
-                (window, shell) => QuickToggleSurface(window, shell, id), anchor);
+            return Surface(id, 390, id == "Quick Toggles" ? 362 : 500, true,
+                (window, shell) => QuickToggleSurface(window, shell, id, anchor), anchor);
         if (id == "Tray") return Surface(id, 420, 460, true, TraySurface, anchor, closeOnDeactivate: false);
         if (id is "Calendar" or "Clock" or "Today" or "Date" or "7 Days")
             return Surface(id, 720, 560, true, CalendarSurface, anchor);
@@ -804,8 +831,9 @@ internal sealed partial class DockWindow
         bool tall = id is "Calendar" or "Clock" or "Recently Opened" or "Storage" or "Audio Output" or "Day Timeline"
             or "AI Limits" or "Claude Usage" or "Total Revenue" or "Wallpaper Gallery" || ConnectedData.Supports(id);
         bool audio = id is "Audio Output" or "Microphone";
-        return Surface(id, audio ? 420 : large ? 620 : tall ? 480 : 365,
-            id == "Audio Output" ? 566 : id == "Dictation" ? 560 : audio ? 402 : large ? 460 : tall ? 426 : 259,
+        bool player = id is "Now Playing" or "Now Playing Artwork" or "Now Playing Bar" or "Now Playing Mini";
+        return Surface(id, player ? 440 : audio ? 420 : large ? 620 : tall ? 480 : 365,
+            id == "Audio Output" ? 566 : id == "Dictation" ? 560 : player ? 424 : audio ? 402 : large ? 460 : tall ? 426 : 259,
             true, (window, shell) =>
             {
                 var content = new DockPanel { Margin = new(11), LastChildFill = true };

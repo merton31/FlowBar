@@ -99,16 +99,18 @@ internal static class HandyInstaller
             status(L10n.F($"Downloading {installer.Name}…"));
             string path = await FetchAsync(installer, percent => status(L10n.F($"Downloading {installer.Name}: {percent}%")), CancellationToken.None);
             try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (System.ComponentModel.Win32Exception)
+            catch (System.ComponentModel.Win32Exception ex)
             {
+                ErrorLog.Write(ex, "Handy install");
                 // например, отказ в окне разрешений Windows: файл скачан и проверен, но не запущен
                 status(L10n.T("Handy was downloaded but the installer was not started. Open it from the temporary folder or press the button again."));
                 return;
             }
             status(L10n.T("Handy was downloaded and verified. Finish the installation in its window, then press the button again."));
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            ErrorLog.Write(ex, "Handy download");
             status(L10n.T("Handy could not be downloaded automatically. Check the connection and try again."));
         }
         finally { downloading = false; }

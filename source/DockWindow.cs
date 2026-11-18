@@ -57,6 +57,8 @@ internal sealed partial class DockWindow : Window
     private readonly List<Action> faces = [];
     private readonly Dictionary<string, ImageSource?> icons = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Window> surfaces = new();
+    // Окно виджета закрывается, как только док забирает фокус (нажатие мыши), и до самого щелчка; без этой отметки щелчок открыл бы окно заново вместо закрытия
+    private (string? Key, long At) closedByFocus;
     // плитки программ по пути (для прыжка значка при мигании окна) и время, до которого док показывается из-за мигания
     private readonly Dictionary<string, Border> appTiles = new(StringComparer.OrdinalIgnoreCase);
     private DateTime flashUntil;
@@ -80,6 +82,7 @@ internal sealed partial class DockWindow : Window
     private double dockHeadroom;
     private double BarTop => Top + dockHeadroom;
     private bool barVisible = true;
+    private int edgeTicks; // сколько опросов подряд указатель держится у нижнего края при полноэкранном окне
     private DateTimeOffset lastCalendarRefresh;
 
     public bool HasLiveBackdrop => liveBackdrop.ImageSource is not null;
@@ -274,8 +277,10 @@ internal sealed partial class DockWindow : Window
             var dpi = VisualTreeHelper.GetDpi(this);
             bool atEdge = pointer.Y >= (Top + Height) * dpi.DpiScaleY - 3 &&
                 pointer.X >= Left * dpi.DpiScaleX && pointer.X < (Left + Width) * dpi.DpiScaleX;
-            var visible = !fullscreen && (!P.AutoHide || (P.ShowOnDesktop && WindowsShell.IsDesktopActive())
-                || IsMouseOver || atEdge || surfaces.Values.Any(surface => surface.IsActive) || DateTime.UtcNow < flashUntil);
+            // поверх полноэкранного окна (браузер, видео) дока не видно, но он выезжает, если подержать указатель у нижнего края (около полсекунды: в играх от случайного касания края он не мешает)
+            edgeTicks = fullscreen && atEdge ? edgeTicks + 1 : 0;
+            var visible = BarShouldShow(fullscreen, P.AutoHide, P.ShowOnDesktop && WindowsShell.IsDesktopActive(), IsMouseOver, atEdge, edgeTicks,
+                surfaces.Values.Any(surface => surface.IsActive) || DateTime.UtcNow < flashUntil);
             if (visible != barVisible)
             {
                 barVisible = visible;
@@ -284,6 +289,13 @@ internal sealed partial class DockWindow : Window
             }
         }
         else if (previewLiveGlass) SampleGlass();
+    }
+
+    // Виден ли док. При полноэкранном окне его нет, пока указатель не продержался у нижнего края два опроса (около полсекунды); без полноэкранного — по настройке автоскрытия
+    internal static bool BarShouldShow(bool fullscreen, bool autoHide, bool desktopShown, bool hover, bool atEdge, int edgeTicks, bool pinnedOpen)
+    {
+        bool reveal = hover || pinnedOpen || atEdge && (!fullscreen || edgeTicks >= 2);
+        return fullscreen ? reveal : !autoHide || desktopShown || reveal;
     }
 
     private void SampleGlass()
@@ -333,6 +345,9 @@ internal sealed partial class DockWindow : Window
 
     // Увеличение как в Dock на Mac: масштаб плитки приложения зависит от расстояния до указателя по колоколу Гаусса,
     // соседние плитки раздвигаются (плитка под указателем стоит на месте), а движение сглаживается на каждом кадре, а не прыгает при входе в плитку.
+    // Список приложений, не поместившихся в док, прокручивается колесом мыши; закреплённые приложения стоят на месте слева от него
+    private ScrollViewer? appScroller;
+    private double appScrollOffset, appScrollTarget;
     private readonly List<(Border Tile, ScaleTransform Scale, TranslateTransform Shift, bool App, double Width)> magnets = [];
     private Panel? magnetRow;
     private double? magnetX;
@@ -344,7 +359,16 @@ internal sealed partial class DockWindow : Window
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         double dt = Math.Min(.05, (now - magnetStamp) / (double)System.Diagnostics.Stopwatch.Frequency);
         magnetStamp = now;
+        StepScroll(dt);
         MagnifyStep(dt);
+    }
+
+    // Левый край плитки в координатах ряда дока без учёта её собственного увеличения и сдвига, но с учётом прокрутки списка приложений
+    private double RowOffset(Border tile)
+    {
+        // прокрутку уже учитывает положение родителя на экране (ScrollViewer сдвигает содержимое при компоновке), вручную её вычитать нельзя
+        if (VisualTreeHelper.GetParent(tile) is not UIElement parent || magnetRow is null) return 0;
+        return parent.TransformToAncestor(magnetRow).Transform(default).X + VisualTreeHelper.GetOffset(tile).X;
     }
 
     internal void MagnifyStep(double dt)
@@ -361,14 +385,23 @@ internal sealed partial class DockWindow : Window
         double unit = magnets.Where(item => item.App).Select(item => item.Width).DefaultIfEmpty(48).Average() + Math.Max(0, P.Spacing);
         double follow = 1 - Math.Exp(-dt * 20);
         var centers = new double[count];
-        var displacement = new double[count];
-        double before = 0;
+        var extras = new double[count];
+        var visible = new bool[count];
+        // Плитки, уехавшие за край списка, не видны (список обрезает их): они не растут и не раздвигают соседей
+        double viewLeft = 0, viewRight = 0;
+        if (appScroller is not null && magnetRow is not null)
+        {
+            viewLeft = appScroller.TransformToAncestor(magnetRow).Transform(default).X;
+            viewRight = viewLeft + appScroller.ActualWidth;
+        }
         for (int index = 0; index < count; index++)
         {
             var item = magnets[index];
-            centers[index] = VisualTreeHelper.GetOffset(item.Tile).X + item.Tile.ActualWidth / 2;
+            centers[index] = RowOffset(item.Tile) + item.Tile.ActualWidth / 2;
+            // плитка списка, у которой середина за краем, обрезана больше чем наполовину и лежит под соседними значками: она не участвует в раскладке
+            visible[index] = appScroller is null || !appScroller.IsAncestorOf(item.Tile) || (centers[index] >= viewLeft && centers[index] <= viewRight);
             double target = 1;
-            if (magnetX is { } pointer && boost > 0 && item.App)
+            if (visible[index] && magnetX is { } pointer && boost > 0 && item.App)
             {
                 double distance = (centers[index] - pointer) / unit;
                 target = 1 + boost * Math.Exp(-distance * distance / 2.6);
@@ -377,24 +410,33 @@ internal sealed partial class DockWindow : Window
             scale += (target - scale) * follow;
             if (Math.Abs(target - scale) < .002) scale = target;
             item.Scale.ScaleX = item.Scale.ScaleY = scale;
-            double extra = item.Width * (scale - 1);
-            displacement[index] = before + extra / 2;
-            before += extra;
+            extras[index] = visible[index] ? item.Width * (scale - 1) : 0;
             System.Windows.Controls.Panel.SetZIndex(item.Tile, (int)Math.Round((scale - 1) * 100));
         }
+        // плитки раскладываются слева направо по настоящему положению в доке (приложения могут идти не в порядке создания плиток)
+        var order = Enumerable.Range(0, count).Where(index => visible[index]).OrderBy(index => centers[index]).ToArray();
+        if (order.Length == 0) return;
+        var displacement = new double[count];
+        double before = 0;
+        foreach (int index in order)
+        {
+            displacement[index] = before + extras[index] / 2;
+            before += extras[index];
+        }
         // сдвиг считается от точки под указателем: она остаётся на месте, левые плитки уходят влево, правые вправо
-        double pivot = displacement[0];
-        if (magnetLast >= centers[count - 1]) pivot = displacement[count - 1];
+        double pivot = displacement[order[0]];
+        if (magnetLast >= centers[order[^1]]) pivot = displacement[order[^1]];
         else
-            for (int index = 0; index + 1 < count; index++)
-                if (magnetLast < centers[index + 1])
+            for (int step = 0; step + 1 < order.Length; step++)
+                if (magnetLast < centers[order[step + 1]])
                 {
-                    double span = Math.Max(1, centers[index + 1] - centers[index]);
-                    double part = Math.Clamp((magnetLast - centers[index]) / span, 0, 1);
-                    pivot = displacement[index] + (displacement[index + 1] - displacement[index]) * part;
+                    int left = order[step], right = order[step + 1];
+                    double span = Math.Max(1, centers[right] - centers[left]);
+                    double part = Math.Clamp((magnetLast - centers[left]) / span, 0, 1);
+                    pivot = displacement[left] + (displacement[right] - displacement[left]) * part;
                     break;
                 }
-        for (int index = 0; index < count; index++) magnets[index].Shift.X = displacement[index] - pivot;
+        for (int index = 0; index < count; index++) magnets[index].Shift.X = visible[index] ? displacement[index] - pivot : 0;
     }
 
     // Для самопроверки: ведёт «указатель» по первой плитке приложения и проверяет рост, неподвижность плитки под указателем и возврат в покой; null — приложений в доке нет
@@ -406,13 +448,13 @@ internal sealed partial class DockWindow : Window
         P.Magnification = true;
         try
         {
-            magnetLast = VisualTreeHelper.GetOffset(first.Tile).X + first.Tile.ActualWidth / 2;
+            magnetLast = RowOffset(first.Tile) + first.Tile.ActualWidth / 2;
             magnetX = magnetLast;
             for (int step = 0; step < 90; step++) MagnifyStep(.03);
             double want = Math.Clamp(P.MagnificationScale, 1.2, 3);
             if (Math.Abs(first.Scale.ScaleX - want) > .02) return $"под указателем масштаб {first.Scale.ScaleX:0.00}, ожидался {want:0.00}";
             if (Math.Abs(first.Shift.X) > 1) return $"плитка под указателем сдвинулась на {first.Shift.X:0.0}";
-            var farthest = magnets.OrderByDescending(item => Math.Abs(VisualTreeHelper.GetOffset(item.Tile).X - VisualTreeHelper.GetOffset(first.Tile).X)).First();
+            var farthest = magnets.OrderByDescending(item => Math.Abs(RowOffset(item.Tile) - RowOffset(first.Tile))).First();
             if (farthest.App && farthest.Scale.ScaleX > first.Scale.ScaleX - .01) return "далёкая плитка выросла так же, как плитка под указателем";
             magnetX = null;
             for (int step = 0; step < 200; step++) MagnifyStep(.03);
@@ -426,6 +468,7 @@ internal sealed partial class DockWindow : Window
     {
         faces.Clear();
         magnets.Clear();
+        appScroller = null;
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
         magnetRow = row;
         var groups = windows.GroupBy(item => WindowsShell.ResolveApp(item.App), StringComparer.OrdinalIgnoreCase)
@@ -438,6 +481,19 @@ internal sealed partial class DockWindow : Window
             .Select(id => WindowsShell.MatchApp(id[4..])).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var afterApps = tiles.FindLastIndex(id => id.StartsWith("app:", StringComparison.Ordinal) || id == "Start") + 1;
         tiles.InsertRange(afterApps, groups.Keys.Where(path => !pinned.Contains(path)).OrderBy(path => path).Select(path => "app:" + path));
+        // Плитки приложений и папок собираются в один блок на месте первого из них: закреплённые стоят на месте, открытые лежат в списке с прокруткой колесом мыши
+        StackPanel? pinnedStack = null, openStack = null;
+        int appSlot = -1;
+        void AddApp(Border tile, bool isPinned)
+        {
+            if (appSlot < 0)
+            {
+                appSlot = row.Children.Count;
+                row.Children.Add(new Border());
+            }
+            if (isPinned && P.StickyPinnedApps) (pinnedStack ??= new StackPanel { Orientation = Orientation.Horizontal }).Children.Add(tile);
+            else (openStack ??= new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom }).Children.Add(tile);
+        }
         foreach (var id in tiles)
         {
             if (id == "Start") row.Children.Add(StartTile(tileHeight));
@@ -448,12 +504,12 @@ internal sealed partial class DockWindow : Window
                 var menu = CommonMenu();
                 menu.Items.Insert(0, Menu("Remove from dock", () => { P.FileGroups.Remove(id); model.ToggleWidget(id); }));
                 tile.ContextMenu = menu;
-                row.Children.Add(tile);
+                AddApp(tile, true);
             }
             else if (id.StartsWith("app:", StringComparison.Ordinal))
             {
                 groups.TryGetValue(WindowsShell.MatchApp(id[4..]), out var running);
-                row.Children.Add(AppTile(id, running ?? [], tileHeight, iconSize));
+                AddApp(AppTile(id, running ?? [], tileHeight, iconSize), P.Items.Contains(id, StringComparer.OrdinalIgnoreCase));
             }
             else if (Widgets.Available.TryGetValue(id, out var widget))
             {
@@ -462,7 +518,7 @@ internal sealed partial class DockWindow : Window
                     id == "Quick Toggles" ? name =>
                     {
                         if (name is "Wi-Fi" or "Bluetooth") OpenWidget(name, tile);
-                        else WindowsShell.Launch(Widgets.QuickLinks.First(item => item.Name == name).Address);
+                        else OpenWidget("Quick Toggles", tile); // Ethernet, хот-спот, «В самолёте»: панель быстрых настроек, а не окно параметров
                     } : null);
                 faces.Add(update);
                 tile = Tile(id, face, Widgets.WidthOf(P, widget), tileHeight, () => OpenWidget(id, tile));
@@ -490,6 +546,40 @@ internal sealed partial class DockWindow : Window
             }
         }
 
+        if (appSlot >= 0)
+        {
+            var host = new StackPanel { Orientation = Orientation.Horizontal };
+            if (pinnedStack is not null) host.Children.Add(pinnedStack);
+            if (openStack is not null)
+            {
+                // окно просмотра списка выше плиток на запас под увеличение значков (иначе увеличенные значки обрезались бы), а сам ряд остаётся прежней высоты
+                double headroom = P.Magnification ? tileHeight * (Math.Clamp(P.MagnificationScale, 1.2, 3) - 1) : 0;
+                var holder = new Grid { Height = tileHeight + headroom };
+                holder.Children.Add(openStack);
+                var scroller = new ScrollViewer
+                {
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    Content = holder, Margin = new(0, -headroom, 0, 0)
+                };
+                scroller.PreviewMouseWheel += (_, e) =>
+                {
+                    if (scroller.ScrollableWidth <= 0) return;
+                    ScrollApps(e.Delta);
+                    e.Handled = true;
+                };
+                // пока список плавно едет к цели, положение ведёт StepScroll; после остановки подхватываем то, что оставил ScrollViewer (он мог обрезать смещение)
+                scroller.ScrollChanged += (_, e) =>
+                {
+                    if (e.HorizontalChange == 0 || Math.Abs(appScrollTarget - appScrollOffset) >= .5) return;
+                    appScrollOffset = appScrollTarget = scroller.HorizontalOffset;
+                };
+                host.Children.Add(scroller);
+                appScroller = scroller;
+                Dispatcher.BeginInvoke(() => scroller.ScrollToHorizontalOffset(appScrollOffset), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+            row.Children.RemoveAt(appSlot);
+            row.Children.Insert(appSlot, host);
+        }
         if (row.Children.Count == 0)
             row.Children.Add(Tile("Widgets", Symbol("\uE71D"), 47, tileHeight, () => OpenGallery()));
         row.LayoutTransform = new ScaleTransform(scale, scale);
@@ -539,6 +629,18 @@ internal sealed partial class DockWindow : Window
         return wallpaperBrush;
     }
 
+    // Повторный Measure «вручную» пропускает ветку, которую не пометили устаревшей: помечаем весь путь от элемента до верхнего
+    private static void InvalidateUp(UIElement leaf, UIElement top)
+    {
+        DependencyObject? node = leaf;
+        while (node is not null)
+        {
+            if (node is UIElement element) element.InvalidateMeasure();
+            if (ReferenceEquals(node, top)) break;
+            node = VisualTreeHelper.GetParent(node);
+        }
+    }
+
     private void PlaceLayout(FrameworkElement inner, bool renegotiate = false)
     {
         if (placing) return;
@@ -559,6 +661,22 @@ internal sealed partial class DockWindow : Window
             var width = screenPx.Width / dpi.DpiScaleX;
             inner.LayoutTransform = Transform.Identity;
             inner.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            if (appScroller is { Content: FrameworkElement scrolled } viewer)
+            {
+                // не хватает места: сначала ужимается список открытых приложений (он прокручивается колесом), и лишь если и этого мало, сжимается весь док
+                viewer.MaxWidth = double.PositiveInfinity;
+                InvalidateUp(viewer, inner);
+                inner.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                double over = inner.DesiredSize.Width + 2 - (width - 10);
+                if (over > 0)
+                {
+                    double factor = (((inner as Border)?.Child as FrameworkElement)?.LayoutTransform as ScaleTransform)?.ScaleX ?? 1;
+                    double natural = scrolled.DesiredSize.Width;
+                    viewer.MaxWidth = Math.Max(Math.Min(natural, 110), natural - (over + 8) / factor); // +8: запас на округление, чтобы док не сжимался на доли процента
+                    InvalidateUp(viewer, inner);
+                    inner.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                }
+            }
             var fit = Math.Min(1, (width - 10) / Math.Max(1, inner.DesiredSize.Width + 2));
             if (fit < 1)
             {
@@ -664,11 +782,10 @@ internal sealed partial class DockWindow : Window
         var tile = Tile("Start", logo, height, height, () => WindowsShell.Key(0x5B));
         var menu = CommonMenu();
         menu.Items.Insert(0, Menu("Power user menu", () => WindowsShell.Key(0x5B, 0x58)));
-        menu.Items.Insert(1, Menu("Task Manager", () => WindowsShell.Launch("taskmgr.exe")));
-        menu.Items.Insert(2, Menu("File Explorer", () => WindowsShell.Launch("explorer.exe")));
-        menu.Items.Insert(3, Menu("Windows Settings", () => WindowsShell.Launch("ms-settings:")));
-        menu.Items.Insert(4, Menu("Search", () => WindowsShell.Key(0x5B, 0x53)));
-        menu.Items.Insert(5, Menu("Show Desktop", () => WindowsShell.Key(0x5B, 0x44)));
+        menu.Items.Insert(1, Menu("File Explorer", () => WindowsShell.Launch("explorer.exe")));
+        menu.Items.Insert(2, Menu("Windows Settings", () => WindowsShell.Launch("ms-settings:")));
+        menu.Items.Insert(3, Menu("Search", () => WindowsShell.Key(0x5B, 0x53)));
+        menu.Items.Insert(4, Menu("Show Desktop", () => WindowsShell.Key(0x5B, 0x44)));
         tile.ContextMenu = menu;
         return tile;
     }
@@ -872,6 +989,123 @@ internal sealed partial class DockWindow : Window
 
     internal void ClosePreviewTest() => CloseThumbnail();
 
+    // Поворот колеса на delta: сдвигает цель прокрутки списка приложений, к которой список плавно едет по кадрам (StepScroll)
+    internal void ScrollApps(double delta)
+    {
+        if (appScroller is null) return;
+        appScrollTarget = Math.Clamp(appScrollTarget - delta * .75, 0, appScroller.ScrollableWidth);
+    }
+
+    private void StepScroll(double dt)
+    {
+        if (appScroller is null) return;
+        appScrollTarget = Math.Clamp(appScrollTarget, 0, appScroller.ScrollableWidth);
+        double gap = appScrollTarget - appScrollOffset;
+        if (gap == 0) return;
+        appScrollOffset = Math.Abs(gap) < .5 ? appScrollTarget : appScrollOffset + gap * (1 - Math.Exp(-dt * 16));
+        appScroller.ScrollToHorizontalOffset(appScrollOffset);
+    }
+
+    // Для самопроверки: при множестве открытых программ док не сжимается, а список прокручивается; закреплённые приложения при этом не двигаются
+    internal string? ScrollCheck(string? shots = null)
+    {
+        var saved = windows;
+        bool sticky = P.StickyPinnedApps;
+        try
+        {
+            P.StickyPinnedApps = true;
+            windows = Enumerable.Range(0, 70).Select(n => new WindowsShell.WindowInfo(0, "Test " + n, @"C:\Fake\app" + n + ".exe", "app" + n)).ToList();
+            Refresh();
+            UpdateLayout();
+            if (appScroller is null) return "список приложений не появился";
+            if (appScroller.ScrollableWidth <= 0) return "прокрутка не нужна при 70 открытых программах";
+            if ((background.Child as FrameworkElement)?.LayoutTransform is ScaleTransform { ScaleX: < .98 } squeezed)
+                return $"док сжался вместо прокрутки: масштаб {squeezed.ScaleX:0.00}, ширина дока {ActualWidth:0}";
+            var apps = magnets.Where(item => item.App).ToList();
+            var pinnedTile = apps.First().Tile;
+            var openTile = apps.Last().Tile;
+            double pinnedBefore = RowOffset(pinnedTile), openBefore = RowOffset(openTile);
+            ScrollApps(-400); // колесо «вниз»: список уезжает влево
+            StepScroll(1 / 60.0);
+            UpdateLayout();
+            double firstFrame = appScroller.HorizontalOffset;
+            if (firstFrame <= 1 || firstFrame >= appScrollTarget - 1) return $"прокрутка не плавная: после первого кадра {firstFrame:0} из {appScrollTarget:0}";
+            for (int frame = 0; frame < 150; frame++) StepScroll(1 / 60.0);
+            UpdateLayout();
+            if (Math.Abs(appScroller.HorizontalOffset - appScrollTarget) > 1) return $"список не доехал до цели: {appScroller.HorizontalOffset:0} из {appScrollTarget:0}";
+            if (appScroller.HorizontalOffset < 100) return "колесо не прокрутило список";
+            if (Math.Abs(RowOffset(pinnedTile) - pinnedBefore) > 1) return "закреплённое приложение сдвинулось при прокрутке";
+            if (RowOffset(openTile) > openBefore - 100) return "открытое приложение не сдвинулось при прокрутке";
+            double screenWidth = (display.Right - display.Left) / VisualTreeHelper.GetDpi(this).DpiScaleX;
+            if (ActualWidth > screenWidth + 1) return "док шире экрана";
+            if (shots is not null) Program.Capture(this, Path.Combine(shots, "scroll-rest.png"));
+            // прокрученный список с увеличением значков: зазоры между соседними плитками такие же, как в покое (ни наложений, ни лишних щелей), где бы ни стоял указатель
+            bool magnified = P.Magnification;
+            P.Magnification = true;
+            try
+            {
+                var viewport = appScroller.TransformToAncestor(magnetRow!).TransformBounds(new Rect(0, 0, appScroller.ActualWidth, 1));
+                // плитки слева направо и зазоры между соседними; из списка берутся те, у кого середина видна (так же, как в раскладке увеличения)
+                Dictionary<(int, int), double> Gaps()
+                {
+                    var rects = magnets.Select((item, index) => (Index: index, Rect: item.Tile.TransformToAncestor(magnetRow!)
+                            .TransformBounds(new Rect(0, 0, item.Tile.ActualWidth, item.Tile.ActualHeight)), Listed: appScroller.IsAncestorOf(item.Tile)))
+                        .Where(entry => !entry.Listed || (RowOffset(magnets[entry.Index].Tile) + magnets[entry.Index].Tile.ActualWidth / 2 is var middle
+                            && middle >= viewport.Left && middle <= viewport.Right))
+                        .OrderBy(entry => entry.Rect.Left).ToList();
+                    var gaps = new Dictionary<(int, int), double>();
+                    for (int n = 1; n < rects.Count; n++) gaps[(rects[n - 1].Index, rects[n].Index)] = rects[n].Rect.Left - rects[n - 1].Rect.Right;
+                    return gaps;
+                }
+                var rest = Gaps();
+                double pinnedMiddle = RowOffset(pinnedTile) + pinnedTile.ActualWidth / 2;
+                foreach (var (name, point) in new[] { ("pinned", pinnedMiddle), ("list-0.15", viewport.Left + viewport.Width * .15),
+                    ("list-0.50", viewport.Left + viewport.Width * .5), ("list-0.85", viewport.Left + viewport.Width * .85) })
+                {
+                    magnetLast = point;
+                    magnetX = point;
+                    for (int step = 0; step < 90; step++) MagnifyStep(.03);
+                    if (shots is not null) Program.Capture(this, Path.Combine(shots, $"scroll-hover-{name}.png"));
+                    foreach (var (pair, gap) in Gaps())
+                        if (rest.TryGetValue(pair, out double was) && Math.Abs(gap - was) > 1.5)
+                            return $"зазор между плитками #{pair.Item1} и #{pair.Item2} при указателе «{name}»: {gap:0.0} px вместо {was:0.0}";
+                }
+            }
+            finally
+            {
+                P.Magnification = magnified;
+                magnetX = null;
+                for (int step = 0; step < 200; step++) MagnifyStep(.03);
+            }
+            return "";
+        }
+        finally
+        {
+            windows = saved;
+            P.StickyPinnedApps = sticky;
+            appScrollOffset = appScrollTarget = 0;
+            Refresh();
+        }
+    }
+
+    // Для самопроверки: снимок дока с настоящими открытыми окнами этого компьютера (как выглядят их значки)
+    internal void CaptureRealApps(string path)
+    {
+        var saved = windows;
+        try
+        {
+            windows = WindowsShell.Windows();
+            Refresh();
+            UpdateLayout();
+            Program.Capture(this, path);
+        }
+        finally
+        {
+            windows = saved;
+            Refresh();
+        }
+    }
+
     internal DockModel Model => model;
 
     // Для самопроверки: есть ли в доке плитка нужной ширины
@@ -899,6 +1133,7 @@ internal sealed partial class DockWindow : Window
         var menu = DockMenu();
         menu.Items.Add(Menu("Widgets…", () => OpenGallery(), MenuWidgetsIcon()));
         menu.Items.Add(Menu("Settings", () => OpenSettings(), MenuGlyph("")));
+        menu.Items.Add(Menu("Task Manager", () => WindowsShell.Launch("taskmgr.exe")));
         menu.Items.Add(new Separator());
         menu.Items.Add(Menu("Pin Windows folder", () => { if (!P.Locked) OpenFolderPin(); }));
         menu.Items.Add(Menu("Pin file or app…", () =>
@@ -907,6 +1142,7 @@ internal sealed partial class DockWindow : Window
             if (dialog.ShowDialog() != true) return;
             PinPaths(dialog.FileNames);
         }));
+        menu.Items.Add(Menu("Report a problem…", () => OpenBugReport()));
         menu.Items.Add(Menu("Quit FlowBar", Close));
         return menu;
     }
