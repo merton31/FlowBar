@@ -175,6 +175,9 @@ internal static partial class WindowsShell
 
     public static ImageSource? Icon(string app, nint window = default)
     {
+        // сначала значок высокого разрешения из оболочки (до 256 px): значок окна и ExtractAssociatedIcon дают только 32 px, они расплываются на плитке и при увеличении
+        var sharp = HighResIcon(MatchApp(app));
+        if (sharp is not null) return sharp;
         if (window != 0)
         {
             SendMessageTimeout(window, 0x7F, 1, 0, 2, 50, out var icon);
@@ -188,6 +191,40 @@ internal static partial class WindowsShell
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or System.ComponentModel.Win32Exception)
         { return null; }
+    }
+
+    [ComImport, Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellImageFactory
+    {
+        [PreserveSig] int GetImage(ImageSize size, uint flags, out nint bitmap);
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct ImageSize { public int Width, Height; }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHCreateItemFromParsingName(string path, nint context, ref Guid id, out IShellImageFactory item);
+    [DllImport("gdi32.dll", EntryPoint = "DeleteObject")] private static extern bool DeleteShellBitmap(nint bitmap);
+
+    // Значок файла, ярлыка или программы из оболочки Windows в высоком разрешении и с прозрачностью; null — оболочка значок не отдала
+    public static BitmapSource? HighResIcon(string? path, int size = 256)
+    {
+        if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path) || !(File.Exists(path) || Directory.Exists(path))) return null;
+        var id = typeof(IShellImageFactory).GUID;
+        IShellImageFactory? factory = null;
+        nint bitmap = 0;
+        try
+        {
+            if (SHCreateItemFromParsingName(path, 0, ref id, out factory) != 0 || factory is null) return null;
+            // SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY
+            if (factory.GetImage(new ImageSize { Width = size, Height = size }, 0x1 | 0x4, out bitmap) != 0 || bitmap == 0) return null;
+            var source = Imaging.CreateBitmapSourceFromHBitmap(bitmap, 0, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            source.Freeze();
+            return source;
+        }
+        catch (Exception ex) when (ex is COMException or ArgumentException or InvalidOperationException or NotSupportedException) { return null; }
+        finally
+        {
+            if (bitmap != 0) DeleteShellBitmap(bitmap);
+            if (factory is not null) Marshal.ReleaseComObject(factory);
+        }
     }
 
     private static ImageSource MakeIcon(nint icon)

@@ -465,10 +465,24 @@ internal sealed partial class DockWindow : Window
                         else WindowsShell.Launch(Widgets.QuickLinks.First(item => item.Name == name).Address);
                     } : null);
                 faces.Add(update);
-                tile = Tile(id, face, widget.Width, tileHeight, () => OpenWidget(id, tile));
+                tile = Tile(id, face, Widgets.WidthOf(P, widget), tileHeight, () => OpenWidget(id, tile));
                 if (id == "Pomodoro") tile.BorderBrush = Brush("#FF4A43");
                 var menu = CommonMenu();
                 if (!model.IsPinned(id)) menu.Items.Insert(0, Menu("Remove from dock", () => model.ToggleWidget(id)));
+                var sizes = Widgets.SizeChoices(id);
+                if (sizes.Length > 0)
+                {
+                    // размер виджета: заголовок и варианты, у текущего галочка
+                    double now = Widgets.WidthOf(P, widget);
+                    int at = 0;
+                    menu.Items.Insert(at++, MenuHeader("Widget size"));
+                    foreach (var (label, width) in sizes)
+                    {
+                        double chosen = width;
+                        menu.Items.Insert(at++, Menu(label, () => { P.WidgetWidths[id] = chosen; model.Save(); }, Math.Abs(chosen - now) < 1 ? MenuGlyph("\uE73E") : null));
+                    }
+                    menu.Items.Insert(at, new Separator());
+                }
                 if (Widgets.Styles(id).Length > 1)
                     menu.Items.Insert(0, Menu("Widget style…", () => OpenWidgetStyles(id, tile)));
                 tile.ContextMenu = menu;
@@ -665,6 +679,7 @@ internal sealed partial class DockWindow : Window
         if (!icons.TryGetValue(path, out var image) || image is null && running.Count > 0)
             icons[path] = image = WindowsShell.Icon(path, running.FirstOrDefault()?.Handle ?? 0);
         FrameworkElement graphic = image is null ? Symbol("\uE8A7", iconSize * .7) : new Image { Source = image, Width = iconSize, Height = iconSize };
+        RenderOptions.SetBitmapScalingMode(graphic, BitmapScalingMode.HighQuality);
         var layered = new Grid();
         layered.Children.Add(graphic);
         if (running.Count > 0)
@@ -856,6 +871,11 @@ internal sealed partial class DockWindow : Window
     internal int LiveThumbnails { get; private set; }
 
     internal void ClosePreviewTest() => CloseThumbnail();
+
+    internal DockModel Model => model;
+
+    // Для самопроверки: есть ли в доке плитка нужной ширины
+    internal bool HasTileWidth(double width) => magnets.Any(item => Math.Abs(item.Width - width) < .5);
 
     // Перестроить док: разрешение или положение его монитора могли измениться
     internal void Relayout() => Refresh();

@@ -12,7 +12,7 @@ namespace LumaDock;
 
 internal static partial class WindowsShell
 {
-    internal record TrayItem(string Name, string Id, nint Window, AutomationElement? Element, BitmapSource? Icon);
+    internal record TrayItem(string Name, string Id, nint Window, AutomationElement? Element, BitmapSource? Icon, Action? Open = null);
     internal record TraySnapshot(TrayItem[] Pinned, TrayItem[] Overflow, TrayItem? Chevron, bool HasVisibleTray, bool OverflowOpen);
 
     private static readonly System.Windows.Automation.Condition TrayControls = new OrCondition(
@@ -80,6 +80,60 @@ internal static partial class WindowsShell
         }
         return new(pinned.DistinctBy(item => item.Id).ToArray(), overflow.DistinctBy(item => item.Id).ToArray(),
             chevron, taskbars.Count > 0, overflows.Count > 0);
+    }
+
+    // Запасной список, когда панель задач Windows скрыта (режим «Заменить панель задач Windows») и её значки трея прочитать нельзя:
+    // запущенные программы из HKCU\Control Panel\NotifyIconSettings, то есть те, у кого есть значок в области уведомлений. Нажатие открывает программу.
+    internal static TrayItem[] TrayApps()
+    {
+        var found = new List<(bool Promoted, int Order, TrayItem Item)>();
+        try
+        {
+            using var root = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\NotifyIconSettings");
+            if (root is null) return [];
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "explorer", "FlowBar", "LumaDock" };
+            foreach (string name in root.GetSubKeyNames())
+            {
+                using var key = root.OpenSubKey(name);
+                string path = key?.GetValue("ExecutablePath") as string ?? "";
+                string exe = System.IO.Path.GetFileNameWithoutExtension(path);
+                if (key is null || exe.Length == 0 || !seen.Add(exe)) continue;
+                string? real = null;
+                var processes = System.Diagnostics.Process.GetProcessesByName(exe);
+                foreach (var process in processes)
+                {
+                    try { real ??= process.MainModule?.FileName; }
+                    catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+                    process.Dispose();
+                }
+                if (processes.Length == 0) continue;
+                string title = key.GetValue("InitialTooltip") as string ?? "";
+                try
+                {
+                    var description = real is null ? null : System.Diagnostics.FileVersionInfo.GetVersionInfo(real).FileDescription;
+                    if (!string.IsNullOrWhiteSpace(description)) title = description.Trim();
+                }
+                catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException) { }
+                title = title.Split('\n')[0].Trim();
+                if (title.Length == 0) title = exe;
+                if (title.Length > 40) title = title[..39] + "…";
+                string launch = real ?? "";
+                void Open()
+                {
+                    foreach (var process in System.Diagnostics.Process.GetProcessesByName(exe))
+                    {
+                        nint window = process.MainWindowHandle;
+                        process.Dispose();
+                        if (window != 0) { Activate(window); return; }
+                    }
+                    if (launch.Length > 0) Launch(launch); // вторая копия обычно просто показывает окно первой
+                }
+                found.Add((key.GetValue("IsPromoted") is int promoted && promoted != 0, key.GetValue("UIOrder") is int order ? order : int.MaxValue,
+                    new TrayItem(title, "app:" + exe, 0, null, HighResIcon(real), Open)));
+            }
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or System.IO.IOException) { return []; }
+        return found.OrderByDescending(entry => entry.Promoted).ThenBy(entry => entry.Order).Select(entry => entry.Item).Take(28).ToArray();
     }
 
     internal static bool IsOverflowButton(string kind, string id, string label) =>
