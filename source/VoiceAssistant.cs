@@ -38,6 +38,30 @@ internal static class VoiceAssistant
         "claude" => "Claude Code", "agy" => "Gemini (Antigravity CLI)", "codex" => "Codex", _ => "Notes only"
     };
 
+    internal sealed record Connection(bool Found, bool Ok, string Message, TimeSpan Elapsed);
+
+    // Проверка связи с помощником: программа найдена и отвечает на короткий запрос тем же путём, что и разбор диктовки (вход в аккаунт, сеть, схема ответа)
+    public static async Task<Connection> CheckAsync(string provider, CancellationToken stop)
+    {
+        var timer = Stopwatch.StartNew();
+        if (!Fixture && Binary(provider) is null)
+            return new(false, false, "The selected assistant was not found. Install it and sign in, or save the text without AI.", timer.Elapsed);
+        try
+        {
+            await StructureAsync(provider, "Проверка связи. Ничего добавлять не нужно.", stop);
+            return new(true, true, "", timer.Elapsed);
+        }
+        catch (AssistantException ex)
+        {
+            return new(true, false, ex.Message == "The assistant could not analyse the dictation."
+                ? "The assistant did not respond correctly. Check that you are signed in." : ex.Message, timer.Elapsed);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException or IOException)
+        {
+            return new(true, false, "The assistant answered, but not in the expected format.", timer.Elapsed);
+        }
+    }
+
     // Проверка Claude Code: консольная программа Windows с названием продукта или именем claude.exe
     internal static bool IsClaudeCode(string path)
     {
@@ -240,7 +264,9 @@ internal static class VoiceAssistant
         limit.CancelAfter(timeout);
         try
         {
-            await using (var stream = process.StandardInput.BaseStream) await stream.WriteAsync(Encoding.UTF8.GetBytes(input), limit.Token);
+            // помощник мог завершиться, не дочитав запрос (например, отказ по региону): канал закрыт, причину покажет его ответ
+            try { await using (var stream = process.StandardInput.BaseStream) await stream.WriteAsync(Encoding.UTF8.GetBytes(input), limit.Token); }
+            catch (IOException) { }
             await process.WaitForExitAsync(limit.Token);
         }
         catch (OperationCanceledException)
@@ -250,7 +276,10 @@ internal static class VoiceAssistant
             throw new AssistantException("The assistant took too long to answer.");
         }
         string result = await output;
-        await error;
+        string errors = await error;
+        // Antigravity при региональном ограничении пишет причину только в stderr и выходит с кодом 1, результата нет
+        if (errors.Contains("not currently available in your location", StringComparison.OrdinalIgnoreCase))
+            throw new AssistantException("Gemini is not available for this account in the current region. Use Codex or Claude, or save the text without AI.");
         if (process.ExitCode != 0 && !(tolerateExit && !string.IsNullOrWhiteSpace(result)))
             throw new AssistantException("The assistant could not analyse the dictation.");
         return result;

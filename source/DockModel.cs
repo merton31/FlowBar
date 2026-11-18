@@ -21,6 +21,8 @@ internal sealed class Preferences
     // распознавание речи: handy или встроенный движок local (LocalVoice.cs) и выбранная модель
     public string VoiceEngine { get; set; } = "handy";
     public string VoiceModel { get; set; } = "";
+    // Версии моделей распознавания, найденные проверкой обновления (LocalVoice.ModelPin)
+    public Dictionary<string, LocalVoice.ModelPin> VoiceModelPins { get; set; } = [];
     // доступ агентов через MCP (AgentServer.cs): запись задач и заметок включена, чтение задач и заметок разрешается отдельно
     public bool Agent { get; set; } = true;
     public bool AgentRead { get; set; }
@@ -37,6 +39,8 @@ internal sealed class Preferences
     public bool WindowPreviews { get; set; } = true;
     public bool AppCards { get; set; } = true;
     public bool AppBadges { get; set; } = true;
+    // Если подключено несколько мониторов, на каждом из них свой док (по умолчанию включено)
+    public bool AllMonitors { get; set; } = true;
     // Плеер в доке по умолчанию в виде обложки с кнопками; у уже существующего профиля меняется один раз
     public bool PlayerArtworkApplied { get; set; }
     public bool Magnification { get; set; }
@@ -135,6 +139,7 @@ internal sealed class DockModel
                 .OfType<string>().Select(shortcut => "app:" + shortcut);
             Settings.Items.InsertRange(Settings.Items.IndexOf("app:explorer.exe") + 1, available);
         }
+        LocalVoice.Pins = Settings.VoiceModelPins;
         if (!Settings.PlayerArtworkApplied)
         {
             Settings.PlayerArtworkApplied = true;

@@ -234,7 +234,7 @@ internal sealed partial class DockWindow
         engineRow.Margin = new(0, 8, 0, 0);
         var models = ComboField(190, Accent(P), L10n.T("Model"));
         foreach (var item in LocalVoice.Models) models.Items.Add(L10n.T(item.Label));
-        models.SelectedIndex = Array.IndexOf(LocalVoice.Models, LocalVoice.Selected(P.VoiceModel));
+        models.SelectedIndex = Array.FindIndex(LocalVoice.Models, item => item.Id == LocalVoice.Selected(P.VoiceModel).Id);
         var download = Button(Text(L10n.T("Download and enable"), 13, false, Paper), () => { }, Brush("#3A3A3C"), 12);
         download.Padding = new(14, 6, 14, 6);
         download.HorizontalAlignment = HorizontalAlignment.Center;
@@ -264,7 +264,7 @@ internal sealed partial class DockWindow
         download.Click += async (_, _) =>
         {
             if (!LocalVoice.Supported) { status.Text = L10n.T("The built-in engine needs 64-bit Windows on an Intel or AMD processor."); return; }
-            var chosen = LocalVoice.Models[Math.Max(0, models.SelectedIndex)];
+            var chosen = LocalVoice.Selected(LocalVoice.Models[Math.Max(0, models.SelectedIndex)].Id);
             download.IsEnabled = models.IsEnabled = engine.IsEnabled = false;
             try
             {

@@ -37,6 +37,6 @@ dotnet publish source\FlowBar.csproj -c Release -r win-x64 --self-contained true
   -p:TreatWarningsAsErrors=true -o build
 ```
 
-Проверки (каждая пишет `result.txt` в указанную пустую папку, успех — строка `OK`): `FlowBar.exe --smoke <папка>`, `--audit-ui`, `--check-install`, `--check-dictation`, `--check-places`, `--check-jumplist`, `--preview-glass`, `--check-live`. Подробнее — в [CLAUDE.md](CLAUDE.md).
+Проверки (каждая пишет `result.txt` в указанную пустую папку, успех — строка `OK`): `FlowBar.exe --smoke <папка>`, `--audit-ui`, `--check-install`, `--check-dictation`, `--check-places`, `--check-jumplist`, `--preview-glass`, `--check-live`, а также `--check-connections` (настоящие запросы к помощникам и репозиторию моделей). Подробнее — в [CLAUDE.md](CLAUDE.md).
 
 Дизайн и набор виджетов вдохновлены Lumabar. FlowBar — самостоятельный проект, не связанный с авторами Lumabar. Логотипы сервисов в галерее принадлежат их владельцам.

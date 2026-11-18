@@ -45,7 +45,82 @@ internal static class LocalVoice
     private static string HandyModelsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "com.pais.handy", "models");
     internal static bool Supported => Environment.Is64BitProcess && !HandyInstaller.IsArm();
 
-    public static Model Selected(string? id) => Models.FirstOrDefault(model => model.Id == id) ?? Models[0];
+    // Версия модели, найденная проверкой обновления: ревизия, размер и SHA-256 из репозитория переопределяют встроенные значения (хранится в профиле)
+    internal sealed class ModelPin
+    {
+        public string Revision { get; set; } = "";
+        public string Digest { get; set; } = "";
+        public long Size { get; set; }
+    }
+    internal static Dictionary<string, ModelPin> Pins { get; set; } = [];
+
+    public static Model Selected(string? id)
+    {
+        var model = Models.FirstOrDefault(item => item.Id == id) ?? Models[0];
+        return Pins.TryGetValue(model.Id, out var pin) && pin.Digest.Length == 64 && pin.Size > 0
+            ? model with { Revision = pin.Revision, Digest = pin.Digest, Size = pin.Size } : model;
+    }
+
+    public static bool EngineReady => File.Exists(Path.Combine(EngineFolder, "transcribe.dll"));
+    internal enum ModelState { Missing, WrongSize, Corrupt, Ok }
+
+    // Состояние файла модели: нет, другой размер, не сошлась сумма SHA-256 или всё в порядке
+    public static async Task<ModelState> VerifyAsync(Model model, CancellationToken stop)
+    {
+        string path = ModelPath(model);
+        if (!File.Exists(path)) return ModelState.Missing;
+        if (!SizeMatches(path, model)) return ModelState.WrongSize;
+        return await Sha256Async(path, stop) == model.Digest ? ModelState.Ok : ModelState.Corrupt;
+    }
+
+    internal sealed record Remote(string Revision, string Digest, long Size);
+
+    // Последняя версия модели в репозитории Hugging Face: ревизия, размер и SHA-256 файла
+    public static async Task<Remote> LatestAsync(Model model, CancellationToken stop)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        limit.CancelAfter(TimeSpan.FromSeconds(30));
+        return ParseRemote(await Http.GetStringAsync("https://huggingface.co/api/models/handy-computer/" + model.Id + "-gguf?blobs=true", limit.Token), model.FileName);
+    }
+
+    internal static Remote ParseRemote(string json, string fileName)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        string revision = root.GetProperty("sha").GetString() ?? "";
+        foreach (var file in root.GetProperty("siblings").EnumerateArray())
+        {
+            if (file.GetProperty("rfilename").GetString() != fileName) continue;
+            long size = file.GetProperty("size").GetInt64();
+            string digest = (file.GetProperty("lfs").GetProperty("sha256").GetString() ?? "").ToLowerInvariant();
+            if (revision.Length != 40 || !revision.All(Uri.IsHexDigit) || digest.Length != 64 || !digest.All(Uri.IsHexDigit) || size <= 0 || size > 1L << 31)
+                throw new InvalidDataException("The repository returned an unexpected description of the model.");
+            return new(revision, digest, size);
+        }
+        throw new InvalidDataException("The model file is not in the repository.");
+    }
+
+    // Скачивает указанную версию модели: размер и SHA-256 берутся из репозитория, старый файл заменяется только после проверки
+    public static async Task InstallRemoteAsync(Model model, Remote remote, Action<string> progress, CancellationToken stop)
+    {
+        if (installing) return;
+        installing = true;
+        string staging = Path.Combine(Root, "download-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(staging);
+            string candidate = Path.Combine(staging, model.FileName);
+            await FetchAsync("https://huggingface.co/handy-computer/" + model.Id + "-gguf/resolve/" + remote.Revision + "/" + model.FileName,
+                candidate, remote.Digest, remote.Size, progress, L10n.T("model"), stop);
+            Directory.CreateDirectory(ModelsFolder);
+            File.Move(candidate, ModelPath(model), true);
+        }
+        finally
+        {
+            installing = false;
+            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
     internal static string ModelPath(Model model) => Path.Combine(ModelsFolder, model.FileName);
     private static bool SizeMatches(string file, Model model) => File.Exists(file) && new FileInfo(file).Length == model.Size;
     public static bool Ready(Model model) => File.Exists(Path.Combine(EngineFolder, "transcribe.dll")) && SizeMatches(ModelPath(model), model);

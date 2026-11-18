@@ -30,6 +30,8 @@ internal static partial class Program
             return Agent.ServeMcp();
         if (args.Length == 2 && args[0] == "--check-install")
             return InstallCheck.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--check-connections")
+            return ConnectionCheck.Run(args[1]);
         if (args.Length == 0 && Installer.RunFromElsewhere())
             return 0; // запущен не из папки установки: поставил себя и запустил установленную копию
         if (args.Length == 4 && args[0] == "--voice-local")
@@ -69,6 +71,7 @@ internal static partial class Program
         try
         {
             var dock = new DockWindow(model, smoke, liveCheck || glassPreview);
+            if (!testing) dock.Loaded += (_, _) => Monitors.Attach(model, dock);
             if (testing)
             {
                 dock.ContentRendered += (_, _) => dock.Dispatcher.BeginInvoke(async () =>
@@ -132,7 +135,7 @@ internal static partial class Program
                         Capture(surface, Path.Combine(args[1], "settings.png"));
                         VerifyAccentControls(surface, model, args[1]);
                         surface.Close();
-                        foreach (string tab in new[] { "Dock", "Sounds", "Automations" })
+                        foreach (string tab in new[] { "Dock", "Sounds", "Automations", "General" })
                         {
                             surface = dock.OpenSettings(tab);
                             Capture(surface, Path.Combine(args[1], $"settings-{tab}.png"));
@@ -201,9 +204,12 @@ internal static partial class Program
                         surface.Close();
                         VerifyNotesScrollBar(dock, model, args[1]);
                         await VerifyDictation(dock, model, args[1]);
+                        await VerifyTaskDictation(dock, model, args[1]);
+                        await VerifyMonitors(model);
                         await VerifyAgent(dock, model);
                         await VerifyEndTask(dock);
                         await VerifyLocalVoice();
+                        await VerifyVoiceTools(dock, args[1]);
                         await VerifyHotkeys(dock, model);
                         await VerifyAppMenu(dock, args[1]);
                         await VerifyJumpList();
@@ -659,6 +665,50 @@ internal static partial class Program
 
     // Диктовка: шарик движется, нажатие начинает и останавливает запись, распознанный текст попадает в заметки и сохраняется
     // (в проверке запись и Handy заменены тестовыми: Dictation.Fixture)
+    // Док на втором мониторе: настройка включена по умолчанию, дополнительный док стоит внизу своего монитора и целиком в его границах (на одном мониторе проверка пропускается)
+    private static async System.Threading.Tasks.Task VerifyMonitors(DockModel model)
+    {
+        if (!new Preferences().AllMonitors) throw new InvalidOperationException("The dock must be shown on all monitors by default.");
+        var other = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(screen => !screen.Primary);
+        if (other is null) return;
+        var extra = new DockWindow(model, true, false, other);
+        try
+        {
+            extra.Show();
+            await System.Threading.Tasks.Task.Delay(500);
+            var bounds = extra.ScreenBounds();
+            var area = other.Bounds;
+            if (bounds.Width < 100 || bounds.Left < area.Left - 2 || bounds.Right > area.Right + 2 || bounds.Bottom > area.Bottom + 2 || bounds.Bottom < area.Bottom - area.Height / 4.0)
+                throw new InvalidOperationException($"The dock on the second monitor is misplaced: {bounds} in {area}.");
+        }
+        finally { extra.Close(); }
+    }
+
+    // Кнопка записи в окне задач: первое нажатие начинает запись, второе распознаёт и добавляет задачу
+    private static async System.Threading.Tasks.Task VerifyTaskDictation(DockWindow dock, DockModel model, string folder)
+    {
+        var saved = model.Settings.Todos.ToList();
+        model.Settings.Todos.Clear();
+        var surface = dock.OpenWidget("Todos") ?? throw new InvalidOperationException("Todos did not open.");
+        surface.UpdateLayout();
+        var start = FindControl(surface, L10n.T("Dictate a task")) as Button ?? throw new InvalidOperationException("The task record button is missing.");
+        start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, start));
+        await WaitFor(() => Dictation.IsRecording);
+        var stop = FindControl(surface, L10n.T("Stop dictation")) as Button ?? throw new InvalidOperationException("The task stop button is missing.");
+        Capture(surface, Path.Combine(folder, "tasks-recording.png"));
+        stop.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, stop));
+        await WaitFor(() => model.Settings.Todos.Count == 1);
+        if (Dictation.IsRecording || model.Settings.Todos[0].Text != "Тестовая запись диктовки." || model.Settings.Todos[0].Done)
+            throw new InvalidOperationException("The dictated task was not added.");
+        if (new DockModel(model.Profile).Settings.Todos.Count != 1) throw new InvalidOperationException("The dictated task was not saved.");
+        await WaitFor(() => FindControl(surface, L10n.T("Dictate a task")) is Button { IsEnabled: true });
+        Capture(surface, Path.Combine(folder, "tasks-recorded.png"));
+        surface.Close();
+        model.Settings.Todos.Clear();
+        model.Settings.Todos.AddRange(saved);
+        model.Save(false);
+    }
+
     private static async System.Threading.Tasks.Task VerifyDictation(DockWindow dock, DockModel model, string folder)
     {
         string suffix = L10n.Russian ? "-ru" : "";
@@ -991,6 +1041,71 @@ internal static partial class Program
 
     // Встроенный движок распознавания без настоящих скачиваний (сотни мегабайт): нарезка звука, проверка скачивания по сумме и размеру
     // на локальном сервере, распаковка tar.gz, запуск процесса --voice-local без библиотеки (должен отказать с понятной ошибкой)
+    // Проверка связи с помощниками и обновление модели распознавания: разбор ответа Hugging Face, закреплённая версия, проверка файла по сумме и раздел в настройках
+    private static async System.Threading.Tasks.Task VerifyVoiceTools(DockWindow dock, string folder)
+    {
+        string hello = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData("hello"u8.ToArray())).ToLowerInvariant();
+        string revision = new('a', 40);
+        string json = "{\"sha\":\"" + revision + "\",\"siblings\":[{\"rfilename\":\"readme.md\",\"size\":10},{\"rfilename\":\"m-Q8_0.gguf\",\"size\":5,\"lfs\":{\"sha256\":\"" + hello.ToUpperInvariant() + "\"}}]}";
+        var remote = LocalVoice.ParseRemote(json, "m-Q8_0.gguf");
+        if (remote.Revision != revision || remote.Size != 5 || remote.Digest != hello) throw new InvalidOperationException("The repository answer was parsed wrongly.");
+        foreach (string broken in new[] { json.Replace(hello.ToUpperInvariant(), "abc"), json.Replace("m-Q8_0.gguf", "other.gguf"), json.Replace(revision, "abc") })
+        {
+            try { LocalVoice.ParseRemote(broken, "m-Q8_0.gguf"); throw new InvalidOperationException("A broken repository answer was accepted."); }
+            catch (InvalidDataException) { }
+        }
+
+        string root = Path.Combine(Path.GetTempPath(), "FlowBarVoiceTools-" + Guid.NewGuid().ToString("N"));
+        string? savedRoot = LocalVoice.RootOverride;
+        var savedPins = LocalVoice.Pins;
+        LocalVoice.RootOverride = root;
+        try
+        {
+            var original = LocalVoice.Selected("whisper-small");
+            LocalVoice.Pins = new() { ["whisper-small"] = new LocalVoice.ModelPin { Revision = revision, Digest = hello, Size = 5 } };
+            var pinned = LocalVoice.Selected("whisper-small");
+            if (pinned.Digest != hello || pinned.Size != 5 || pinned.Id != original.Id || LocalVoice.Selected("gigaam-v3-e2e-rnnt").Digest == hello)
+                throw new InvalidOperationException("A pinned model version was not applied.");
+            Directory.CreateDirectory(LocalVoice.ModelsFolder);
+            var none = System.Threading.CancellationToken.None;
+            if (await LocalVoice.VerifyAsync(pinned, none) != LocalVoice.ModelState.Missing) throw new InvalidOperationException("A missing model was not reported.");
+            await File.WriteAllTextAsync(LocalVoice.ModelPath(pinned), "hello");
+            if (await LocalVoice.VerifyAsync(pinned, none) != LocalVoice.ModelState.Ok) throw new InvalidOperationException("An intact model was not recognised.");
+            await File.WriteAllTextAsync(LocalVoice.ModelPath(pinned), "hellp");
+            if (await LocalVoice.VerifyAsync(pinned, none) != LocalVoice.ModelState.Corrupt) throw new InvalidOperationException("A damaged model was not recognised.");
+            await File.WriteAllTextAsync(LocalVoice.ModelPath(pinned), "hi");
+            if (await LocalVoice.VerifyAsync(pinned, none) != LocalVoice.ModelState.WrongSize) throw new InvalidOperationException("A model of another size was not recognised.");
+        }
+        finally
+        {
+            LocalVoice.RootOverride = savedRoot;
+            LocalVoice.Pins = savedPins;
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+
+        // связь с помощником: в проверке ответ подменён, раздел «Диктовка» в настройках и кнопки проверки
+        VoiceAssistant.Fixture = true;
+        try
+        {
+            var connection = await VoiceAssistant.CheckAsync("codex", System.Threading.CancellationToken.None);
+            if (!connection.Ok) throw new InvalidOperationException("The assistant connection check failed in fixture mode.");
+            var settings = dock.OpenSettings("General");
+            settings.UpdateLayout();
+            foreach (string name in new[] { "Codex", "Claude Code", "Gemini (Antigravity CLI)" })
+                if (FindControl(settings, L10n.F($"Check connection: {name}")) is not Button) throw new InvalidOperationException("The connection check button is missing for " + name + ".");
+            var button = (Button)FindControl(settings, L10n.F($"Check connection: Codex"))!;
+            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, button));
+            await WaitFor(() => FaceText(settings).Contains(L10n.F($"Codex: connected, answered in {0.0:0.0} s.")[..22]));
+            string text = FaceText(settings);
+            if (!text.Contains("Check the model") || !text.Contains("Handy keeps its own models")) throw new InvalidOperationException("The model section is missing in the settings.");
+            FindVisual<ScrollViewer>(settings)?.ScrollToEnd();
+            settings.UpdateLayout();
+            Capture(settings, Path.Combine(folder, "settings-dictation.png"));
+            settings.Close();
+        }
+        finally { VoiceAssistant.Fixture = false; }
+    }
+
     private static async System.Threading.Tasks.Task VerifyLocalVoice()
     {
         string root = Path.Combine(Path.GetTempPath(), "LumaDockLocalVoice-" + Guid.NewGuid().ToString("N"));
