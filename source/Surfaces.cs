@@ -243,6 +243,132 @@ internal sealed partial class DockWindow
                     AddToggle(content, "Agent access (MCP)", P.Agent, enabled => P.Agent = enabled);
                     AddToggle(content, "Let agents read tasks and notes", P.AgentRead, enabled => P.AgentRead = enabled);
                     AddRow(content, "MCP command", RawText("\"" + (Environment.ProcessPath ?? "FlowBar.exe") + "\" --mcp", 12, false, Muted));
+                    // Диктовка: связь с помощниками (Codex, Claude Code, Gemini) и модель встроенного движка распознавания
+                    var voiceTitle = Text("Dictation", 18, true);
+                    voiceTitle.Margin = new(0, 18, 0, 4);
+                    content.Children.Add(voiceTitle);
+                    foreach (string provider in new[] { "codex", "claude", "agy" })
+                    {
+                        string who = provider, whoName = VoiceAssistant.DisplayName(provider);
+                        var connection = Text("", 12, false, Muted);
+                        connection.TextWrapping = TextWrapping.Wrap;
+                        connection.Margin = new(4, 2, 0, 6);
+                        var checkButton = Button(Text("Check connection", 13, false, Paper), () => { }, Brush("#3A3A3C"), 12);
+                        checkButton.Padding = new(12, 5, 12, 5);
+                        System.Windows.Automation.AutomationProperties.SetName(checkButton, L10n.F($"Check connection: {whoName}"));
+                        checkButton.Click += async (_, _) =>
+                        {
+                            checkButton.IsEnabled = false;
+                            connection.Foreground = Muted;
+                            connection.Text = L10n.F($"{whoName}: checking the connection…");
+                            try
+                            {
+                                var result = await VoiceAssistant.CheckAsync(who, System.Threading.CancellationToken.None);
+                                connection.Foreground = result.Ok ? Brush("#7BD88F") : Brush("#FF9088");
+                                connection.Text = result.Ok ? L10n.F($"{whoName}: connected, answered in {result.Elapsed.TotalSeconds:0.0} s.")
+                                    : whoName + ": " + L10n.T(result.Message);
+                            }
+                            finally { checkButton.IsEnabled = true; }
+                        };
+                        AddRow(content, whoName, checkButton);
+                        content.Children.Add(connection);
+                    }
+                    var selectedModel = LocalVoice.Selected(P.VoiceModel);
+                    AddRow(content, "Recognition model", Text(selectedModel.Label, 13, false, Muted));
+                    var modelStatus = Text("", 12, false, Muted);
+                    modelStatus.TextWrapping = TextWrapping.Wrap;
+                    modelStatus.Margin = new(4, 2, 0, 6);
+                    var modelCheck = Button(Text("Check the model", 13, false, Paper), () => { }, Brush("#3A3A3C"), 12);
+                    modelCheck.Padding = new(12, 5, 12, 5);
+                    var modelActionLabel = Text("Download the model", 13, false, Paper);
+                    var modelAction = Button(modelActionLabel, () => { }, Brush("#3A3A3C"), 12);
+                    modelAction.Padding = new(12, 5, 12, 5);
+                    modelAction.Margin = new(6, 0, 0, 0);
+                    modelAction.Visibility = Visibility.Collapsed;
+                    Func<System.Threading.Tasks.Task>? modelWork = null;
+                    void ModelSay(string message, bool error = false)
+                    {
+                        modelStatus.Foreground = error ? Brush("#FF9088") : Muted;
+                        modelStatus.Text = message;
+                    }
+                    async System.Threading.Tasks.Task CheckModel()
+                    {
+                        modelCheck.IsEnabled = modelAction.IsEnabled = false;
+                        modelAction.Visibility = Visibility.Collapsed;
+                        modelWork = null;
+                        var lines = new List<string>();
+                        bool trouble = false;
+                        try
+                        {
+                            var current = LocalVoice.Selected(P.VoiceModel);
+                            lines.Add(L10n.T(LocalVoice.EngineReady ? "Engine: ready" : "Engine: not downloaded"));
+                            var state = await LocalVoice.VerifyAsync(current, System.Threading.CancellationToken.None);
+                            lines.Add(L10n.T(state switch
+                            {
+                                LocalVoice.ModelState.Ok => "Model files are intact.",
+                                LocalVoice.ModelState.Missing => "The model is not downloaded.",
+                                _ => "The model files are damaged. Download the model again."
+                            }));
+                            if (state != LocalVoice.ModelState.Ok || !LocalVoice.EngineReady)
+                            {
+                                trouble = true;
+                                modelActionLabel.Text = L10n.T("Download the model");
+                                modelWork = async () =>
+                                {
+                                    if (state is LocalVoice.ModelState.Corrupt or LocalVoice.ModelState.WrongSize) File.Delete(LocalVoice.ModelPath(current));
+                                    await LocalVoice.PrepareAsync(current, text => ModelSay(text), System.Threading.CancellationToken.None);
+                                };
+                            }
+                            try
+                            {
+                                var latest = await LocalVoice.LatestAsync(current, System.Threading.CancellationToken.None);
+                                if (latest.Digest != current.Digest)
+                                {
+                                    trouble = true;
+                                    lines.Add(L10n.T("A newer version of the model is available."));
+                                    modelActionLabel.Text = L10n.T("Update the model");
+                                    modelWork = async () =>
+                                    {
+                                        await LocalVoice.InstallRemoteAsync(current, latest, text => ModelSay(text), System.Threading.CancellationToken.None);
+                                        P.VoiceModelPins[current.Id] = new LocalVoice.ModelPin { Revision = latest.Revision, Digest = latest.Digest, Size = latest.Size };
+                                        model.Save(false);
+                                    };
+                                }
+                                else lines.Add(L10n.T("The model is up to date."));
+                            }
+                            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or System.Threading.Tasks.TaskCanceledException or System.Text.Json.JsonException
+                                or InvalidDataException or KeyNotFoundException or InvalidOperationException)
+                            {
+                                trouble = true;
+                                lines.Add(L10n.T("Could not check for model updates. Check the connection and try again."));
+                            }
+                            ModelSay(string.Join(" ", lines), trouble);
+                            modelAction.Visibility = modelWork is null ? Visibility.Collapsed : Visibility.Visible;
+                        }
+                        finally { modelCheck.IsEnabled = modelAction.IsEnabled = true; }
+                    }
+                    modelCheck.Click += (_, _) => _ = CheckModel();
+                    modelAction.Click += async (_, _) =>
+                    {
+                        if (modelWork is null) return;
+                        modelCheck.IsEnabled = modelAction.IsEnabled = false;
+                        try
+                        {
+                            await modelWork();
+                            await CheckModel();
+                            if (modelWork is null) ModelSay(L10n.T("The model is ready. You can start recording."));
+                        }
+                        catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or System.Threading.Tasks.TaskCanceledException or InvalidDataException or IOException or UnauthorizedAccessException)
+                        {
+                            ModelSay(L10n.T("The engine could not be downloaded. Check the connection and try again."), true);
+                        }
+                        finally { modelCheck.IsEnabled = modelAction.IsEnabled = true; }
+                    };
+                    AddRow(content, "Model check", RowStack(modelCheck, modelAction));
+                    content.Children.Add(modelStatus);
+                    var handyNote = Text("Handy keeps its own models. Update them in Handy.", 12, false, Muted);
+                    handyNote.Margin = new(4, 0, 0, 8);
+                    content.Children.Add(handyNote);
                     AddRow(content, "Local profile", Button("Open folder", () =>
                     {
                         var directory = Path.GetDirectoryName(model.Profile)!;
@@ -462,6 +588,8 @@ internal sealed partial class DockWindow
         if (P.AutoHide)
             DockToggle(dock, "Show on desktop", P.ShowOnDesktop, v => P.ShowOnDesktop = v, "Keep the dock visible while the desktop is active.");
         DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Sound, network switches and theme always stay in the dock.");
+        if (System.Windows.Forms.Screen.AllScreens.Length > 1)
+            DockToggle(dock, "All monitors", P.AllMonitors, v => P.AllMonitors = v, "Show the dock on every connected monitor.");
         DockToggle(dock, "Lock dock", P.Locked, v => P.Locked = v, "Prevent dragging and rearranging items.");
         var behaviour = SettingsGroup(holder, "Behaviour");
         SettingsRow(behaviour, Text("Clock", 14, true), Segments(P.Hour24, value => { P.Hour24 = value; model.Save(); },
@@ -830,7 +958,117 @@ internal sealed partial class DockWindow
         }, Brushes.Transparent);
         toggle.ToolTip = L10n.T("Reminder date");
         System.Windows.Automation.AutomationProperties.SetName(toggle, L10n.T("Schedule reminder"));
-        var footer = Stack(feedback, Right(input, RowStack(schedule, toggle, add)));
+        // Запись голосом в задачи: первое нажатие начинает запись, второе останавливает и распознаёт. Без помощника вся фраза становится одной задачей;
+        // с выбранным помощником текст разбирается на несколько задач со сроками, а заметка из разбора дописывается в заметки (ничего не теряется).
+        var micGlyph = Symbol("\uE720", 15);
+        var mic = Button(micGlyph, () => { }, Brushes.Transparent, 15);
+        bool micBusy = false, micMine = false;
+        var micClock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        void Say(string message, bool error = false)
+        {
+            feedback.Foreground = error ? Brush("#FF9088") : Muted;
+            feedback.Text = message;
+        }
+        void PaintMic()
+        {
+            micGlyph.Text = micMine ? "\uE71A" : "\uE720";
+            mic.Background = micMine ? Brush("#E5484D") : Brushes.Transparent;
+            mic.IsEnabled = !micBusy;
+            string name = L10n.T(micMine ? "Stop dictation" : "Dictate a task");
+            System.Windows.Automation.AutomationProperties.SetName(mic, name);
+            mic.ToolTip = name;
+        }
+        async System.Threading.Tasks.Task RecordTask(bool limit = false)
+        {
+            if (micBusy) return;
+            micBusy = true;
+            PaintMic();
+            string? wav = null;
+            try
+            {
+                if (!Dictation.IsRecording)
+                {
+                    bool local = P.VoiceEngine == "local";
+                    if (!Dictation.Fixture && local && !LocalVoice.Ready(LocalVoice.Selected(P.VoiceModel)))
+                    {
+                        Say(L10n.T("Download the built-in engine first."), true);
+                        return;
+                    }
+                    if (!Dictation.Fixture && !local && Dictation.HandyPath() is null)
+                    {
+                        Say(L10n.T("Handy was not found. Install Handy and its GigaAM v3 model to recognise speech."), true);
+                        return;
+                    }
+                    Say(L10n.T("Connecting the microphone…"));
+                    await Dictation.StartAsync();
+                    micMine = true;
+                    micClock.Start();
+                    Say(L10n.T("Recording… press the button to stop."));
+                }
+                else if (micMine)
+                {
+                    micClock.Stop();
+                    micMine = false;
+                    Say(L10n.T("Recognising speech…"));
+                    wav = await Dictation.StopAsync();
+                    string text = P.VoiceEngine == "local" && !Dictation.Fixture
+                        ? await LocalVoice.TranscribeAsync(LocalVoice.Selected(P.VoiceModel), wav, System.Threading.CancellationToken.None)
+                        : await Dictation.TranscribeAsync(wav, System.Threading.CancellationToken.None,
+                            (index, total) => Say(total > 1 ? L10n.F($"Recognising part {index} of {total}…") : L10n.T("Recognising speech…")));
+                    text = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+                    if (text.Length == 0) { Say(L10n.T("No speech was recognised."), true); return; }
+                    VoiceAssistant.Plan? plan = null;
+                    if (P.VoiceProvider != "none")
+                    {
+                        Say(L10n.F($"{VoiceAssistant.DisplayName(P.VoiceProvider)} is analysing the dictation…"));
+                        try { plan = await VoiceAssistant.StructureAsync(P.VoiceProvider, text, System.Threading.CancellationToken.None); }
+                        catch (Exception ex) when (ex is not OperationCanceledException) { plan = null; } // помощник недоступен: фраза уйдёт одной задачей
+                    }
+                    int added = 0;
+                    if (plan is not null && plan.Tasks.Count > 0)
+                    {
+                        foreach (var task in plan.Tasks) { model.AddTodo(task.Text, task.Due); added++; }
+                        if (plan.Note.Length > 0) Dictation.AppendToNotes(model, plan.Note);
+                    }
+                    else { model.AddTodo(text); added = 1; }
+                    RefreshTodos();
+                    Say(added == 1 ? L10n.T("Task added.") : L10n.F($"Tasks added: {added}"));
+                }
+                else Say(L10n.T("Recording is already running in the dictation window."), true);
+            }
+            catch (Dictation.DictationException ex) { micClock.Stop(); micMine = false; Say(L10n.T(ex.Message), true); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                micClock.Stop();
+                micMine = false;
+                Say(L10n.T("The recording could not be recognised."), true);
+            }
+            finally
+            {
+                Dictation.Discard(wav);
+                micBusy = false;
+                PaintMic();
+            }
+        }
+        micClock.Tick += (_, _) =>
+        {
+            var elapsed = DateTime.Now - Dictation.StartedAt;
+            if (elapsed.TotalMinutes >= Dictation.MaxMinutes) _ = RecordTask(true);
+        };
+        mic.Click += (_, _) => _ = RecordTask();
+        // окно закрыли во время записи: запись выбрасывается, микрофон освобождается
+        content.Unloaded += async (_, _) =>
+        {
+            micClock.Stop();
+            if (micMine && Dictation.IsRecording)
+            {
+                micMine = false;
+                try { Dictation.Discard(await Dictation.StopAsync()); }
+                catch (Exception ex) when (ex is Dictation.DictationException or InvalidOperationException) { }
+            }
+        };
+        PaintMic();
+        var footer = Stack(feedback, Right(input, RowStack(schedule, toggle, mic, add)));
         footer.Margin = new(0, 10, 0, 0);
         DockPanel.SetDock(footer, Dock.Bottom);
         content.Children.Add(footer);

@@ -23,6 +23,9 @@ internal sealed partial class DockWindow : Window
     private readonly DockModel model;
     private readonly bool smoke;
     private readonly bool previewLiveGlass;
+    // Дополнительный док на другом мониторе: общие дела (опрос системы, горячие клавиши, сторож панели задач, уведомления) выполняет только главный док
+    private readonly Screen? monitor;
+    private readonly bool secondary;
     private Preferences P => model.Settings;
     private readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromMilliseconds(250) };
     // Прозрачный режим: стекло снимается на каждом кадре WPF, но не чаще частоты монитора, на котором стоит док (таймер Windows даёт только ~64 Гц, поэтому кадры берём из CompositionTarget.Rendering)
@@ -81,10 +84,12 @@ internal sealed partial class DockWindow : Window
 
     public bool HasLiveBackdrop => liveBackdrop.ImageSource is not null;
 
-    public DockWindow(DockModel model, bool smoke, bool previewLiveGlass = false)
+    public DockWindow(DockModel model, bool smoke, bool previewLiveGlass = false, Screen? monitor = null)
     {
         this.model = model;
         this.smoke = smoke;
+        this.monitor = monitor;
+        secondary = monitor is not null;
         this.previewLiveGlass = previewLiveGlass;
         Title = "FlowBar";
         Language = System.Windows.Markup.XmlLanguage.GetLanguage(L10n.Culture.IetfLanguageTag);
@@ -108,9 +113,9 @@ internal sealed partial class DockWindow : Window
             if (!P.Locked) PinPaths(paths);
         };
         closePreview.Tick += (_, _) => { closePreview.Stop(); CloseThumbnail(); };
-        model.SaveFailed += message => Report(L10n.F($"Could not save the profile.\n{message}"));
+        if (!secondary) model.SaveFailed += message => Report(L10n.F($"Could not save the profile.\n{message}"));
         model.Changed += Refresh;
-        model.Automation.Notify += Toast;
+        if (!secondary) model.Automation.Notify += Toast;
         SourceInitialized += (_, _) =>
         {
             var source = (HwndSource)PresentationSource.FromVisual(this);
@@ -143,8 +148,11 @@ internal sealed partial class DockWindow : Window
                 }
                 return 0;
             });
-            ApplyHotkeys();
-            if (!smoke) WindowsShell.RegisterShellHook(handle);
+            if (!secondary)
+            {
+                ApplyHotkeys();
+                if (!smoke) WindowsShell.RegisterShellHook(handle);
+            }
             Refresh();
         };
         clock.Tick += (_, _) => Tick();
@@ -166,12 +174,14 @@ internal sealed partial class DockWindow : Window
             CompositionTarget.Rendering -= OnRendering;
             CompositionTarget.Rendering -= OnMagnify;
             glass.Dispose();
+            model.Changed -= Refresh;
+            CloseThumbnail();
+            if (reserved) WindowsShell.Release(handle);
+            if (secondary) return;
             model.Media.Dispose();
             model.Activity.Stop();
-            CloseThumbnail();
             if (!smoke) for (int slot = 0; slot < Hotkeys.Items.Length; slot++) SystemHotkey.UnregisterHotKey(handle, slot + 1);
             if (!smoke) WindowsShell.UnregisterShellHook(handle);
-            if (reserved) WindowsShell.Release(handle);
             WindowsShell.RestoreTaskbar();
         };
         ReadLive();
@@ -185,6 +195,14 @@ internal sealed partial class DockWindow : Window
     }
 
     private void ReadLive()
+    {
+        if (!secondary) ReadSystem();
+        if (smoke) return;
+        ReadWindows();
+    }
+
+    // Общие данные о системе читает один главный док, иначе экранное время, звук и сеть считались бы дважды
+    private void ReadSystem()
     {
         model.Usage = WindowsShell.ReadUsage();
         model.Audio = WindowsShell.Audio();
@@ -209,6 +227,10 @@ internal sealed partial class DockWindow : Window
             if (site is null && (!P.TrackWebsites || idle >= TimeSpan.FromMinutes(2))) browserSites.Reset();
             model.Activity.Sample(now, app?.Name, idle, site);
         }
+    }
+
+    private void ReadWindows()
+    {
         var current = WindowsShell.Windows();
         var signature = string.Join('|', current.OrderBy(item => item.Handle).Select(item => $"{item.Handle}:{item.Title}"));
         if (signature == windowSignature) return;
@@ -235,13 +257,13 @@ internal sealed partial class DockWindow : Window
     private bool windowsDirty;
     private void Tick()
     {
-        model.Tick();
+        if (!secondary) model.Tick();
         if (++ticks % 4 == 0)
         {
             ReadLive();
-            if (!smoke) model.Automation.Tick(DateTime.Now);
-            if (!smoke && ticks % 120 == 4) RefreshOnline();
-            if (!smoke && P.ReplaceTaskbar && WindowsShell.TaskbarChanged) WindowsShell.HideTaskbar(P.AutoHideWindows);
+            if (!smoke && !secondary) model.Automation.Tick(DateTime.Now);
+            if (!smoke && !secondary && ticks % 120 == 4) RefreshOnline();
+            if (!smoke && !secondary && P.ReplaceTaskbar && WindowsShell.TaskbarChanged) WindowsShell.HideTaskbar(P.AutoHideWindows);
         }
         if (windowsDirty && !IsMouseOver && ContextMenu?.IsOpen != true && thumbnail is null) { windowsDirty = false; Refresh(); }
         foreach (var update in faces) update();
@@ -509,11 +531,11 @@ internal sealed partial class DockWindow : Window
         placing = true;
         try
         {
-            var screen = Screen.PrimaryScreen;
+            var screen = monitor ?? Screen.PrimaryScreen;
             var screenPx = screen?.Bounds ?? new(0, 0, 1920, 1080);
             var workPx = screen?.WorkingArea ?? screenPx;
             var dpi = VisualTreeHelper.GetDpi(this);
-            if (handle == 0 && screenPx.Width > 0)
+            if (handle == 0 && screenPx.Width > 0 && !secondary)
             {
                 var approximate = screenPx.Width / SystemParameters.PrimaryScreenWidth;
                 if (approximate > 0) dpi = new DpiScale(approximate, approximate);
@@ -534,7 +556,7 @@ internal sealed partial class DockWindow : Window
             dockHeadroom = P.Magnification ? barHeight * (Math.Clamp(P.MagnificationScale, 1.2, 3) - 1) : 0;
             Height = barHeight + dockHeadroom;
             Left = (screenPx.Left / dpi.DpiScaleX) + (width - Width) / 2;
-            bool replace = !smoke && handle != 0 && P.ReplaceTaskbar && WindowsShell.HideTaskbar(P.AutoHideWindows);
+            bool replace = !smoke && !secondary && handle != 0 && P.ReplaceTaskbar && WindowsShell.HideTaskbar(P.AutoHideWindows);
             if (replace && !P.AutoHide)
             {
                 var height = (int)Math.Ceiling((barHeight + P.Edge) * dpi.DpiScaleY);
@@ -554,7 +576,7 @@ internal sealed partial class DockWindow : Window
                 if (reserved) WindowsShell.Release(handle);
                 reserved = false;
                 approvedArea = null;
-                if (!replace) WindowsShell.RestoreTaskbar();
+                if (!replace && !secondary) WindowsShell.RestoreTaskbar();
             }
             var bottom = replace ? approvedArea?.Bottom ?? screenPx.Bottom : workPx.Bottom;
             Top = bottom / dpi.DpiScaleY - Height - P.Edge - (replace ? 0 : 2);
@@ -700,7 +722,7 @@ internal sealed partial class DockWindow : Window
     internal List<int> ApplyHotkeys()
     {
         var refused = new List<int>();
-        if (smoke || handle == 0) return refused;
+        if (smoke || handle == 0 || secondary) return refused;
         for (int slot = 0; slot < Hotkeys.Items.Length; slot++)
         {
             SystemHotkey.UnregisterHotKey(handle, slot + 1);
@@ -834,6 +856,16 @@ internal sealed partial class DockWindow : Window
     internal int LiveThumbnails { get; private set; }
 
     internal void ClosePreviewTest() => CloseThumbnail();
+
+    // Перестроить док: разрешение или положение его монитора могли измениться
+    internal void Relayout() => Refresh();
+
+    // Для самопроверки: где док стоит на экране (физические пиксели) и на каком мониторе
+    internal Rect ScreenBounds()
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        return new(Left * dpi.DpiScaleX, Top * dpi.DpiScaleY, ActualWidth * dpi.DpiScaleX, ActualHeight * dpi.DpiScaleY);
+    }
 
     private void CloseThumbnail()
     {
