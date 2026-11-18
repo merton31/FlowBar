@@ -30,6 +30,10 @@ internal static partial class Program
             return Agent.ServeMcp();
         if (args.Length == 2 && args[0] == "--check-install")
             return InstallCheck.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--check-network")
+            return NetworkCheck.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--check-tray")
+            return TrayCheck.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-connections")
             return ConnectionCheck.Run(args[1]);
         if (args.Length == 0 && Installer.RunFromElsewhere())
@@ -167,8 +171,10 @@ internal static partial class Program
                             if (!model.Settings.Items.Contains(pinned)) throw new InvalidOperationException(pinned + " was removed while pinned.");
                         }
                         model.Settings.PinSystem = false;
-                        model.ToggleWidget("Theme Toggle");
-                        if (model.Settings.Items.Contains("Theme Toggle")) throw new InvalidOperationException("Theme Toggle stayed after unpinning.");
+                        model.ToggleWidget("Tray");
+                        if (model.Settings.Items.Contains("Tray")) throw new InvalidOperationException("The tray icon stayed after unpinning.");
+                        if (model.Settings.Items.Contains("Theme Toggle") || new DockModel(Path.Combine(args[1], "fresh-theme.json")).Settings.Items.Contains("Theme Toggle"))
+                            throw new InvalidOperationException("The theme toggle must not be in the dock by default.");
                         model.Settings.PinSystem = true;
                         model.EnsurePinned();
                         if (!Widgets.SystemPinned.All(model.Settings.Items.Contains)) throw new InvalidOperationException("Pinned widgets were not restored.");
@@ -206,6 +212,9 @@ internal static partial class Program
                         await VerifyDictation(dock, model, args[1]);
                         await VerifyTaskDictation(dock, model, args[1]);
                         await VerifyMonitors(model);
+                        await VerifyWidgetSize(dock, model);
+                        await VerifyDeviceLists(dock, args[1]);
+                        VerifyIcons();
                         await VerifyAgent(dock, model);
                         await VerifyEndTask(dock);
                         await VerifyLocalVoice();
@@ -665,6 +674,90 @@ internal static partial class Program
 
     // Диктовка: шарик движется, нажатие начинает и останавливает запись, распознанный текст попадает в заметки и сохраняется
     // (в проверке запись и Handy заменены тестовыми: Dictation.Fixture)
+    // Списки в окнах Wi-Fi и Bluetooth: на образцах видны сети и устройства, состояние, заряд и кнопки
+    private static async System.Threading.Tasks.Task VerifyDeviceLists(DockWindow dock, string folder)
+    {
+        WifiNetworks.Fixture = BluetoothDevices.Fixture = true;
+        try
+        {
+            var wifi = dock.OpenWidget("Wi-Fi") ?? throw new InvalidOperationException("The Wi-Fi window did not open.");
+            await WaitFor(() => FaceText(wifi).Contains("Home Wi-Fi"));
+            string text = FaceText(wifi);
+            if (!text.Contains(L10n.T("Available networks")) || !text.Contains("Guest") || !text.Contains(L10n.T("Connected")) || !text.Contains("82%") || !text.Contains(L10n.T("Saved")))
+                throw new InvalidOperationException("The Wi-Fi list is incomplete: " + text);
+            if (FindControl(wifi, L10n.T("Disconnect") + " Home Wi-Fi") is not Button || FindControl(wifi, L10n.T("Connect") + " Guest") is not Button)
+                throw new InvalidOperationException("The Wi-Fi buttons are missing.");
+            Capture(wifi, Path.Combine(folder, "wifi-list.png"));
+            wifi.Close();
+            var bluetooth = dock.OpenWidget("Bluetooth") ?? throw new InvalidOperationException("The Bluetooth window did not open.");
+            await WaitFor(() => FaceText(bluetooth).Contains("Headphones"));
+            text = FaceText(bluetooth);
+            if (!text.Contains(L10n.T("Paired devices")) || !text.Contains("Speaker") || !text.Contains(L10n.T("Paired")) || !text.Contains("80%"))
+                throw new InvalidOperationException("The Bluetooth list is incomplete: " + text);
+            Capture(bluetooth, Path.Combine(folder, "bluetooth-list.png"));
+            // «Добавить устройство»: поиск показывает устройства поблизости, «Сопрячь» сопрягает
+            var addButton = FindControl(bluetooth, L10n.T("Add a device")) as Button ?? throw new InvalidOperationException("The add device button is missing.");
+            addButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, addButton));
+            await WaitFor(() => FaceText(bluetooth).Contains("Gamepad"));
+            if (!FaceText(bluetooth).Contains(L10n.T("Nearby devices")) || FindControl(bluetooth, L10n.T("Pair") + " Mouse") is not Button)
+                throw new InvalidOperationException("The nearby devices list is incomplete.");
+            Capture(bluetooth, Path.Combine(folder, "bluetooth-add.png"));
+            var pairButton = (Button)FindControl(bluetooth, L10n.T("Pair") + " Mouse")!;
+            pairButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, pairButton));
+            await WaitFor(() => FaceText(bluetooth).Contains(L10n.T("The device was paired.")));
+            if (FindControl(bluetooth, L10n.T("Pair") + " Mouse") is not null) throw new InvalidOperationException("A paired device stayed in the nearby list.");
+            bluetooth.Close();
+        }
+        finally { WifiNetworks.Fixture = BluetoothDevices.Fixture = false; }
+
+        // без адаптера Wi-Fi в быстрых настройках нет кнопки Wi-Fi, и виджет уже на её ширину
+        var quick = Widgets.Available["Quick Toggles"];
+        try
+        {
+            WifiNetworks.AdapterOverride = true;
+            int with = ((Panel)Widgets.Face(quick, dock.Model, false, out _)).Children.Count;
+            double withWidth = Widgets.WidthOf(dock.Model.Settings, quick);
+            WifiNetworks.AdapterOverride = false;
+            int without = ((Panel)Widgets.Face(quick, dock.Model, false, out _)).Children.Count;
+            double withoutWidth = Widgets.WidthOf(dock.Model.Settings, quick);
+            if (with != 5 || without != 4 || Math.Abs(withWidth - withoutWidth - Widgets.WifiTileWidth) > .01)
+                throw new InvalidOperationException($"The Wi-Fi button hiding is wrong: {with}/{without} buttons, widths {withWidth}/{withoutWidth}.");
+        }
+        finally { WifiNetworks.AdapterOverride = null; }
+    }
+
+    // Размер виджета звука: по умолчанию 242, выбранная ширина применяется к плитке и сохраняется в профиле, у других виджетов размера нет
+    private static async System.Threading.Tasks.Task VerifyWidgetSize(DockWindow dock, DockModel model)
+    {
+        var audio = Widgets.Available["Audio Output"];
+        if (Widgets.WidthOf(model.Settings, audio) != audio.Width || Widgets.SizeChoices("Audio Output").Length != 4 || Widgets.SizeChoices("Clock").Length != 0)
+            throw new InvalidOperationException("The widget size choices are wrong.");
+        if (!model.Settings.Items.Contains("Audio Output")) throw new InvalidOperationException("Audio Output must be in the dock for the size check.");
+        double saved = model.Settings.WidgetWidths.TryGetValue("Audio Output", out double earlier) ? earlier : 0;
+        model.Settings.WidgetWidths["Audio Output"] = 330;
+        model.Save();
+        await WaitFor(() => dock.HasTileWidth(330));
+        if (!(new DockModel(model.Profile).Settings.WidgetWidths.TryGetValue("Audio Output", out double kept) && kept == 330)) throw new InvalidOperationException("The widget size was not saved.");
+        model.Settings.WidgetWidths["Clock"] = 999; // чужой виджет: ширина игнорируется
+        if (Widgets.WidthOf(model.Settings, Widgets.Available["Clock"]) != Widgets.Available["Clock"].Width) throw new InvalidOperationException("A fixed widget was resized.");
+        model.Settings.WidgetWidths.Remove("Clock");
+        if (saved == 0) model.Settings.WidgetWidths.Remove("Audio Output"); else model.Settings.WidgetWidths["Audio Output"] = saved;
+        model.Save();
+    }
+
+    // Значки программ высокого разрешения: оболочка отдаёт 256 px с прозрачностью (углы прозрачные, середина непрозрачная)
+    private static void VerifyIcons()
+    {
+        var icon = WindowsShell.HighResIcon(Path.Combine(Environment.SystemDirectory, "notepad.exe")) ?? WindowsShell.HighResIcon(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"));
+        if (icon is null || icon.PixelWidth < 128 || icon.PixelHeight < 128) throw new InvalidOperationException("The high resolution icon is missing or small.");
+        var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap(icon, PixelFormats.Bgra32, null, 0);
+        var pixels = new byte[converted.PixelWidth * converted.PixelHeight * 4];
+        converted.CopyPixels(pixels, converted.PixelWidth * 4, 0);
+        bool transparent = false, opaque = false;
+        for (int i = 3; i < pixels.Length; i += 4) { transparent |= pixels[i] == 0; opaque |= pixels[i] == 255; }
+        if (!transparent || !opaque) throw new InvalidOperationException("The icon has no transparency.");
+    }
+
     // Док на втором мониторе: настройка включена по умолчанию, дополнительный док стоит внизу своего монитора и целиком в его границах (на одном мониторе проверка пропускается)
     private static async System.Threading.Tasks.Task VerifyMonitors(DockModel model)
     {

@@ -152,7 +152,12 @@ internal static partial class Visuals
         return grid;
     }
 
-    public static Image MenuIcon(ImageSource source) => new() { Source = source, Width = 20, Height = 20 };
+    public static Image MenuIcon(ImageSource source)
+    {
+        var icon = new Image { Source = source, Width = 20, Height = 20 };
+        RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
+        return icon;
+    }
 
     // Заголовок раздела: бледный мелкий текст, не пункт
     public static Separator MenuHeader(string text)

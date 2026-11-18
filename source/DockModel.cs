@@ -41,8 +41,12 @@ internal sealed class Preferences
     public bool AppBadges { get; set; } = true;
     // Если подключено несколько мониторов, на каждом из них свой док (по умолчанию включено)
     public bool AllMonitors { get; set; } = true;
+    // Ширина виджетов, размер которых можно менять (пока только «Вывод звука»): идентификатор виджета -> ширина плитки
+    public Dictionary<string, double> WidgetWidths { get; set; } = [];
     // Плеер в доке по умолчанию в виде обложки с кнопками; у уже существующего профиля меняется один раз
     public bool PlayerArtworkApplied { get; set; }
+    // Виджет переключения темы убран из дока по умолчанию; у существующего профиля снимается один раз (в галерее остаётся, добавить можно снова)
+    public bool ThemeToggleRemoved { get; set; }
     public bool Magnification { get; set; }
     public bool AutoHide { get; set; }
     public bool ShowOnDesktop { get; set; } = true;
@@ -70,7 +74,7 @@ internal sealed class Preferences
     public bool AlertSound { get; set; } = true;
     public string Sound { get; set; } = "Crystal";
     public List<string> Items { get; set; } =
-        ["Todos", "Start", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Audio Output", "Quick Toggles", "Theme Toggle", "Tray", "Clock"];
+        ["Todos", "Start", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Audio Output", "Quick Toggles", "Tray", "Clock"];
     public List<Todo> Todos { get; set; } = [];
     public string Notes { get; set; } = "";
 }
@@ -140,6 +144,11 @@ internal sealed class DockModel
             Settings.Items.InsertRange(Settings.Items.IndexOf("app:explorer.exe") + 1, available);
         }
         LocalVoice.Pins = Settings.VoiceModelPins;
+        if (!Settings.ThemeToggleRemoved)
+        {
+            Settings.ThemeToggleRemoved = true;
+            Settings.Items.Remove("Theme Toggle");
+        }
         if (!Settings.PlayerArtworkApplied)
         {
             Settings.PlayerArtworkApplied = true;

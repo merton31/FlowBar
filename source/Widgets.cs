@@ -39,7 +39,22 @@ internal static partial class Widgets
     public const string FlowBarCategory = "FlowBar";
 
     // Виджеты, которые не снимаются с дока, пока включено закрепление системных виджетов
-    public static readonly string[] SystemPinned = ["Audio Output", "Quick Toggles", "Theme Toggle", "Tray"];
+    // Размеры, которые можно выбрать в меню виджета: название и ширина плитки. Пусто — размер виджета менять нельзя
+    public static (string Label, double Width)[] SizeChoices(string id) => id == "Audio Output"
+        ? [("Narrow", 170), ("Standard", 242), ("Wide", 330), ("Extra wide", 440)] : [];
+
+    // Ширина плитки в доке с учётом выбранного размера
+    public static double WidthOf(Preferences p, Widget widget)
+    {
+        // быстрые настройки без кнопки Wi-Fi (на компьютере нет адаптера) уже на ширину этой кнопки
+        if (widget.Id == "Quick Toggles" && !WifiNetworks.HasAdapterCached) return widget.Width - WifiTileWidth;
+        return SizeChoices(widget.Id).Length > 0 && p.WidgetWidths.TryGetValue(widget.Id, out double chosen) ? Math.Clamp(chosen, 120, 600) : widget.Width;
+    }
+
+    // ширина кнопки Wi-Fi в быстрых настройках вместе с полями: 47 + 2 * 2
+    internal const double WifiTileWidth = 51;
+
+    public static readonly string[] SystemPinned = ["Audio Output", "Quick Toggles", "Tray"];
 
     // Позиции каталога эталона Lumabar без функций FlowBar
     public static IEnumerable<(string Name, string Glyph, string Catalog)> ReferenceCategories => Categories.Where(category => category.Name != FlowBarCategory);
@@ -90,6 +105,10 @@ internal static partial class Widgets
         var ink = !gallery && LightTiles(p) ? Brush("#1D1D1F") : Paper;
         var muted = !gallery && LightTiles(p) ? Brush("#55555A") : Muted;
         var accent = Accent(p);
+        // кружки с кнопками и дорожки индикаторов: на светлых плитках полупрозрачные тёмные (светло-серые), иначе тёмный значок пропадает на тёмном кружке
+        bool lightTile = !gallery && LightTiles(p);
+        var chip = lightTile ? Brush("#26000000") : Brush("#2C2C2F");
+        var track = lightTile ? Brush("#2E000000") : Brush("#2A2A2D");
         var value = Text("", gallery ? 32 : 22, true, ink);
         var detail = Text("", gallery ? 13 : 10, true, muted);
         update = () => { };
@@ -315,20 +334,20 @@ internal static partial class Widgets
                 var micIcon = Symbol("", gallery ? 19 : 14, ink);
                 micIcon.HorizontalAlignment = HorizontalAlignment.Center;
                 micIcon.VerticalAlignment = VerticalAlignment.Center;
-                var micButton = Card(micIcon, 30, Brush("#2C2C2F"));
+                var micButton = Card(micIcon, 30, chip);
                 var headsetIcon = Symbol("", gallery ? 19 : 14, ink);
                 headsetIcon.HorizontalAlignment = HorizontalAlignment.Center;
                 headsetIcon.VerticalAlignment = VerticalAlignment.Center;
-                var headsetButton = Card(headsetIcon, 30, Brush("#2C2C2F"));
+                var headsetButton = Card(headsetIcon, 30, chip);
                 micButton.Width = micButton.Height = headsetButton.Width = headsetButton.Height = gallery ? 48 : 30;
                 headsetButton.Margin = new(gallery ? 10 : 6, 0, 0, 0);
-                update = () => micButton.Background = model.Microphone is { Muted: true } ? Brush("#7A2E2E") : Brush("#2C2C2F");
+                update = () => micButton.Background = model.Microphone is { Muted: true } ? Brush("#7A2E2E") : chip;
                 var micRow = RowStack(micButton, headsetButton);
                 micRow.HorizontalAlignment = HorizontalAlignment.Center;
                 micRow.VerticalAlignment = VerticalAlignment.Center;
                 return micRow;
             case "Audio Output":
-                var volume = FilledMeter(Accent(p), gallery ? 24 : 14, widget.Id, Brush("#2A2A2D"));
+                var volume = FilledMeter(Accent(p), gallery ? 24 : 14, widget.Id, track);
                 volume.Margin = new(0, 6, 0, 0);
                 var speaker = Symbol("", gallery ? 15 : 11, muted);
                 speaker.Margin = new(0, 0, 8, 0);
@@ -351,9 +370,10 @@ internal static partial class Widgets
                 var toggles = RowStack();
                 toggles.HorizontalAlignment = HorizontalAlignment.Center;
                 var radios = new List<(string Name, Border Tile)>();
-                var neutral = Brush("#28292B");
+                var neutral = lightTile ? Brush("#26000000") : Brush("#28292B");
                 foreach (var (name, glyph, _) in QuickLinks)
                 {
+                    if (!gallery && name == "Wi-Fi" && !WifiNetworks.HasAdapterCached) continue; // адаптера Wi-Fi нет — кнопки нет
                     bool wide = name is "Wi-Fi" or "Bluetooth";
                     var icon = Symbol(glyph, gallery ? 17 : 13, ink);
                     FrameworkElement symbol = wide ? RowStack(icon, Text("  ›", gallery ? 19 : 14, true, muted)) : icon;
@@ -423,7 +443,7 @@ internal static partial class Widgets
                 return UnreadFace("WhatsApp", "WhatsApp", gallery, ink, muted, out update);
             case "Tray": case "Theme Toggle": case "Show Desktop": case "Notifications": case "Keyboard": case "Do Not Disturb":
                 var shortcut = Card(Symbol(widget.Glyph, gallery ? 22 : 17, ink), 28,
-                    widget.Id == "Do Not Disturb" ? Brush("#6051DA") : Brush("#26262A"));
+                    widget.Id == "Do Not Disturb" ? Brush("#6051DA") : lightTile ? Brush("#26000000") : Brush("#26262A"));
                 shortcut.Width = shortcut.Height = gallery ? 49 : 31;
                 return shortcut;
             case "Weather":

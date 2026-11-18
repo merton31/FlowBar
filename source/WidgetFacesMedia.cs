@@ -348,6 +348,7 @@ internal static partial class Widgets
     private static FrameworkElement MediaFace(string id, DockModel model, bool gallery, Brush ink, Brush muted, out Action update)
     {
         double s = gallery ? 1 : .72;
+        bool lightTile = !gallery && LightTiles(model.Settings); // светлая плитка: кружки и дорожки светлые, полоса прогресса тёмная
         var title = RawText("", 14 * s, true, ink);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
         var artist = RawText("", 12 * s, false, muted);
@@ -363,7 +364,7 @@ internal static partial class Widgets
         art.Children.Add(sampleCover);
         art.Children.Add(image);
         TextBlock? playIcon = null;
-        var progress = FilledMeter(Brushes.White, 3, "Now Playing", Brush("#3A3A3D"));
+        var progress = FilledMeter(lightTile ? ink : Brushes.White, 3, "Now Playing", lightTile ? Brush("#2E000000") : Brush("#3A3A3D"));
         progress.Value = 55;
         progress.VerticalAlignment = VerticalAlignment.Center;
         progress.Margin = new(0, 5 * s, 0, 0);
@@ -375,7 +376,7 @@ internal static partial class Widgets
             icon.HorizontalAlignment = HorizontalAlignment.Center;
             icon.VerticalAlignment = VerticalAlignment.Center;
             if (key == 0xB3) playIcon = icon;
-            FrameworkElement element = round ? Card(icon, size * s / 2, Brush("#2C2C2F")) : icon;
+            FrameworkElement element = round ? Card(icon, size * s / 2, lightTile ? Brush("#26000000") : Brush("#2C2C2F")) : icon;
             if (round) element.Width = element.Height = size * s;
             else icon.Margin = new(6 * s, 0, 6 * s, 0);
             if (!gallery) element.PreviewMouseLeftButtonUp += (_, e) => { e.Handled = true; WindowsShell.Key(key); };

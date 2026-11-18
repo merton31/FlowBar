@@ -12,7 +12,7 @@
 ## Сборка и проверка
 - Сборка для разработки: `dotnet build source\FlowBar.csproj -c Release -p:TreatWarningsAsErrors=true`.
 - Выпуск одним файлом: команда из `README.md` или `tools\release.ps1`.
-- Проверки принимают путь к **существующей пустой** папке и пишут в неё `result.txt` (последняя строка `OK` — успех): `--smoke`, `--audit-ui`, `--check-install`, `--check-dictation`, `--check-places`, `--check-jumplist`, `--preview-glass`, `--check-live`; отдельно `--check-connections` — настоящие запросы к Codex, Claude Code, Gemini (тратят немного токенов) и сравнение моделей с Hugging Face, нужна сеть. Живое стекло исключает док из захвата экрана, поэтому снимки дока делайте через PrintWindow или самопроверки.
+- Проверки принимают путь к **существующей пустой** папке и пишут в неё `result.txt` (последняя строка `OK` — успех): `--smoke`, `--audit-ui`, `--check-install`, `--check-dictation`, `--check-places`, `--check-jumplist`, `--preview-glass`, `--check-live`; отдельно `--check-tray` и `--check-network` (настоящее чтение трея, сетей Wi-Fi и устройств Bluetooth на этом компьютере, пишут названия в result.txt), `--check-connections` — настоящие запросы к Codex, Claude Code, Gemini (тратят немного токенов) и сравнение моделей с Hugging Face, нужна сеть. Живое стекло исключает док из захвата экрана, поэтому снимки дока делайте через PrintWindow или самопроверки.
 - `FlowBar.exe` без аргументов, запущенный не из `%LOCALAPPDATA%\Programs\FlowBar`, ставит себя туда, останавливает прежние панели и запускает установленную копию. Для разработки: переменная `FLOWBAR_NO_INSTALL=1`; для проверок установки: `FLOWBAR_INSTALL_DIR`.
 
 ## Карта кода (`source\`)

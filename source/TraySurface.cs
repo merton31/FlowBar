@@ -67,11 +67,20 @@ internal sealed partial class DockWindow
             if (!usingNativeTray && window.IsLoaded && !window.IsActive) window.Close();
         });
 
+        // Значки трея с панели задач Windows; если её не видно (её скрывает FlowBar), запасной список запущенных программ со значком в трее
+        static WindowsShell.TraySnapshot ReadAny()
+        {
+            var read = WindowsShell.ReadTray();
+            if (read.Pinned.Length + read.Overflow.Length > 0) return read;
+            var apps = WindowsShell.TrayApps();
+            return apps.Length > 0 ? new(apps, [], null, false, false) : read;
+        }
+
         async Task Refresh()
         {
             if (busy || smoke) return;
             busy = true;
-            try { Paint(await Task.Run(WindowsShell.ReadTray)); }
+            try { Paint(await Task.Run(ReadAny)); }
             finally { busy = false; }
         }
 
@@ -103,7 +112,7 @@ internal sealed partial class DockWindow
             busy = usingNativeTray = true;
             try
             {
-                bool submitted = await Task.Run(() => WindowsShell.InvokeTray(item, menu));
+                bool submitted = item.Open is { } open ? await Task.Run(() => { open(); return true; }) : await Task.Run(() => WindowsShell.InvokeTray(item, menu));
                 if (!window.IsLoaded) return;
                 if (submitted) window.Close();
                 else status.Text = L10n.T(menu ? "Windows could not focus this icon. Use its menu in the Windows tray."
@@ -128,7 +137,9 @@ internal sealed partial class DockWindow
                 icons.Children.Add(label);
                 AddIcons(current.Overflow);
             }
-            status.Text = current.Pinned.Length + current.Overflow.Length > 0 ? "" : current.HasVisibleTray
+            bool listOfApps = current.Pinned.Length > 0 && current.Pinned[0].Open is not null;
+            status.Text = listOfApps ? L10n.T("The Windows taskbar is hidden, so these are running apps with a tray icon. A click opens the app.")
+                : current.Pinned.Length + current.Overflow.Length > 0 ? "" : current.HasVisibleTray
                 ? L10n.T("Windows did not expose tray icons.") : L10n.T("Show the Windows taskbar to read its tray icons.");
         }
 
@@ -142,7 +153,11 @@ internal sealed partial class DockWindow
                 {
                     FrameworkElement visual;
                     if (item.Icon is { } icon)
-                        visual = new Image { Source = icon, Stretch = Stretch.Uniform, Width = 20, Height = 20 };
+                    {
+                        var picture = new Image { Source = icon, Stretch = Stretch.Uniform, Width = 24, Height = 24 };
+                        RenderOptions.SetBitmapScalingMode(picture, BitmapScalingMode.HighQuality);
+                        visual = picture;
+                    }
                     else
                     {
                         var letter = Text(StringInfo.GetNextTextElement(item.Name).ToUpperInvariant(), 13, true, Paper);

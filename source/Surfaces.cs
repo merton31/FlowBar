@@ -587,7 +587,7 @@ internal sealed partial class DockWindow
         DockToggle(dock, "Auto-hide", P.AutoHide, v => { P.AutoHide = v; DrawDockSettings(); }, "Reveal the dock when the pointer reaches the edge.");
         if (P.AutoHide)
             DockToggle(dock, "Show on desktop", P.ShowOnDesktop, v => P.ShowOnDesktop = v, "Keep the dock visible while the desktop is active.");
-        DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Sound, network switches and theme always stay in the dock.");
+        DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Sound, network switches and the tray icon always stay in the dock.");
         if (System.Windows.Forms.Screen.AllScreens.Length > 1)
             DockToggle(dock, "All monitors", P.AllMonitors, v => P.AllMonitors = v, "Show the dock on every connected monitor.");
         DockToggle(dock, "Lock dock", P.Locked, v => P.Locked = v, "Prevent dragging and rearranging items.");
@@ -795,7 +795,7 @@ internal sealed partial class DockWindow
             return Surface(id, id == "Weather" ? 560 : 510, id == "Weather" ? 620 : 550, true,
                 (window, shell) => Weather(shell, window, id), anchor);
         if (id is "Quick Toggles" or "Wi-Fi" or "Bluetooth")
-            return Surface(id, 390, id == "Quick Toggles" ? 382 : 230, true,
+            return Surface(id, 390, id == "Quick Toggles" ? 382 : 500, true,
                 (window, shell) => QuickToggleSurface(window, shell, id), anchor);
         if (id == "Tray") return Surface(id, 420, 460, true, TraySurface, anchor, closeOnDeactivate: false);
         if (id is "Calendar" or "Clock" or "Today" or "Date" or "7 Days")
