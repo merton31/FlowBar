@@ -242,6 +242,7 @@ internal sealed class BluetoothScan : IDisposable
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException or UnauthorizedAccessException)
         {
+            ErrorLog.Write(ex, "Bluetooth pairing");
             return (false, "Could not pair the device. Try again.");
         }
     }

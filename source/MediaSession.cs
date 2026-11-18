@@ -11,13 +11,16 @@ namespace LumaDock;
 
 internal sealed class MediaSession : IDisposable
 {
-    internal sealed record Track(string Title, string Artist, string State, string Source, string? Cover);
+    // Position и Duration — секунды с момента чтения; у потоковых передач длительности нет (0)
+    internal sealed record Track(string Title, string Artist, string State, string Source, string? Cover, double Position = 0, double Duration = 0);
     private Process? bridge;
     private readonly SemaphoreSlim gate = new(1);
     private string? coverData;
     private DateTimeOffset retry;
     public Track? Current { get; private set; }
-    public BitmapImage? Artwork { get; private set; }
+    public BitmapSource? Artwork { get; private set; }
+    // Когда прочитано текущее состояние: между чтениями время дорисовывается по часам
+    public DateTimeOffset ReadAt { get; private set; }
 
     public async Task Refresh()
     {
@@ -30,6 +33,7 @@ internal sealed class MediaSession : IDisposable
             var line = await bridge.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(4));
             if (line is null) throw new IOException("Media session ended");
             Current = JsonSerializer.Deserialize<Track>(line);
+            ReadAt = DateTimeOffset.Now;
             var cover = Current?.Cover;
             if (cover != coverData)
             {
@@ -40,6 +44,7 @@ internal sealed class MediaSession : IDisposable
         catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException or
             System.ComponentModel.Win32Exception or JsonException)
         {
+            ErrorLog.Write(ex, "Media session");
             retry = DateTimeOffset.Now.AddSeconds(30);
             CloseBridge();
             Current = null;
@@ -47,6 +52,28 @@ internal sealed class MediaSession : IDisposable
             coverData = null;
         }
         finally { gate.Release(); }
+    }
+
+    // Перемотка в системном сеансе (Spotify и другие, которые это позволяют); результат виден при следующем чтении
+    public async Task SeekAsync(double seconds)
+    {
+        if (!gate.Wait(0)) return;
+        try
+        {
+            if (bridge is null || bridge.HasExited) return;
+            await bridge.StandardInput.WriteLineAsync("seek " + seconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
+            await bridge.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(4));
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException) { CloseBridge(); }
+        finally { gate.Release(); }
+    }
+
+    // Для самопроверки: подставляет трек и обложку вместо настоящего сеанса
+    internal void SetForTest(Track track, BitmapSource? artwork)
+    {
+        Current = track;
+        Artwork = artwork;
+        ReadAt = DateTimeOffset.Now;
     }
 
     private static BitmapImage? Decode(string? data)
@@ -58,7 +85,7 @@ internal sealed class MediaSession : IDisposable
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.DecodePixelWidth = 260;
+            bitmap.DecodePixelWidth = 640; // обложка в окне плеера крупная
             bitmap.StreamSource = stream;
             bitmap.EndInit();
             bitmap.Freeze();
@@ -105,6 +132,13 @@ internal sealed class MediaSession : IDisposable
         $artKey = ''
         $cover = $null
         while (($line = [Console]::ReadLine()) -ne $null) {
+            if ($line -like 'seek *') {
+                try {
+                    $target = [long]([double]::Parse($line.Substring(5), [Globalization.CultureInfo]::InvariantCulture) * 10000000)
+                    $null = Await ($manager.GetCurrentSession().TryChangePlaybackPositionAsync($target)) ([bool])
+                } catch {}
+                [Console]::WriteLine('ok'); continue
+            }
             if ($line -ne 'read') { continue }
             try {
                 $session = $manager.GetCurrentSession()
@@ -131,8 +165,14 @@ internal sealed class MediaSession : IDisposable
                         } catch {}
                     }
                 }
+                $timeline = $session.GetTimelineProperties()
+                $span = 0; $at = 0
+                if ($null -ne $timeline) {
+                    $span = [math]::Round(($timeline.EndTime - $timeline.StartTime).TotalSeconds, 1)
+                    $at = [math]::Round(($timeline.Position - $timeline.StartTime).TotalSeconds, 1)
+                }
                 $data = @{ Title = $props.Title; Artist = $props.Artist; State = $session.GetPlaybackInfo().PlaybackStatus.ToString();
-                    Source = $session.SourceAppUserModelId; Cover = $cover }
+                    Source = $session.SourceAppUserModelId; Cover = $cover; Position = $at; Duration = $span }
                 [Console]::WriteLine(($data | ConvertTo-Json -Compress))
             } catch { [Console]::WriteLine('null') }
         }

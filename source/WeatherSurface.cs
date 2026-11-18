@@ -44,6 +44,7 @@ internal sealed partial class DockWindow
             }
             catch (Exception ex) when (LiveData.IsDataError(ex))
             {
+                ErrorLog.Write(ex, "City search");
                 if (revision == searchRevision) searchStatus.Text = L10n.T("City search unavailable.");
             }
         }

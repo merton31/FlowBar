@@ -65,6 +65,15 @@ internal static partial class Program
                 new FrameworkPropertyMetadata(Math.Max(60, Displays.Hz(System.Windows.Forms.Screen.PrimaryScreen?.DeviceName))));
 
         var application = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+        // необработанные ошибки пишутся в error.log: их потом можно приложить к отчёту (Report a problem); сами ошибки не гасим
+        ErrorLog.Disabled = testing;
+        if (!testing)
+        {
+            AppDomain.CurrentDomain.UnhandledException += (_, e) => ErrorLog.Write(e.ExceptionObject as Exception, "Crash");
+            application.DispatcherUnhandledException += (_, e) => ErrorLog.Write(e.Exception, "UI");
+            // ошибки в фоновых задачах без await (`_ = Task`) иначе пропадают без следа
+            System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) => ErrorLog.Write(e.Exception.GetBaseException(), "Task");
+        }
         // общие тёмные стили (в том числе полоса прокрутки для всех окон) подключаются ко всему приложению
         application.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/FlowBar;component/DockControls.xaml", UriKind.Relative) });
         var model = new DockModel(testing ? Path.Combine(args[1], "test-profile.json") : null);
@@ -212,8 +221,17 @@ internal static partial class Program
                         await VerifyDictation(dock, model, args[1]);
                         await VerifyTaskDictation(dock, model, args[1]);
                         await VerifyMonitors(model);
+                        dock.CaptureRealApps(Path.Combine(args[1], "dock-real-apps.png"));
+                        var reopenProblem = dock.ReopenCheck();
+                        if (!string.IsNullOrEmpty(reopenProblem)) throw new InvalidOperationException("Widget toggle: " + reopenProblem);
+                        var scrollProblem = dock.ScrollCheck(args[1]);
+                        if (!string.IsNullOrEmpty(scrollProblem)) throw new InvalidOperationException("App list: " + scrollProblem);
+                        await VerifyBugReport(dock, args[1]);
+                        VerifyQuickPanel(dock, args[1]);
+                        VerifyFullscreenReveal();
                         await VerifyWidgetSize(dock, model);
                         await VerifyDeviceLists(dock, args[1]);
+                        await VerifyPlayer(dock, model, args[1]);
                         VerifyIcons();
                         await VerifyAgent(dock, model);
                         await VerifyEndTask(dock);
@@ -410,6 +428,117 @@ internal static partial class Program
         size.Value = initialSize;
         cards.IsChecked = initialCards;
 
+    }
+
+    // Подставной приёмник отчётов: настоящий адрес в проверках не трогаем
+    private sealed class FakeReceiver(Func<System.Net.Http.HttpRequestMessage, string?, System.Net.Http.HttpResponseMessage> reply) : System.Net.Http.HttpMessageHandler
+    {
+        public string? Body, ContentType;
+        protected override async System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken token)
+        {
+            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(token);
+            ContentType = request.Content?.Headers.ContentType?.ToString();
+            return reply(request, Body);
+        }
+    }
+
+    // Правила показа дока: поверх полноэкранного окна он выезжает только после задержки у нижнего края
+    private static void VerifyFullscreenReveal()
+    {
+        bool Show(bool fullscreen, bool autoHide = false, bool hover = false, bool edge = false, int ticks = 0, bool open = false) =>
+            DockWindow.BarShouldShow(fullscreen, autoHide, false, hover, edge, ticks, open);
+        if (!Show(false) || Show(false, autoHide: true) || !Show(false, autoHide: true, edge: true))
+            throw new InvalidOperationException("Fullscreen: the normal auto-hide rules changed.");
+        if (Show(true) || Show(true, edge: true, ticks: 1) || !Show(true, edge: true, ticks: 2) || !Show(true, hover: true) || !Show(true, open: true))
+            throw new InvalidOperationException("Fullscreen: the dock does not reveal at the bottom edge or hides over an open panel.");
+    }
+
+    // Панель быстрых настроек как в Windows: плитки сети, громкость, снимок для просмотра (радио и громкость в проверке не трогаем)
+    private static void VerifyQuickPanel(DockWindow dock, string folder)
+    {
+        var surface = dock.OpenWidget("Quick Toggles") ?? throw new InvalidOperationException("The quick settings panel did not open.");
+        try
+        {
+            foreach (var name in new[] { "Bluetooth", "Ethernet", "Mobile hotspot", "Airplane mode" })
+                if (FindControl(surface, L10n.T(name)) is not Button) throw new InvalidOperationException("Quick settings tile is missing: " + name);
+            if (FindControl(surface, L10n.F($"{L10n.T("Bluetooth")} list")) is not Button) throw new InvalidOperationException("The Bluetooth list arrow is missing.");
+            if (FindControl(surface, L10n.T("Volume")) is not Slider || FindControl(surface, L10n.T("Mute")) is not Button)
+                throw new InvalidOperationException("Quick settings volume controls are missing.");
+            surface.UpdateLayout();
+            Capture(surface, Path.Combine(folder, "quick-panel.png"));
+        }
+        finally { surface.Close(); }
+    }
+
+    // Отправка отчёта: адрес, разбор подтверждения, ответы 200/429/500, лимит 32 КиБ, очистка журнала от личного и окно (без настоящей отправки)
+    private static async System.Threading.Tasks.Task VerifyBugReport(DockWindow dock, string folder)
+    {
+        void Need(bool condition, string text) { if (!condition) throw new InvalidOperationException("Bug report: " + text); }
+        Need(BugReport.Endpoint(BugReport.Url) is not null, "the receiver address is rejected");
+        foreach (var bad in new[] { "http://example.com/x", "https://user:pw@example.com/x", "https://example.com/x?a=1", "https://example.com/x#a", "nonsense" })
+            Need(BugReport.Endpoint(bad) is null, "unsafe address accepted: " + bad);
+        Need(BugReport.ReadReceipt("{\"ok\":true,\"report_id\":\"abc-123_X\"}") == "abc-123_X", "good receipt rejected");
+        foreach (var bad in new[] { "{\"ok\":false,\"report_id\":\"a\"}", "{\"report_id\":\"a\"}", "{\"ok\":true}", "{\"ok\":true,\"report_id\":\"a b\"}", "{\"ok\":true,\"report_id\":\"\"}", "[]" })
+        {
+            bool rejected = false;
+            try { BugReport.ReadReceipt(bad); } catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException) { rejected = true; }
+            Need(rejected, "bad receipt accepted: " + bad);
+        }
+        var endpoint = new Uri(BugReport.Url);
+        string Json(string id) => "{\"ok\":true,\"report_id\":\"" + id + "\"}";
+        System.Net.Http.HttpResponseMessage Answer(System.Net.HttpStatusCode code, string body) =>
+            new(code) { Content = new System.Net.Http.StringContent(body) };
+        var good = new FakeReceiver((_, body) => Answer(System.Net.HttpStatusCode.OK, Json(System.Text.Json.JsonDocument.Parse(body!).RootElement.GetProperty("report_id").GetString()!)));
+        Need(await BugReport.SendAsync(endpoint, "id1", "Не работает «кнопка»", "Строка отчёта", good) == "id1", "delivery was not confirmed");
+        using (var sent = System.Text.Json.JsonDocument.Parse(good.Body!))
+        {
+            var root = sent.RootElement;
+            Need(root.GetProperty("description").GetString() == "Не работает «кнопка»" && root.GetProperty("report").GetString() == "Строка отчёта"
+                && root.GetProperty("version").GetString() == BugReport.VersionText && root.EnumerateObject().Count() == 4, "payload fields are wrong");
+        }
+        Need(good.ContentType?.Contains("utf-8", StringComparison.OrdinalIgnoreCase) == true, "payload is not UTF-8 JSON");
+        async System.Threading.Tasks.Task<Exception?> Fails(System.Net.Http.HttpMessageHandler handler, string description = "d")
+        {
+            try { await BugReport.SendAsync(endpoint, "id2", description, "r", handler); return null; }
+            catch (Exception ex) { return ex; }
+        }
+        Need(await Fails(new FakeReceiver((_, _) => Answer(System.Net.HttpStatusCode.OK, Json("other")))) is InvalidDataException, "another report number was accepted");
+        Need(await Fails(new FakeReceiver((_, _) => Answer(System.Net.HttpStatusCode.OK, "{\"ok\":true"))) is System.Text.Json.JsonException, "broken receipt was accepted");
+        Need(await Fails(new FakeReceiver((_, _) => Answer((System.Net.HttpStatusCode)429, ""))) is BugReport.DeliveryException { Limited: true }, "limit answer is not recognised");
+        Need(await Fails(new FakeReceiver((_, _) => Answer(System.Net.HttpStatusCode.InternalServerError, ""))) is BugReport.DeliveryException { Limited: false }, "server error is not a failure");
+        var tooBig = new FakeReceiver((_, _) => Answer(System.Net.HttpStatusCode.OK, Json("id2")));
+        Need(await Fails(tooBig, new string('я', 20000)) is InvalidDataException && tooBig.Body is null, "oversized report was sent");
+
+        string clean = BugReport.CleanLog([
+            "2026-11-18 10:00:00 System.IO.IOException: Cannot read C:\\Users\\Ivan\\Secret\\file.txt from https://example.com/a?b=1 for ivan@example.com",
+            "   at LumaDock.DockWindow.Tick() in C:\\src\\DockWindow.cs:line 5",
+            "   at System.Windows.Threading.Dispatcher.Invoke()",
+            "2026-11-18 10:00:05 System.IO.IOException: Cannot read C:\\Users\\Ivan\\Secret\\file.txt from https://example.com/a?b=1 for ivan@example.com",
+            "   at LumaDock.DockWindow.Tick() in C:\\src\\DockWindow.cs:line 5"]);
+        Need(clean.Contains("System.IO.IOException") && clean.Contains("×2") && clean.Contains("LumaDock.DockWindow.Tick"), "log lost the error or did not merge repeats");
+        Need(!clean.Contains("Ivan") && !clean.Contains("example.com") && !clean.Contains("C:\\") && !clean.Contains("DockWindow.cs"), "log kept personal data");
+        string tagged = BugReport.CleanLog([
+            "2026-11-18 11:00:00 [Radios] System.InvalidOperationException: radio failed for ivan@example.com",
+            "   at LumaDock.RadioController.Refresh() in C:\\src\\RadioController.cs:line 9",
+            "2026-11-18 11:00:03 [Radios] FlowBar.Note: Windows radio control did not respond in time"]);
+        Need(tagged.Contains("[Radios] System.InvalidOperationException") && tagged.Contains("[Radios] FlowBar.Note: Windows radio control did not respond")
+            && tagged.Contains("LumaDock.RadioController.Refresh") && !tagged.Contains("example.com"), "tagged log lines are lost or not cleaned");
+
+        var surface = dock.OpenBugReport();
+        try
+        {
+            var send = (Button?)FindControl(surface, L10n.T("Send")) ?? throw new InvalidOperationException("Bug report: Send button is missing.");
+            var text = (TextBox?)FindControl(surface, L10n.T("Problem description")) ?? throw new InvalidOperationException("Bug report: description box is missing.");
+            Need(!send.IsEnabled, "Send is enabled without a description");
+            text.Text = "Тест";
+            Need(send.IsEnabled, "Send stays disabled after typing");
+            text.Text = "   ";
+            Need(!send.IsEnabled, "Send is enabled for blank text");
+            text.Text = "Проверка окна";
+            surface.UpdateLayout();
+            Capture(surface, Path.Combine(folder, "bug-report.png"));
+        }
+        finally { surface.Close(); }
     }
 
     private static DependencyObject? FindControl(DependencyObject node, string name)
@@ -726,6 +855,32 @@ internal static partial class Program
         finally { WifiNetworks.AdapterOverride = null; }
     }
 
+    // Окно плеера: обложка, название, исполнитель, источник, время и кнопки; перемотка и время считаются по данным сеанса
+    private static async System.Threading.Tasks.Task VerifyPlayer(DockWindow dock, DockModel model, string folder)
+    {
+        if (DockWindow.SourceName("Spotify.exe") != "Spotify" || DockWindow.SourceName("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic") != "ZuneMusic" || DockWindow.SourceName("Chrome") != "Chrome")
+            throw new InvalidOperationException("The media source name is wrong.");
+        var pixels = new byte[200 * 200 * 4];
+        for (int y = 0; y < 200; y++)
+            for (int x = 0; x < 200; x++) { int i = (y * 200 + x) * 4; pixels[i] = (byte)(40 + x / 2); pixels[i + 1] = (byte)(80 + y / 3); pixels[i + 2] = 180; pixels[i + 3] = 255; }
+        var art = System.Windows.Media.Imaging.BitmapSource.Create(200, 200, 96, 96, PixelFormats.Bgra32, null, pixels, 800);
+        art.Freeze();
+        model.Media.SetForTest(new MediaSession.Track("Disturbia", "Rihanna", "Playing", "Spotify.exe", null, 83, 227), art);
+        try
+        {
+            var window = dock.OpenWidget("Now Playing Artwork") ?? throw new InvalidOperationException("The player window did not open.");
+            await WaitFor(() => FaceText(window).Contains("Disturbia"));
+            string text = FaceText(window);
+            if (!text.Contains("Rihanna") || !text.Contains("Spotify") || !text.Contains("1:2") || !text.Contains("3:47"))
+                throw new InvalidOperationException("The player window is incomplete: " + text);
+            if (FindControl(window, L10n.T("Pause")) is not Button || FindControl(window, L10n.T("Prev")) is not Button || FindControl(window, L10n.T("Next")) is not Button)
+                throw new InvalidOperationException("The player buttons are missing.");
+            Capture(window, Path.Combine(folder, "player.png"));
+            window.Close();
+        }
+        finally { model.Media.SetForTest(null!, null); }
+    }
+
     // Размер виджета звука: по умолчанию 242, выбранная ширина применяется к плитке и сохраняется в профиле, у других виджетов размера нет
     private static async System.Threading.Tasks.Task VerifyWidgetSize(DockWindow dock, DockModel model)
     {
@@ -756,6 +911,9 @@ internal static partial class Program
         bool transparent = false, opaque = false;
         for (int i = 3; i < pixels.Length; i += 4) { transparent |= pixels[i] == 0; opaque |= pixels[i] == 255; }
         if (!transparent || !opaque) throw new InvalidOperationException("The icon has no transparency.");
+        // значок приложения из магазина берётся из «Приложений» по идентификатору (у exe таких приложений своего значка нет)
+        var packaged = WindowsShell.ShellImage(@"shell:AppsFolder\windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel", 256);
+        if (packaged is null || packaged.PixelWidth < 64) throw new InvalidOperationException("The Store app icon from the Apps folder is missing.");
     }
 
     // Док на втором мониторе: настройка включена по умолчанию, дополнительный док стоит внизу своего монитора и целиком в его границах (на одном мониторе проверка пропускается)

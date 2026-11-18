@@ -32,7 +32,7 @@ internal static partial class WindowsShell
             if (pid == Environment.ProcessId) return true;
             using var process = Process.GetProcessByIdSafe(pid);
             if (process is null) return true;
-            var path = ProcessPath(pid);
+            var path = AppPath(window, pid);
             var name = Path.GetFileNameWithoutExtension(path);
             if (string.IsNullOrEmpty(name)) name = process.ProcessName;
             list.Add(new(window, title.ToString(), string.IsNullOrEmpty(path) ? name + ".exe" : path, name));
@@ -84,7 +84,35 @@ internal static partial class WindowsShell
     internal static string WindowApp(nint window)
     {
         GetWindowThreadProcessId(window, out uint pid);
-        return pid == 0 ? "" : ProcessPath(pid);
+        return pid == 0 ? "" : AppPath(window, pid);
+    }
+
+    // Окна приложений из магазина (Параметры, Калькулятор и другие) принадлежат процессу ApplicationFrameHost, и все они сливались в одну плитку с общим значком;
+    // настоящая программа — процесс дочернего окна Windows.UI.Core.CoreWindow
+    private static string AppPath(nint window, uint pid)
+    {
+        var path = ProcessPath(pid);
+        if (!string.Equals(Path.GetFileName(path), "ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase)) return path;
+        uint core = 0;
+        EnumChildWindows(window, (child, _) =>
+        {
+            var name = new StringBuilder(64);
+            GetClassName(child, name, name.Capacity);
+            if (name.ToString() != "Windows.UI.Core.CoreWindow") return true;
+            GetWindowThreadProcessId(child, out uint childPid);
+            if (childPid == pid) return true;
+            core = childPid;
+            return false;
+        }, 0);
+        var real = core == 0 ? "" : ProcessPath(core);
+        return real.Length == 0 ? path : real;
+    }
+
+    private static bool IsFrameWindow(nint window)
+    {
+        var name = new StringBuilder(64);
+        GetClassName(window, name, name.Capacity);
+        return name.ToString() == "ApplicationFrameWindow";
     }
 
     // Сообщение оболочки о том, что окно мигает в панели задач (HSHELL_FLASH): для него окно дока подписывается на сообщения оболочки
@@ -175,6 +203,11 @@ internal static partial class WindowsShell
 
     public static ImageSource? Icon(string app, nint window = default)
     {
+        // приложение из магазина (в ApplicationFrameHost или MSIX, как WhatsApp): у его exe нет своего значка, на плитке была бы заглушка;
+        // настоящий значок из манифеста пакета берётся из «Приложений» по идентификатору окна
+        if (window != 0 && (IsFrameWindow(window) || app.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase))
+            && JumpList.AppId(window) is { Length: > 0 } appId
+            && ShellImage("shell:AppsFolder\\" + appId, 256) is { } packaged) return packaged;
         // сначала значок высокого разрешения из оболочки (до 256 px): значок окна и ExtractAssociatedIcon дают только 32 px, они расплываются на плитке и при увеличении
         var sharp = HighResIcon(MatchApp(app));
         if (sharp is not null) return sharp;
@@ -207,6 +240,12 @@ internal static partial class WindowsShell
     public static BitmapSource? HighResIcon(string? path, int size = 256)
     {
         if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path) || !(File.Exists(path) || Directory.Exists(path))) return null;
+        return ShellImage(path, size);
+    }
+
+    // Значок объекта оболочки по имени для разбора (путь или shell:AppsFolder\идентификатор)
+    internal static BitmapSource? ShellImage(string path, int size)
+    {
         var id = typeof(IShellImageFactory).GUID;
         IShellImageFactory? factory = null;
         nint bitmap = 0;
@@ -441,6 +480,7 @@ internal static partial class WindowsShell
     { public byte AC, Flags, Percent, Reserved; public uint Lifetime, FullLifetime; }
     private delegate bool WindowEnumerator(nint window, nint param);
     [DllImport("user32")] private static extern bool EnumWindows(WindowEnumerator callback, nint param);
+    [DllImport("user32")] private static extern bool EnumChildWindows(nint parent, WindowEnumerator callback, nint param);
     [DllImport("user32")] private static extern bool IsWindowVisible(nint window);
     [DllImport("user32")] private static extern bool IsIconic(nint window);
     [DllImport("user32")] private static extern nint GetWindow(nint window, uint command);

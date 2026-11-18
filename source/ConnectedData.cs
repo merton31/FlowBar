@@ -127,6 +127,7 @@ internal sealed partial class ConnectedData
         }
         catch (HttpRequestException ex)
         {
+            ErrorLog.Write(ex, "Provider");
             Errors[id] = ex.StatusCode switch
             {
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => "Access denied. Check the key, account and read permissions.",
@@ -135,7 +136,7 @@ internal sealed partial class ConnectedData
             };
         }
         catch (FormatException ex) { Errors[id] = ex.Message; }
-        catch (Exception ex) when (LiveData.IsDataError(ex)) { Errors[id] = "The provider did not return the expected data."; }
+        catch (Exception ex) when (LiveData.IsDataError(ex)) { ErrorLog.Write(ex, "Provider"); Errors[id] = "The provider did not return the expected data."; }
         finally { inFlight.Remove(id); }
     }
 
@@ -309,6 +310,7 @@ internal sealed partial class ConnectedData
         }
         catch (HttpRequestException ex)
         {
+            ErrorLog.Write(ex, "Prices");
             return snapshot with { PriceStatus = ex.StatusCode switch
             {
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => "Finnhub denied access to historical prices for this key.",
@@ -318,6 +320,7 @@ internal sealed partial class ConnectedData
         }
         catch (Exception ex) when (LiveData.IsDataError(ex))
         {
+            ErrorLog.Write(ex, "Prices");
             return snapshot with { PriceStatus = "Historical prices are unavailable." };
         }
     }

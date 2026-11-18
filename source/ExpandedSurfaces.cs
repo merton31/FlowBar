@@ -136,24 +136,126 @@ internal sealed partial class DockWindow
         Draw();
     });
 
+    // Название приложения-источника для подписи: «Spotify.exe» -> «Spotify», «Microsoft.ZuneMusic_8weky!App» -> «ZuneMusic»
+    internal static string SourceName(string source)
+    {
+        string name = source.Split('!')[0];
+        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+        if (name.Contains('_')) name = name[..name.IndexOf('_')];
+        if (name.Contains('.')) name = name[(name.LastIndexOf('.') + 1)..];
+        return name;
+    }
+
+    private static string ClockText(double seconds)
+    {
+        var time = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return time.TotalHours >= 1 ? $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}" : $"{time.Minutes}:{time.Seconds:00}";
+    }
+
     private void MediaSurface(DockPanel content, Window window)
     {
-        var title = Text("Now Playing", 19, true);
-        var artist = Text("", 13, false, Muted);
-        var play = Button(Symbol("\uE768"), () => WindowsShell.Key(0xB3), Accent(P));
-        var info = Stack(title, artist, RowStack(Button(Symbol("\uE892"), () => WindowsShell.Key(0xB1)),
-            play, Button(Symbol("\uE893"), () => WindowsShell.Key(0xB0))));
-        info.Margin = new(11, 2, 0, 0);
-        var photo = new Image { Width = 82, Height = 82, Stretch = Stretch.UniformToFill };
-        var display = RowStack(Card(photo, 12), info);
-        content.Children.Add(display);
+        // Крупная обложка с её размытой копией на фоне карточки; справа название, исполнитель и источник; ниже полоса времени с перемоткой и кнопки
+        var backdrop = new Image { Stretch = Stretch.UniformToFill, Opacity = .55, Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 32 } };
+        RenderOptions.SetBitmapScalingMode(backdrop, BitmapScalingMode.HighQuality);
+        var shade = new Border { Background = new LinearGradientBrush(Color.FromArgb(0x40, 0x14, 0x14, 0x16), Color.FromArgb(0xE8, 0x14, 0x14, 0x16), 90) };
+        var cover = new Image { Stretch = Stretch.UniformToFill };
+        RenderOptions.SetBitmapScalingMode(cover, BitmapScalingMode.HighQuality);
+        var placeholder = Symbol("\uE8D6", 44, Muted);
+        var coverFrame = new Grid { Width = 150, Height = 150, Background = Brush("#2A2A2D"), Clip = new RectangleGeometry(new Rect(0, 0, 150, 150), 14, 14) };
+        coverFrame.Children.Add(placeholder);
+        coverFrame.Children.Add(cover);
+        var coverShadow = new Border { Child = coverFrame, Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 26, ShadowDepth = 6, Opacity = .6 } };
+        var title = RawText("", 21, true, Paper);
+        title.TextWrapping = TextWrapping.Wrap;
+        title.MaxHeight = 58;
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
+        var artist = RawText("", 14, false, Muted);
+        artist.TextTrimming = TextTrimming.CharacterEllipsis;
+        artist.Margin = new(0, 3, 0, 0);
+        var sourceText = RawText("", 11, true, Paper);
+        var source = Card(sourceText, 9, Brush("#33FFFFFF"));
+        source.Padding = new(9, 2, 9, 3);
+        source.HorizontalAlignment = HorizontalAlignment.Left;
+        source.Margin = new(0, 10, 0, 0);
+        var info = Stack(title, artist, source);
+        info.VerticalAlignment = VerticalAlignment.Center;
+        info.Margin = new(18, 0, 0, 0);
+        var head = new DockPanel();
+        DockPanel.SetDock(coverShadow, Dock.Left);
+        head.Children.Add(coverShadow);
+        head.Children.Add(info);
+
+        var bar = FilledMeter(Brushes.White, 5, "Now Playing", Brush("#40FFFFFF"));
+        bar.Maximum = 1;
+        bar.VerticalAlignment = VerticalAlignment.Center;
+        var hit = new Grid { Height = 22, Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand, Margin = new(0, 14, 0, 0) };
+        hit.Children.Add(bar);
+        var elapsed = RawText("0:00", 12, false, Muted);
+        var total = RawText("0:00", 12, false, Muted);
+        var times = Right(elapsed, total);
+        hit.MouseLeftButtonUp += (_, e) =>
+        {
+            var track = model.Media.Current;
+            if (track is null || track.Duration <= 1 || hit.ActualWidth <= 0) return;
+            _ = model.Media.SeekAsync(Math.Clamp(e.GetPosition(hit).X / hit.ActualWidth, 0, 1) * track.Duration);
+        };
+
+        Button Round(string glyph, double glyphSize, double size, Brush background, byte key, string name)
+        {
+            var button = Button(Symbol(glyph, glyphSize, Brushes.White), () => WindowsShell.Key(key), background, size / 2);
+            button.Width = button.Height = size;
+            button.Padding = new(0);
+            button.Margin = new(7, 0, 7, 0);
+            System.Windows.Automation.AutomationProperties.SetName(button, L10n.T(name));
+            button.ToolTip = L10n.T(name);
+            return button;
+        }
+        var previous = Round("\uE892", 16, 44, Brush("#2EFFFFFF"), 0xB1, "Prev");
+        var play = Round("\uE768", 22, 56, Accent(P), 0xB3, "Play");
+        var next = Round("\uE893", 16, 44, Brush("#2EFFFFFF"), 0xB0, "Next");
+        var buttons = RowStack(previous, play, next);
+        buttons.HorizontalAlignment = HorizontalAlignment.Center;
+        buttons.Margin = new(0, 12, 0, 0);
+
+        var body = Stack(head, hit, times, buttons);
+        body.Margin = new(20);
+        body.VerticalAlignment = VerticalAlignment.Center;
+        var layers = new Grid { ClipToBounds = true };
+        layers.Children.Add(backdrop);
+        layers.Children.Add(shade);
+        layers.Children.Add(body);
+        layers.SizeChanged += (_, e) => layers.Clip = new RectangleGeometry(new Rect(0, 0, e.NewSize.Width, e.NewSize.Height), 16, 16);
+        var card = Card(layers, 16, Brush("#1A1A1C"));
+        content.Children.Add(card);
+
         Live(window, () =>
         {
             var track = model.Media.Current;
-            title.Text = string.IsNullOrWhiteSpace(track?.Title) ? L10n.T("Now Playing") : track.Title;
-            artist.Text = track?.Artist ?? L10n.T("No active media");
-            photo.Source = model.Media.Artwork;
-            ((TextBlock)play.Content).Text = track?.State == "Playing" ? "\uE769" : "\uE768";
+            bool known = !string.IsNullOrWhiteSpace(track?.Title);
+            title.Text = known ? track!.Title : L10n.T("Now Playing");
+            artist.Text = known ? track!.Artist : L10n.T("No active media");
+            source.Visibility = known && !string.IsNullOrWhiteSpace(track!.Source) ? Visibility.Visible : Visibility.Collapsed;
+            sourceText.Text = known ? SourceName(track!.Source) : "";
+            var art = model.Media.Artwork;
+            if (!ReferenceEquals(cover.Source, art))
+            {
+                cover.Source = art;
+                backdrop.Source = art;
+                placeholder.Visibility = art is null ? Visibility.Visible : Visibility.Collapsed;
+            }
+            bool playing = track?.State == "Playing";
+            ((TextBlock)play.Content).Text = playing ? "\uE769" : "\uE768";
+            string playName = L10n.T(playing ? "Pause" : "Play");
+            System.Windows.Automation.AutomationProperties.SetName(play, playName);
+            play.ToolTip = playName;
+            double length = track?.Duration ?? 0;
+            bool timed = known && length > 1;
+            hit.Visibility = times.Visibility = timed ? Visibility.Visible : Visibility.Collapsed;
+            if (!timed) return;
+            double position = Math.Clamp(track!.Position + (playing ? (DateTimeOffset.Now - model.Media.ReadAt).TotalSeconds : 0), 0, length);
+            bar.Value = position / length;
+            elapsed.Text = ClockText(position);
+            total.Text = ClockText(length);
         });
     }
 

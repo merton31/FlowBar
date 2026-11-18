@@ -78,6 +78,7 @@ internal sealed class LiveData
         }
         catch (Exception ex) when (IsDataError(ex))
         {
+            ErrorLog.Write(ex, "Weather");
             if (currentQueries["weather"] == query) WeatherError = "Weather unavailable. Try refreshing.";
         }
         finally { pending.Remove(name); }
@@ -139,6 +140,7 @@ internal sealed class LiveData
         }
         catch (Exception ex) when (IsDataError(ex))
         {
+            ErrorLog.Write(ex, "Data");
             if (currentQueries[id] == terms)
                 Errors[id] = ex is FormatException ? ex.Message : "Data unavailable. Check the input or try again.";
         }

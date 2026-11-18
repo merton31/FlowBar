@@ -41,6 +41,8 @@ internal sealed class Preferences
     public bool AppBadges { get; set; } = true;
     // Если подключено несколько мониторов, на каждом из них свой док (по умолчанию включено)
     public bool AllMonitors { get; set; } = true;
+    // Закреплённые приложения всегда на месте: когда док не вмещает всё, колесом мыши прокручиваются только открытые приложения (выключено — прокручиваются все)
+    public bool StickyPinnedApps { get; set; } = true;
     // Ширина виджетов, размер которых можно менять (пока только «Вывод звука»): идентификатор виджета -> ширина плитки
     public Dictionary<string, double> WidgetWidths { get; set; } = [];
     // Плеер в доке по умолчанию в виде обложки с кнопками; у уже существующего профиля меняется один раз
@@ -131,8 +133,8 @@ internal sealed class DockModel
                 ? JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Profile)) ?? new()
                 : new();
         }
-        catch (JsonException) { Settings = new(); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Settings = new(); }
+        catch (JsonException ex) { ErrorLog.Write(ex, "Settings load"); Settings = new(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write(ex, "Settings load"); Settings = new(); }
         if (!exists && path is null)
         {
             var shortcuts = WindowsShell.StartMenuShortcuts();
@@ -169,6 +171,7 @@ internal sealed class DockModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            ErrorLog.Write(ex, "Settings save");
             SaveFailed?.Invoke(ex.Message);
         }
         if (redraw) Changed?.Invoke();

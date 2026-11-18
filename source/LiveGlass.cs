@@ -65,7 +65,7 @@ internal sealed class LiveGlass : IDisposable
                 resize.DrawImage(capture, 0, 0, columns, rows);
             }
         }
-        catch (ExternalException) { return null; }
+        catch (ExternalException ex) { ErrorLog.Write(ex, "Glass"); return null; }
 
         var pixels = scaled.LockBits(new Rectangle(0, 0, columns, rows), ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
         try { Marshal.Copy(pixels.Scan0, sample, 0, sample.Length); }
