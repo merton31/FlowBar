@@ -25,9 +25,9 @@ foreach ($mode in '--smoke', '--audit-ui', '--check-install', '--check-dictation
     $folder = Join-Path $tmp ('check' + $mode)
     New-Item -ItemType Directory $folder | Out-Null
     $p = Start-Process $exe -ArgumentList $mode, $folder -PassThru
-    if (-not $p.WaitForExit(300000)) { $p.Kill(); throw "$mode: не завершилась за 5 минут" }
+    if (-not $p.WaitForExit(300000)) { $p.Kill(); throw "${mode}: не завершилась за 5 минут" }
     $last = (Get-Content (Join-Path $folder 'result.txt') -Tail 1 -ErrorAction SilentlyContinue)
-    if ($last -ne 'OK') { throw "$mode не прошла: $last" }
+    if ($last -ne 'OK') { throw "${mode} не прошла: ${last}" }
 }
 $dir = New-Item -ItemType Directory -Force (Join-Path $tmp 'FlowBar')
 Copy-Item $exe $dir
