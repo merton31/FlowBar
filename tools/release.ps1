@@ -1,4 +1,4 @@
-# Выпуск FlowBar: сборка одним файлом, архив FlowBar.zip и описание из CHANGELOG.md.
+﻿# Выпуск FlowBar: сборка одним файлом, архив FlowBar.zip и описание из CHANGELOG.md.
 # Запуск: tools\release.ps1 -Version 2.0.1 (после слияния в main). Обновление FlowBar читает последний выпуск: тег vX.Y.Z, архив FlowBar*.zip с FlowBar.exe, сумму SHA-256 сообщает GitHub.
 param([Parameter(Mandatory)][string]$Version)
 $ErrorActionPreference = 'Stop'
