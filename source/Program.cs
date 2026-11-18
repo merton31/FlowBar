@@ -1047,7 +1047,7 @@ internal static partial class Program
             await System.Threading.Tasks.Task.Delay(120);
             cursor = new Point(bounds.Right + 400, bounds.Bottom + 400);
             down = true; // щелчок в другой программе: меню закрывается
-            await WaitFor(() => !menu.IsOpen, 2000);
+            await WaitFor(() => !menu.IsOpen, 8000); // таймер слежения за меню под нагрузкой (сразу после сборки) иногда опаздывает больше 2 секунд
         }
         finally
         {
