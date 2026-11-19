@@ -347,6 +347,24 @@ internal static partial class WindowsShell
             && rect.Right >= screenPixels.Right && rect.Bottom >= screenPixels.Bottom;
     }
 
+    // Игра на весь экран: Windows сам не выдвигает панель над ней (над браузером и видео — выдвигает).
+    // Эксклюзивный Direct3D и показ презентации сообщает сама система; игры в окне без рамки распознаём по папке установки (Steam, Epic, GOG…) и классу окна движка.
+    public static bool IsGameForeground()
+    {
+        if (SHQueryUserNotificationState(out int state) == 0 && state is 3 or 4) return true;
+        var handle = GetForegroundWindow();
+        if (handle == 0) return false;
+        var className = new StringBuilder(128);
+        GetClassName(handle, className, className.Capacity);
+        if (className.ToString() is "UnrealWindow" or "UnityWndClass" or "GLFW30" or "Valve001" or "CryENGINE" or "UnityContainerWndClass") return true;
+        GetWindowThreadProcessId(handle, out var pid);
+        string path = ProcessPath(pid);
+        return Array.Exists([@"\steamapps\common\", @"\epic games\", @"\gog galaxy\games\", @"\gog games\", @"\riot games\", @"\battle.net\", @"\ubisoft game launcher\games\", @"\xboxgames\"],
+            part => path.Contains(part, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [DllImport("shell32")] private static extern int SHQueryUserNotificationState(out int state);
+
     public static void Activate(nint handle, bool toggle = false)
     {
         if (toggle && handle == GetForegroundWindow() && !IsIconic(handle)) ShowWindowAsync(handle, 6);

@@ -61,6 +61,7 @@ internal static class WindowsPins
     {
         bool changed = false;
         int previous = items.IndexOf("Start");
+        if (previous >= 0 && previous + 1 < items.Count && items[previous + 1] == "Search") previous++; // программы идут после кнопки поиска
         foreach (var pin in pins)
         {
             string name = key(pin);
@@ -169,6 +170,46 @@ internal static partial class WindowsShell
     }
 
     internal static bool StoreAppExists(string path) => StoreAppName(path) is not null;
+
+    [StructLayout(LayoutKind.Sequential)] private struct ProcessBasic { public nint Exit, Peb, Affinity, Priority, Id, ParentId; }
+    [DllImport("ntdll")] private static extern int NtQueryInformationProcess(nint process, int kind, ref ProcessBasic info, int size, out int length);
+
+    private static uint ParentOf(uint pid)
+    {
+        var handle = OpenProcess(0x1000, false, pid);
+        if (handle == 0) return 0;
+        try
+        {
+            var info = new ProcessBasic();
+            return NtQueryInformationProcess(handle, 0, ref info, Marshal.SizeOf<ProcessBasic>(), out _) == 0 ? (uint)info.ParentId : 0;
+        }
+        finally { CloseHandle(handle); }
+    }
+
+    // host запустил app и лежит в папке выше него: помощник и его главная программа (окно Steam принадлежит steamwebhelper.exe, закреплён steam.exe).
+    // Папки Windows не считаются: иначе любое окно, запущенное из Проводника, сливалось бы с его значком.
+    internal static bool IsHostOf(string app, string host)
+    {
+        var folder = Path.GetDirectoryName(host);
+        return folder is not null && !host.Equals(app, StringComparison.OrdinalIgnoreCase)
+            && app.StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            && !(folder + Path.DirectorySeparatorChar).StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Главные программы окна (до трёх родителей вверх по цепочке запуска), см. IsHostOf
+    internal static List<string> HostApps(nint window, string app)
+    {
+        var hosts = new List<string>();
+        GetWindowThreadProcessId(window, out uint current);
+        for (int level = 0; level < 3 && current != 0; level++)
+        {
+            current = ParentOf(current);
+            string path = current == 0 ? "" : ProcessPath(current);
+            if (path.Length == 0) break;
+            if (IsHostOf(app, path)) hosts.Add(ResolveApp(path));
+        }
+        return hosts;
+    }
 
     // Подпись плитки программы: у приложений из магазина название из «Приложений», у остальных имя файла
     internal static string AppLabel(string path) => IsStoreApp(path) ? StoreAppName(path) ?? path : Path.GetFileNameWithoutExtension(path);

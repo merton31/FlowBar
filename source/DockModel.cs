@@ -63,6 +63,7 @@ internal sealed class Preferences
     public Dictionary<string, double> WidgetWidths { get; set; } = [];
     // Плеер в доке по умолчанию в виде обложки с кнопками; у уже существующего профиля меняется один раз
     public bool PlayerArtworkApplied { get; set; }
+    public bool SearchButtonApplied { get; set; }
     // Виджет переключения темы убран из дока по умолчанию; у существующего профиля снимается один раз (в галерее остаётся, добавить можно снова)
     public bool ThemeToggleRemoved { get; set; }
     public bool Magnification { get; set; }
@@ -92,7 +93,7 @@ internal sealed class Preferences
     public bool AlertSound { get; set; } = true;
     public string Sound { get; set; } = "Crystal";
     public List<string> Items { get; set; } =
-        ["Todos", "Start", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Language", "Audio Output", "Quick Toggles", "Tray", "Clock"];
+        ["Todos", "Start", "Search", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Language", "Audio Output", "Quick Toggles", "Tray", "Clock"];
     public List<Todo> Todos { get; set; } = [];
     public string Notes { get; set; } = "";
 }
@@ -198,6 +199,13 @@ internal sealed class DockModel
             Settings.PlayerArtworkApplied = true;
             int player = Settings.Items.IndexOf("Now Playing");
             if (player >= 0 && !Settings.Items.Contains("Now Playing Artwork")) Settings.Items[player] = "Now Playing Artwork";
+        }
+        if (!Settings.SearchButtonApplied)
+        {
+            // один раз: кнопка поиска рядом с «Пуск», как в Windows; убранную позже обратно не возвращаем
+            Settings.SearchButtonApplied = true;
+            int start = Settings.Items.IndexOf("Start");
+            if (start >= 0 && !Settings.Items.Contains("Search")) Settings.Items.Insert(start + 1, "Search");
         }
         EnsurePinned();
         savedSummary = BugReport.SettingsSummary(Settings); // исходное состояние для сравнения при первом сохранении

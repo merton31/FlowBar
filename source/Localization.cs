@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -793,6 +793,8 @@ internal static partial class L10n
         ["Network settings"] = "Параметры сети",
         ["Monitor brightness control is unavailable."] = "Управление яркостью монитора недоступно.",
         ["Brightness unavailable"] = "Яркость недоступна",
+        ["Monitor {0}"] = "Монитор {0}",
+        ["Monitor {0} (main)"] = "Монитор {0} (основной)",
         ["Offline"] = "Нет подключения",
         ["Region"] = "Область",
         ["Window"] = "Окно",
