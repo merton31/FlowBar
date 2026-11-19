@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -191,7 +192,12 @@ internal static partial class WindowsShell
                 automation = Activator.CreateInstance(type);
                 link = ((dynamic)automation!).CreateShortcut(path);
                 string target = ((dynamic)link).TargetPath;
-                if (Path.IsPathFullyQualified(target) && File.Exists(target)) result = target;
+                // Ярлык Squirrel-программы из панели Windows запускает «Update.exe --processStart X.exe»: настоящая программа — X.exe рядом
+                string arguments = ((dynamic)link).Arguments ?? "";
+                var started = Regex.Match(arguments, @"--processStart\s+""?(?<exe>[^"" ]+\.exe)", RegexOptions.IgnoreCase);
+                if (started.Success && string.Equals(Path.GetFileName(target), "Update.exe", StringComparison.OrdinalIgnoreCase) && Path.GetDirectoryName(target) is { } home)
+                    target = Path.Combine(home, started.Groups["exe"].Value);
+                if (Path.IsPathFullyQualified(target) && File.Exists(target)) result = VersionedStub(target);
             }
         }
         catch (Exception ex) when (ex is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { }
@@ -248,6 +254,7 @@ internal static partial class WindowsShell
 
     public static ImageSource? Icon(string app, nint window = default)
     {
+        if (IsStoreApp(app)) return ShellImage(app, 256); // закреплённое приложение из магазина (id «shell:AppsFolder\…»): значок из «Приложений»
         // приложение из магазина (в ApplicationFrameHost или MSIX, как WhatsApp): у его exe нет своего значка, на плитке была бы заглушка;
         // настоящий значок из манифеста пакета берётся из «Приложений» по идентификатору окна
         if (window != 0 && (IsFrameWindow(window) || app.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase))

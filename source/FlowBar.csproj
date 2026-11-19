@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>FlowBar</AssemblyName>
     <Product>FlowBar</Product>
-    <Version>2.0.0.5</Version>
+    <Version>2.0.0.6</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

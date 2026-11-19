@@ -20,6 +20,7 @@ internal sealed partial class DockWindow
     private static string AppTitle(string path, List<WindowsShell.WindowInfo> running)
     {
         if (AppTitles.TryGetValue(path, out var cached)) return cached;
+        if (WindowsShell.IsStoreApp(path)) return AppTitles[path] = WindowsShell.AppLabel(path);
         string title = "";
         try
         {
