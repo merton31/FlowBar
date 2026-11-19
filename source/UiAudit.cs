@@ -48,6 +48,7 @@ internal static partial class Program
                 }
                 string route;
                 if (id == "TikTok") route = "Лента в отдельном окне браузера; здесь не открывается";
+                else if (id == "Tray") route = "Системный трей Windows; здесь не открывается";
                 else if (DockWindow.NativeWidgetAction(id) is not null) route = "Native action assigned; not executed";
                 else
                 {
