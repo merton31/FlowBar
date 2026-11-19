@@ -19,7 +19,6 @@ namespace LumaDock;
 
 internal sealed partial class DockWindow : Window
 {
-    private const string DragId = "LumaDock.DockItem";
     private readonly DockModel model;
     private readonly bool smoke;
     private readonly bool previewLiveGlass;
@@ -64,7 +63,17 @@ internal sealed partial class DockWindow : Window
     private DateTime flashUntil;
     private List<WindowsShell.WindowInfo> windows = [];
     private string windowSignature = "";
+    // Монитор каждого окна и активное окно: из них складываются значки открытых окон под иконками
+    private Dictionary<nint, string> windowScreens = [];
+    private nint activeWindow;
     private Rect display;
+    // Виджеты этого дока: у дополнительного монитора со своей раскладкой — его список, иначе общий (основной)
+    internal List<string> Items => monitor is not null && P.Monitors.TryGetValue(monitor.DeviceName, out var setup) && setup.Widgets == "own" ? setup.Items : P.Items;
+    // «Только приложения» на дополнительном мониторе: без виджетов, остаются Пуск и значки программ
+    private bool AppsOnly => monitor is not null && P.Monitors.TryGetValue(monitor.DeviceName, out var setup) && setup.Widgets == "none";
+    private bool PinnedHere(string id) => ReferenceEquals(Items, P.Items) && model.IsPinned(id);
+    // Монитор этого дока (основной — у главного)
+    private Screen ThisScreen => monitor ?? Screen.PrimaryScreen ?? Screen.AllScreens[0];
     private nint handle;
     private int ticks;
     private bool reserved, placing;
@@ -110,6 +119,7 @@ internal sealed partial class DockWindow : Window
         Content = dockRoot;
         ContextMenu = CommonMenu();
         AllowDrop = true;
+        WireDrag();
         Drop += (_, e) =>
         {
             if (!e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
@@ -131,11 +141,16 @@ internal sealed partial class DockWindow : Window
                 if (msg == 0x0312 && w >= 1 && w <= Hotkeys.Items.Length)
                 {
                     int slot = (int)w - 1;
+                    ActivityLog.Record("горячая клавиша", (slot + 1).ToString());
                     Dispatcher.BeginInvoke(() => RunHotkey(slot));
                     handled = true;
                 }
                 if (msg == 0x8066 && w == 1 && reserved && !placing)
                     Dispatcher.BeginInvoke(() => PlaceLayout((FrameworkElement)background.Child, renegotiate: true));
+                if (msg == taskbarRestart) ActivityLog.Record("система: панель задач Windows перезапущена");
+                else if (msg == 0x007E) ActivityLog.Record("система: изменились параметры экрана");
+                else if (msg == 0x02E0) ActivityLog.Record("система: изменился масштаб экрана (DPI)");
+                if (msg == 0x8066 && w == 1 && reserved && !placing) ActivityLog.Record("система: Windows изменила рабочую область");
                 if (msg == taskbarRestart)
                 {
                     reserved = false;
@@ -235,11 +250,17 @@ internal sealed partial class DockWindow : Window
     private void ReadWindows()
     {
         var current = WindowsShell.Windows();
-        var signature = string.Join('|', current.OrderBy(item => item.Handle).Select(item => $"{item.Handle}:{item.Title}"));
+        // Активным считается последнее окно из списка, бывшее на переднем плане (сам док фокус не берёт)
+        var front = WindowsShell.Foreground();
+        if (current.Any(item => item.Handle == front)) activeWindow = front;
+        else if (!current.Any(item => item.Handle == activeWindow)) activeWindow = 0;
+        var screens = current.ToDictionary(item => item.Handle, item => WindowsShell.ScreenOf(item.Handle));
+        var signature = string.Join('|', current.OrderBy(item => item.Handle).Select(item => $"{item.Handle}:{item.Title}:{screens[item.Handle]}")) + "#" + activeWindow;
         if (signature == windowSignature) return;
         windowSignature = signature;
         windows = current;
-            if (!IsMouseOver && ContextMenu?.IsOpen != true && thumbnail is null) Refresh();
+        windowScreens = screens;
+        if (!IsMouseOver && ContextMenu?.IsOpen != true && thumbnail is null) Refresh();
         else windowsDirty = true;
     }
 
@@ -258,6 +279,8 @@ internal sealed partial class DockWindow : Window
     }
 
     private bool windowsDirty;
+    private DateTime hoverUntil;
+    private bool lastFullscreen;
     private void Tick()
     {
         if (!secondary) model.Tick();
@@ -279,10 +302,19 @@ internal sealed partial class DockWindow : Window
                 pointer.X >= Left * dpi.DpiScaleX && pointer.X < (Left + Width) * dpi.DpiScaleX;
             // поверх полноэкранного окна (браузер, видео) дока не видно, но он выезжает, если подержать указатель у нижнего края (около полсекунды: в играх от случайного касания края он не мешает)
             edgeTicks = fullscreen && atEdge ? edgeTicks + 1 : 0;
-            var visible = BarShouldShow(fullscreen, P.AutoHide, P.ShowOnDesktop && WindowsShell.IsDesktopActive(), IsMouseOver, atEdge, edgeTicks,
-                surfaces.Values.Any(surface => surface.IsActive) || DateTime.UtcNow < flashUntil);
+            // док не прячется, пока открыто что-то от него: меню, виджет или настройки (даже если окно потеряло фокус), миниатюра; после ухода указателя держится ещё секунду с небольшим
+            bool held = surfaces.Values.Any(surface => surface.IsVisible) || ContextMenu?.IsOpen == true || thumbnail is not null || DateTime.UtcNow < flashUntil || dragTile is not null;
+            if (held || IsMouseOver) hoverUntil = DateTime.UtcNow.AddMilliseconds(1200);
+            var visible = BarShouldShow(fullscreen, P.AutoHide, P.ShowOnDesktop && WindowsShell.IsDesktopActive() && windows.All(item => WindowsShell.Minimized(item.Handle)), DateTime.UtcNow < hoverUntil, atEdge, edgeTicks, held);
+            if (fullscreen != lastFullscreen)
+            {
+                lastFullscreen = fullscreen;
+                ActivityLog.Record(fullscreen ? "система: полноэкранное окно" : "система: полноэкранное окно закрыто", $"монитор {display.Width:0}×{display.Height:0}");
+            }
             if (visible != barVisible)
             {
+                ActivityLog.Record(visible ? "док показан" : "док скрыт",
+                    fullscreen ? "(полноэкранное окно" + (atEdge ? ", указатель у края)" : ")") : visible ? (held ? "(открыто окно или меню)" : atEdge ? "(указатель у края)" : "(указатель на доке)") : "(автоскрытие)");
                 barVisible = visible;
                 IsHitTestVisible = visible;
                 BeginAnimation(OpacityProperty, new DoubleAnimation(visible ? 1 : 0, TimeSpan.FromMilliseconds(125)));
@@ -303,8 +335,11 @@ internal sealed partial class DockWindow : Window
         if (!IsLoaded || !Looks.Glassy(P) || background.ActualWidth <= 0 || background.ActualHeight <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         var position = background.PointToScreen(new Point());
+        // Обычный режим: стекло из обоев (док не исключается из захвата, на части систем это даёт чёрную панель). Проверки с живым снимком экрана — как раньше
+        var shot = previewLiveGlass ? null : WallpaperShot();
         var snapshot = glass.Update((int)position.X, (int)position.Y,
-            (int)(background.ActualWidth * dpi.DpiScaleX), (int)(background.ActualHeight * dpi.DpiScaleY), Looks.Detail(P), Looks.Dispersion(P));
+            (int)(background.ActualWidth * dpi.DpiScaleX), (int)(background.ActualHeight * dpi.DpiScaleY), Looks.Detail(P), Looks.Dispersion(P), P.Refraction,
+            shot, (int)position.X - screenBounds.X, (int)position.Y - screenBounds.Y);
         if (snapshot is null) return;
         liveBackdrop.ImageSource = snapshot;
         background.Background = liveBackdrop;
@@ -313,7 +348,7 @@ internal sealed partial class DockWindow : Window
     private void RefreshOnline()
     {
         if (P.WeatherPlace is { } place) _ = model.Data.RefreshWeather(place);
-        foreach (var id in P.Items)
+        foreach (var id in P.Items.Concat(P.Monitors.Values.SelectMany(setup => setup.Items)).Distinct())
         {
             if (P.DataInputs.TryGetValue(id, out var terms)) _ = model.Data.RefreshQuote(id, terms);
             if (ConnectedData.Supports(id)) _ = model.Connected.Refresh(id, P);
@@ -360,7 +395,8 @@ internal sealed partial class DockWindow : Window
         double dt = Math.Min(.05, (now - magnetStamp) / (double)System.Diagnostics.Stopwatch.Frequency);
         magnetStamp = now;
         StepScroll(dt);
-        MagnifyStep(dt);
+        if (dragTile is not null) DragStep(dt);
+        else MagnifyStep(dt);
     }
 
     // Левый край плитки в координатах ряда дока без учёта её собственного увеличения и сдвига, но с учётом прокрутки списка приложений
@@ -466,21 +502,33 @@ internal sealed partial class DockWindow : Window
 
     private void Refresh()
     {
+        EndDrag(false); // плитки пересобираются, перенос в этот момент прерывается
         faces.Clear();
         magnets.Clear();
+        dragTiles.Clear();
         appScroller = null;
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
         magnetRow = row;
-        var groups = windows.GroupBy(item => WindowsShell.ResolveApp(item.App), StringComparer.OrdinalIgnoreCase)
+        // Какие окна показывает этот док: all — все, main — только основной, own — окна своего монитора; остальные видны кольцами у значка
+        var mode = P.WindowsOnDocks;
+        var shown = mode == "all" || mode == "main" && !secondary ? windows : mode == "main" ? [] : windows.Where(OnThisScreen).ToList();
+        var elsewhere = windows.Except(shown).ToList();
+        var groups = shown.GroupBy(item => WindowsShell.ResolveApp(item.App), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+        var elsewhereGroups = elsewhere.GroupBy(item => WindowsShell.ResolveApp(item.App), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
         var scale = P.Size / 75;
         var iconSize = P.IconSize * .76;
         var tileHeight = Math.Max(47, iconSize + 10);
-        var tiles = P.Items.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var tiles = Items.Distinct(StringComparer.OrdinalIgnoreCase).Where(id => !AppsOnly || id == "Start" || id.StartsWith("app:", StringComparison.Ordinal)).ToList();
         var pinned = tiles.Where(id => id.StartsWith("app:", StringComparison.Ordinal))
             .Select(id => WindowsShell.MatchApp(id[4..])).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var afterApps = tiles.FindLastIndex(id => id.StartsWith("app:", StringComparison.Ordinal) || id == "Start") + 1;
-        tiles.InsertRange(afterApps, groups.Keys.Where(path => !pinned.Contains(path)).OrderBy(path => path).Select(path => "app:" + path));
+        // открытые программы идут в порядке, который задал перенос мышью; новые встают в конец (по алфавиту, если появились сразу несколько)
+        var unpinned = groups.Keys.Where(path => !pinned.Contains(path)).OrderBy(path => path).ToList();
+        foreach (var path in unpinned)
+            if (!openOrder.Contains(path, StringComparer.OrdinalIgnoreCase)) openOrder.Add(path);
+        tiles.InsertRange(afterApps, openOrder.Where(path => unpinned.Contains(path, StringComparer.OrdinalIgnoreCase)).Select(path => "app:" + path));
         // Плитки приложений и папок собираются в один блок на месте первого из них: закреплённые стоят на месте, открытые лежат в списке с прокруткой колесом мыши
         StackPanel? pinnedStack = null, openStack = null;
         int appSlot = -1;
@@ -502,14 +550,16 @@ internal sealed partial class DockWindow : Window
                 Border? tile = null;
                 tile = Tile(id, Symbol("\uE8B7", 22, Accent(P)), tileHeight, tileHeight, () => OpenFiles(id, group, tile));
                 var menu = CommonMenu();
-                menu.Items.Insert(0, Menu("Remove from dock", () => { P.FileGroups.Remove(id); model.ToggleWidget(id); }));
+                menu.Items.Insert(0, Menu("Remove from dock", () => { P.FileGroups.Remove(id); model.ToggleWidget(id, Items); }));
                 tile.ContextMenu = menu;
                 AddApp(tile, true);
             }
             else if (id.StartsWith("app:", StringComparison.Ordinal))
             {
-                groups.TryGetValue(WindowsShell.MatchApp(id[4..]), out var running);
-                AddApp(AppTile(id, running ?? [], tileHeight, iconSize), P.Items.Contains(id, StringComparer.OrdinalIgnoreCase));
+                var appKey = WindowsShell.MatchApp(id[4..]);
+                groups.TryGetValue(appKey, out var running);
+                elsewhereGroups.TryGetValue(appKey, out var other);
+                AddApp(AppTile(id, running ?? [], other ?? [], tileHeight, iconSize), Items.Contains(id, StringComparer.OrdinalIgnoreCase));
             }
             else if (Widgets.Available.TryGetValue(id, out var widget))
             {
@@ -524,7 +574,8 @@ internal sealed partial class DockWindow : Window
                 tile = Tile(id, face, Widgets.WidthOf(P, widget), tileHeight, () => OpenWidget(id, tile));
                 if (id == "Pomodoro") tile.BorderBrush = Brush("#FF4A43");
                 var menu = CommonMenu();
-                if (!model.IsPinned(id)) menu.Items.Insert(0, Menu("Remove from dock", () => model.ToggleWidget(id)));
+                if (!PinnedHere(id)) menu.Items.Insert(0, Menu("Remove from dock", () => model.ToggleWidget(id, Items)));
+                AddShiftItems(menu, id, 0);
                 var sizes = Widgets.SizeChoices(id);
                 if (sizes.Length > 0)
                 {
@@ -587,7 +638,7 @@ internal sealed partial class DockWindow : Window
         var inner = Card(row, 15, Looks.Material(P) == "theme" && !Looks.Glassy(P) ? DockFinish(P.Style) : Looks.Surface(P, useLiveGlass));
         inner.Padding = new(Math.Max(0, P.Padding) * scale);
         background.Child = inner;
-        background.BorderThickness = new(1);
+        background.BorderThickness = new(Math.Clamp(P.DockBorder, 0, 4)); // толщина границы по краям панели, 0 — без границы
         background.BorderBrush = Looks.Rim(P);
         background.Background = useLiveGlass
             ? liveBackdrop.ImageSource is not null ? liveBackdrop : WallpaperBackdrop() ?? Brushes.Transparent
@@ -602,10 +653,50 @@ internal sealed partial class DockWindow : Window
 
     // Живое стекло снимает экран под доком. Окно дока (прозрачное, слоистое) попадало в такой снимок само, и стекло показывало собственное
     // тёмное изображение вместо фона. Пока стекло включено, док исключается из захвата экрана (WDA_EXCLUDEFROMCAPTURE, Windows 10 2004+).
+    private uint lastAffinity = uint.MaxValue;
+
     private void ExcludeFromCapture()
     {
         if (handle == 0) return;
-        SetWindowDisplayAffinity(handle, Looks.Glassy(P) && (!smoke || previewLiveGlass) ? 0x11u : 0u);
+        // Только при смене значения: повторный вызов на слоистом окне при каждой перерисовке (а она идёт при каждой смене активного окна) делал панель чёрной
+        uint affinity = Looks.Glassy(P) && previewLiveGlass ? 0x11u : 0u;
+        if (affinity == lastAffinity) return;
+        lastAffinity = affinity;
+        SetWindowDisplayAffinity(handle, affinity);
+    }
+
+    // Обои, растянутые по монитору дока (режим «Заполнить»): из них собирается стекло, пока не нужен живой снимок экрана
+    private System.Drawing.Bitmap? wallpaperShot;
+    private string? wallpaperShotKey;
+    private System.Drawing.Rectangle screenBounds;
+    private long wallpaperChecked;
+
+    private System.Drawing.Bitmap? WallpaperShot()
+    {
+        // обои и монитор проверяются раз в две секунды: на каждом кадре это лишняя работа
+        if (wallpaperShot is not null && Environment.TickCount64 - wallpaperChecked < 2000) return wallpaperShot;
+        wallpaperChecked = Environment.TickCount64;
+        var bounds = System.Windows.Forms.Screen.FromHandle(handle).Bounds;
+        screenBounds = bounds;
+        string key = WindowsShell.Wallpaper() + "|" + bounds;
+        if (key == wallpaperShotKey) return wallpaperShot;
+        wallpaperShotKey = key;
+        wallpaperShot?.Dispose();
+        wallpaperShot = new System.Drawing.Bitmap(bounds.Width, bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+        using var canvas = System.Drawing.Graphics.FromImage(wallpaperShot);
+        canvas.Clear(System.Drawing.Color.FromArgb(24, 24, 28));
+        var path = WindowsShell.Wallpaper();
+        if (path is null) return wallpaperShot;
+        try
+        {
+            using var image = System.Drawing.Image.FromFile(path);
+            double fit = Math.Max((double)bounds.Width / image.Width, (double)bounds.Height / image.Height);
+            int width = (int)(image.Width * fit), height = (int)(image.Height * fit);
+            canvas.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+            canvas.DrawImage(image, (bounds.Width - width) / 2, (bounds.Height - height) / 2, width, height);
+        }
+        catch (Exception ex) when (ex is IOException or OutOfMemoryException or ArgumentException or System.Runtime.InteropServices.ExternalException) { ErrorLog.Write(ex, "Wallpaper"); }
+        return wallpaperShot;
     }
 
     private Brush? WallpaperBackdrop()
@@ -730,9 +821,9 @@ internal sealed partial class DockWindow : Window
             tileColor = tileColor.Clone();
             tileColor.Opacity = 1 - .8 * Looks.Clear(P);
         }
-        var button = Button(face, click, tileColor, 13);
+        var button = Button(face, () => { ActivityLog.Record("нажатие на плитку", ActivityLog.Tile(id)); click(); }, tileColor, 13);
         var tile = Card(button,
-            14, Brushes.Transparent, cardVisible ? Brush(light ? "#A8CACAD0" : P.Style == "Liquid" ? "#28FFFFFF" : "#AD444447") : null);
+            14, Brushes.Transparent, cardVisible && P.TileBorders ? Brush(light ? "#A8CACAD0" : P.Style == "Liquid" ? "#28FFFFFF" : "#AD444447") : null);
         tile.Width = width;
         tile.Height = height;
         double spacing = Math.Max(0, P.Spacing) / 2;
@@ -747,29 +838,19 @@ internal sealed partial class DockWindow : Window
         var name = app ? Path.GetFileNameWithoutExtension(id[4..]) : id;
         AutomationProperties.SetName(button, app ? name : L10n.T(name));
         if (P.Names) tile.ToolTip = app ? name : L10n.T(name);
-        if (!P.Items.Contains(id) || P.Locked) return tile;
+        // переносятся закреплённые плитки и значки открытых программ (их порядок помнится, пока работает панель)
+        if (P.Locked || !app && !Items.Contains(id)) return tile;
+        dragTiles[tile] = id;
         Point start = default;
         tile.PreviewMouseLeftButtonDown += (_, eventArgs) => start = eventArgs.GetPosition(tile);
         tile.PreviewMouseMove += (_, eventArgs) =>
         {
-            if (eventArgs.LeftButton != MouseButtonState.Pressed || !tile.IsMouseCaptureWithin) return;
+            // ползунок звука внутри плитки тянется мышью — плитку при этом не переносим
+            if (eventArgs.LeftButton != MouseButtonState.Pressed || !tile.IsMouseCaptureWithin || dragTile is not null || Mouse.Captured is Widgets.VolumeStrip) return;
             var delta = eventArgs.GetPosition(tile) - start;
             if (Math.Abs(delta.X) > SystemParameters.MinimumHorizontalDragDistance ||
                 Math.Abs(delta.Y) > SystemParameters.MinimumVerticalDragDistance)
-                DragDrop.DoDragDrop(tile, new DataObject(DragId, id), DragDropEffects.Move);
-        };
-        tile.AllowDrop = true;
-        tile.DragOver += (_, e) =>
-        {
-            if (!e.Data.GetDataPresent(DragId)) return;
-            e.Effects = DragDropEffects.Move;
-            e.Handled = true;
-        };
-        tile.Drop += (_, e) =>
-        {
-            if (e.Data.GetData(DragId) is not string source) return;
-            e.Handled = true;
-            model.MoveItem(source, id);
+                BeginDrag(tile, id, start.X);
         };
         return tile;
     }
@@ -790,7 +871,9 @@ internal sealed partial class DockWindow : Window
         return tile;
     }
 
-    private Border AppTile(string id, List<WindowsShell.WindowInfo> running, double height, double iconSize)
+    private bool OnThisScreen(WindowsShell.WindowInfo window) => !windowScreens.TryGetValue(window.Handle, out var name) || name == ThisScreen.DeviceName; // монитор окна ещё не известен — считаем его здешним
+
+    private Border AppTile(string id, List<WindowsShell.WindowInfo> running, List<WindowsShell.WindowInfo> elsewhere, double height, double iconSize)
     {
         string path = id[4..];
         if (!icons.TryGetValue(path, out var image) || image is null && running.Count > 0)
@@ -799,11 +882,13 @@ internal sealed partial class DockWindow : Window
         RenderOptions.SetBitmapScalingMode(graphic, BitmapScalingMode.HighQuality);
         var layered = new Grid();
         layered.Children.Add(graphic);
-        if (running.Count > 0)
+        if (running.Count + elsewhere.Count > 0)
         {
-            var dot = new System.Windows.Shapes.Ellipse { Width = 3, Height = 3, Fill = Accent(P),
-                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom };
-            layered.Children.Add(dot);
+            // Чёрточки — окна на этом мониторе, кольца — на других; у активного окна чёрточка длиннее и цвета акцента
+            int here = running.Count(OnThisScreen);
+            bool active = running.Any(window => window.Handle == activeWindow && OnThisScreen(window));
+            var accent = (Accent(P) as SolidColorBrush)?.Color ?? Colors.DodgerBlue;
+            layered.Children.Add(new WindowIndicator(here, running.Count - here + elsewhere.Count, active, height, accent, LightTiles(P)));
         }
         if (P.AppBadges && running.Count > 0)
         {
@@ -821,11 +906,13 @@ internal sealed partial class DockWindow : Window
         tile = Tile(id, layered, height, height, () =>
         {
             CloseThumbnail();
-            if (running.Count == 1) WindowsShell.Activate(running[0].Handle, true);
-            else if (running.Count > 1)
+            // Окна, видимые на других мониторах, открываются так же, если на этом их нет
+            var targets = running.Count > 0 ? running : elsewhere;
+            if (targets.Count == 1) WindowsShell.ActivateOrMinimize(targets);
+            else if (targets.Count > 1)
             {
-                if (tile is not null) ShowThumbnail(tile, running, true);
-                else WindowsShell.ActivateNext(running);
+                if (tile is not null) ShowThumbnail(tile, targets, true);
+                else WindowsShell.ActivateNext(targets);
             }
             else if (!WindowsShell.Launch(path)) Report(L10n.F($"Could not open {path}"));
         });
@@ -836,8 +923,13 @@ internal sealed partial class DockWindow : Window
         tile.ContextMenu = appMenu;
         if (P.WindowPreviews && running.Count > 0)
         {
-            var wait = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(550) };
-            tile.MouseEnter += (_, _) => { closePreview.Stop(); wait.Start(); };
+            var wait = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            // пока миниатюры уже открыты, соседний значок показывает свои сразу, как в Windows; иначе — после короткой паузы
+            tile.MouseEnter += (_, _) =>
+            {
+                closePreview.Stop();
+                if (thumbnail is not null && !appMenu.IsOpen) ShowThumbnail(tile, running); else wait.Start();
+            };
             tile.MouseLeave += (_, _) => { wait.Stop(); closePreview.Stop(); closePreview.Start(); };
             wait.Tick += (_, _) =>
             {
@@ -957,7 +1049,7 @@ internal sealed partial class DockWindow : Window
             card.Cursor = Cursors.Hand;
             card.MouseEnter += (_, _) => { card.Background = Brush("#22FFFFFF"); card.BorderBrush = Accent(P); };
             card.MouseLeave += (_, _) => { card.Background = Brushes.Transparent; card.BorderBrush = Brush("#26FFFFFF"); };
-            card.MouseLeftButtonUp += (_, _) => { CloseThumbnail(); WindowsShell.Activate(window.Handle); };
+            card.MouseLeftButtonUp += (_, _) => { CloseThumbnail(); WindowsShell.Activate(window.Handle, true); };
             card.MouseDown += (_, args) => { if (args.ChangedButton == MouseButton.Middle) { args.Handled = true; CloseWindow(window); } };
             Canvas.SetLeft(card, x);
             Canvas.SetTop(card, y);
@@ -1077,6 +1169,17 @@ internal sealed partial class DockWindow : Window
                 magnetX = null;
                 for (int step = 0; step < 200; step++) MagnifyStep(.03);
             }
+            // если закреплённые приложения не стоят на месте, колесо прокручивает весь блок приложений, включая самый левый значок
+            P.StickyPinnedApps = false;
+            appScrollOffset = appScrollTarget = 0;
+            Refresh();
+            UpdateLayout();
+            var firstApp = magnets.First(item => item.App).Tile;
+            double firstBefore = RowOffset(firstApp);
+            ScrollApps(-400);
+            for (int frame = 0; frame < 150; frame++) StepScroll(1 / 60.0);
+            UpdateLayout();
+            if (RowOffset(firstApp) > firstBefore - 100) return "при выключенной настройке «Закреплённые приложения на месте» крайний значок не прокрутился";
             return "";
         }
         finally
@@ -1128,6 +1231,15 @@ internal sealed partial class DockWindow : Window
         thumbnail = null;
     }
 
+    // «Сдвинуть влево/вправо» в меню ярлыка: меняет его местами с соседним (то же, что перетаскивание, но без мыши)
+    internal void AddShiftItems(ContextMenu menu, string id, int at)
+    {
+        int index = Items.IndexOf(id);
+        if (index < 0 || P.Locked) return;
+        if (index > 0) menu.Items.Insert(at++, Menu("Move left", () => model.Shift(id, -1, Items)));
+        if (index < Items.Count - 1) menu.Items.Insert(at++, Menu("Move right", () => model.Shift(id, 1, Items)));
+    }
+
     private ContextMenu CommonMenu()
     {
         var menu = DockMenu();
@@ -1157,10 +1269,10 @@ internal sealed partial class DockWindow : Window
         {
             var entry = Button(id, () =>
             {
-                if (!P.Locked && !P.Items.Contains(id)) model.ToggleWidget(id);
+                if (!P.Locked && !Items.Contains(id)) model.ToggleWidget(id, Items);
                 window.Close();
             });
-            entry.IsEnabled = !P.Items.Contains(id);
+            entry.IsEnabled = !Items.Contains(id);
             System.Windows.Automation.AutomationProperties.SetName(entry, L10n.T(id));
             if (!entry.IsEnabled) entry.Opacity = .5;
             entry.Margin = new(0, 0, 0, 5);
@@ -1176,13 +1288,13 @@ internal sealed partial class DockWindow : Window
         if (valid.Length == 1)
         {
             string app = "app:" + valid[0];
-            if (!P.Items.Contains(app, StringComparer.OrdinalIgnoreCase)) P.Items.Add(app);
+            if (!Items.Contains(app, StringComparer.OrdinalIgnoreCase)) Items.Add(app);
         }
         else
         {
             var id = "files:" + Guid.NewGuid().ToString("N");
             P.FileGroups[id] = new FileGroup { Name = Path.GetFileName(Path.GetDirectoryName(valid[0])) ?? "Files", Paths = [.. valid] };
-            P.Items.Add(id);
+            Items.Add(id);
         }
         model.Save();
     }
@@ -1191,8 +1303,20 @@ internal sealed partial class DockWindow : Window
     {
         var entries = Stack(Right(RawText(group.Name, 16, true), CloseButton(window)));
         entries.Margin = new(12);
+        // Пункты раскрываются веером: каждый выезжает из стопки сверху с небольшой задержкой
+        int fan = 0;
         foreach (string path in group.Paths)
-            entries.Children.Add(Button(RawText(Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)), 14, true), () => WindowsShell.Launch(path)));
+        {
+            var entry = Button(RawText(Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)), 14, true), () => WindowsShell.Launch(path));
+            var slide = new TranslateTransform(0, -28 - fan * 4);
+            entry.RenderTransform = slide;
+            entry.Opacity = 0;
+            var delay = TimeSpan.FromMilliseconds(Math.Min(fan, 10) * 35);
+            slide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(260)) { BeginTime = delay, EasingFunction = new BackEase { Amplitude = .35, EasingMode = EasingMode.EaseOut } });
+            entry.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(200)) { BeginTime = delay });
+            entries.Children.Add(entry);
+            fan++;
+        }
         shell.Child = Scroll(entries);
     }, anchor);
 

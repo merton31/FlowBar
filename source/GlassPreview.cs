@@ -15,7 +15,7 @@ internal static class GlassPreview
     [
         ("Liquid", "theme", 0), ("Liquid", "frost", 0), ("Liquid", "prism", 0), ("Liquid", "theme", 60),
         ("Black", "theme", 0), ("Black", "theme", 70), ("Black", "metal", 0), ("Midnight", "frost", 40),
-        ("White", "frost", 30), ("White", "metal", 0)
+        ("White", "frost", 30), ("White", "metal", 0), ("Clear", "theme", 100), ("Clear", "theme", 0), ("Clear", "frost", 50)
     ];
 
     public static async System.Threading.Tasks.Task Run(DockWindow dock, DockModel model, string folder)

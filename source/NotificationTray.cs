@@ -136,6 +136,28 @@ internal static partial class WindowsShell
         return found.OrderByDescending(entry => entry.Promoted).ThenBy(entry => entry.Order).Select(entry => entry.Item).Take(28).ToArray();
     }
 
+    // Вежливо закрывает окна программы (как крестик); true, если хоть одно окно приняло команду.
+    // shortcut: программа, которая при закрытии только прячется в трей, останется работать; принудительно не завершаем, чтобы не потерять данные
+    internal static bool QuitTrayApp(string exe)
+    {
+        bool asked = false;
+        foreach (var process in System.Diagnostics.Process.GetProcessesByName(exe))
+        {
+            try
+            {
+                uint id = (uint)process.Id;
+                EnumWindows((window, _) =>
+                {
+                    GetWindowThreadProcessId(window, out uint owner);
+                    if (owner == id && GetWindow(window, 4) == 0) { CloseWindow(window); asked = true; } // GW_OWNER: только окна верхнего уровня
+                    return true;
+                }, 0);
+            }
+            finally { process.Dispose(); }
+        }
+        return asked;
+    }
+
     internal static bool IsOverflowButton(string kind, string id, string label) =>
         id is "NotificationChevron" or "OverflowChevron" ||
         kind is "SystemTray.ChevronIconView" or "SystemTray.OverflowChevron" ||

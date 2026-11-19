@@ -40,6 +40,12 @@ internal sealed partial class DockWindow
         frame.Padding = new(14);
         window.Content = frame;
         window.PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) window.Close(); };
+        // Окно можно перетащить за любое место, которое не обработало нажатие само (кнопки, поля, ползунки его «съедают»)
+        window.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.Handled || e.ButtonState != MouseButtonState.Pressed || OnControl(e.OriginalSource as DependencyObject)) return;
+            try { window.DragMove(); } catch (InvalidOperationException) { }
+        };
         var area = SystemParameters.WorkArea;
         double screenX = area.Left + area.Width / 2;
         if (anchor is { IsLoaded: true })
@@ -48,7 +54,14 @@ internal sealed partial class DockWindow
         window.Top = popover ? Math.Clamp(BarTop - window.Height - 3, area.Top, Math.Max(area.Top, area.Bottom - window.Height))
             : area.Top + (area.Height - window.Height) / 2;
         surfaces.Add(key, window);
-        window.Closed += (_, _) => surfaces.Remove(key);
+        ActivityLog.Record("окно открыто", key);
+        window.Closed += (_, _) => { surfaces.Remove(key); ActivityLog.Record("окно закрыто", key); };
+        long lastMove = 0; // при перетаскивании событий сотни: пишется только начало движения
+        window.LocationChanged += (_, _) =>
+        {
+            if (Environment.TickCount64 - lastMove > 1000) ActivityLog.Record("окно перемещено", key);
+            lastMove = Environment.TickCount64;
+        };
         if (popover && closeOnDeactivate && !smoke) window.Deactivated += (_, _) => Dispatcher.BeginInvoke(() =>
         {
             if (!window.IsActive && window.IsVisible && !window.OwnedWindows.Cast<Window>().Any(child => child.IsVisible))
@@ -115,6 +128,15 @@ internal sealed partial class DockWindow
         return textBox;
     }
 
+    // Окно перетаскивается за пустое место; ползунки, поля ввода, полосы прокрутки и кнопки сами ловят мышь, их перехватывать нельзя
+    private static bool OnControl(DependencyObject? source)
+    {
+        for (var node = source; node is not null; node = node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
+            if (node is System.Windows.Controls.Primitives.RangeBase or System.Windows.Controls.Primitives.TextBoxBase or PasswordBox
+                or System.Windows.Controls.Primitives.ButtonBase or System.Windows.Controls.Primitives.Thumb or Selector) return true;
+        return false;
+    }
+
     private static Grid Split(double leftWidth, UIElement sidebar, UIElement content)
     {
         var grid = new Grid { ClipToBounds = true };
@@ -146,15 +168,23 @@ internal sealed partial class DockWindow
             if (capture(e.Key == Key.System ? e.SystemKey : e.Key, Keyboard.Modifiers)) e.Handled = true;
         };
         var navigation = new List<Button>();
+        // Меню-дерево: слева вертикальная линия с ответвлением к каждому пункту, у выбранного пункта жирный текст и ответвление цвета акцента
+        var branches = new List<System.Windows.Shapes.Rectangle>();
+        var labels = new List<TextBlock>();
         void Select(string name)
         {
             for (int index = 0; index < tabs.Length; index++)
-                navigation[index].Background = tabs[index].Item1 == name ? Accent(P) : Brushes.Transparent;
+            {
+                bool chosen = tabs[index].Item1 == name;
+                navigation[index].Background = chosen ? Brush("#2C2C2E") : Brushes.Transparent;
+                labels[index].FontWeight = chosen ? FontWeights.Bold : FontWeights.Normal;
+                branches[index].Fill = chosen ? Accent(P) : Brush("#4A4A4C");
+            }
             content.Children.Clear();
             scroll.ScrollToTop();
             switch (name)
             {
-                case "Appearance": Appearance(content, () => Select(name), () => navigation[0].Background = Accent(P)); break;
+                case "Appearance": Appearance(content, () => Select(name), () => branches[0].Fill = Accent(P)); break;
                 case "Dock": DockSettings(content); break;
                 case "Automations": AutomationSettings(content); break;
                 case "Sounds": SoundSettings(content); break;
@@ -162,7 +192,7 @@ internal sealed partial class DockWindow
                     content.Children.Add(Text("FlowBar", 24, true));
                     AddRow(content, "Interface language", Segments(P.UiLanguage, SetLanguage,
                         ("Use system language", "system"), ("English", "en"), ("Русский", "ru")));
-                    AddRow(content, "Version", Text(typeof(DockWindow).Assembly.GetName().Version?.ToString(3) ?? "", 13, false, Muted));
+                    AddRow(content, "Version", Text(Updates.Display(Updates.Current), 13, false, Muted));
                     // Обновление с GitHub: проверка, затем скачивание, сверка суммы и запуск новой копии (она ставит себя поверх этой)
                     var updateStatus = Text("", 12, false, Muted);
                     var updateLabel = Text("Check for updates", 13, false, Paper);
@@ -181,7 +211,7 @@ internal sealed partial class DockWindow
                                 if (latest.Version > Updates.Current)
                                 {
                                     found = latest;
-                                    updateStatus.Text = L10n.F($"Version {latest.Version.ToString(3)} is available.");
+                                    updateStatus.Text = L10n.F($"Version {Updates.Display(latest.Version)} is available.");
                                     updateLabel.Text = L10n.T("Download and install");
                                 }
                                 else updateStatus.Text = L10n.T("You have the latest version.");
@@ -385,17 +415,30 @@ internal sealed partial class DockWindow
                     break;
             }
         }
-        foreach (var (name, glyph) in tabs)
+        for (int position = 0; position < tabs.Length; position++)
         {
+            var (name, glyph) = tabs[position];
             var icon = Symbol(glyph, 18, Brush("#78B9FF"));
             icon.Width = 24;
-            var text = Text(name, 14, true);
+            var text = Text(name, 14);
             text.Margin = new(9, 0, 0, 0);
             var button = Button(RowStack(icon, text), () => Select(name), Brushes.Transparent);
             button.Height = 36;
             button.Margin = new(0, 1, 0, 1);
             navigation.Add(button);
-            side.Children.Add(button);
+            labels.Add(text);
+            // линия дерева не выходит за первый и последний пункт: начинается и кончается на уровне ответвления
+            var trunk = new System.Windows.Shapes.Rectangle { Width = 1, Fill = Brush("#4A4A4C"), HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new(8, position == 0 ? 19 : 0, 0, position == tabs.Length - 1 ? 19 : 0) };
+            var branch = new System.Windows.Shapes.Rectangle { Width = 9, Height = 2, Fill = Brush("#4A4A4C"), RadiusX = 1, RadiusY = 1,
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new(8, 0, 0, 0) };
+            branches.Add(branch);
+            button.Margin = new(20, 1, 0, 1);
+            var row = new Grid();
+            row.Children.Add(trunk);
+            row.Children.Add(branch);
+            row.Children.Add(button);
+            side.Children.Add(row);
         }
         Select(startPage);
     });
@@ -483,6 +526,23 @@ internal sealed partial class DockWindow
             settle.Start();
         };
         AddRow(content, "Transparency", RowStack(clearness, percent));
+        // Преломление живого стекла: насколько картинка под доком изгибается у его краёв
+        var bend = FilledSlider(Accent(P), P.Refraction, 22, "Refraction");
+        bend.Width = 190;
+        var bendText = RawText($"{P.Refraction}%", 13, false, Muted);
+        bendText.Width = 44;
+        bendText.TextAlignment = TextAlignment.Right;
+        var bendSettle = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        bendSettle.Tick += (_, _) => { bendSettle.Stop(); model.Save(); };
+        bend.ValueChanged += (_, change) =>
+        {
+            P.Refraction = (int)Math.Round(change.NewValue);
+            bendText.Text = $"{P.Refraction}%";
+            bendSettle.Stop();
+            bendSettle.Start();
+        };
+        AddRow(content, "Glass refraction", RowStack(bend, bendText));
+        AddRow(content, "Tile borders", Segments(P.TileBorders, value => { P.TileBorders = value; model.Save(); }, ("On", true), ("Off", false)));
         // Код оформления: копируется в буфер обмена и вставляется оттуда; неверный код ничего не меняет
         var lookStatus = Text("", 12, false, Muted);
         lookStatus.Margin = new(10, 0, 0, 0);
@@ -580,6 +640,7 @@ internal sealed partial class DockWindow
         var size = DockSlider(dock, "Size", P.Size, 60, 125, 1, "%", v => P.Size = v, "Scale the dock and its widgets.");
         DockSlider(dock, "Spacing", P.Spacing, 0, 24, .75, " px", v => P.Spacing = v, "Space between tiles.", size);
         DockSlider(dock, "Padding", P.Padding, 0, 24, .75, " px", v => P.Padding = v, "Space between tiles and the dock border.", size);
+        DockSlider(dock, "Dock border", P.DockBorder, 0, 4, .5, " px", v => P.DockBorder = v, "Thickness of the line along the dock edges; 0 removes it.");
         DockSlider(dock, "Distance from edge", P.Edge, 0, 200, 1, " px", v => P.Edge = v, "Gap from the edge of the screen.");
         DockToggle(dock, "Full width", P.FullWidth, v => P.FullWidth = v, "Stretch the dock across the screen.");
         DockToggle(dock, "Names on hover", P.Names, v => P.Names = v, "Show the name of an app or widget under the pointer.");
@@ -597,7 +658,21 @@ internal sealed partial class DockWindow
         DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Sound, network switches and the tray icon always stay in the dock.");
         DockToggle(dock, "Pinned apps stay in place", P.StickyPinnedApps, v => P.StickyPinnedApps = v, "When the dock is full, only open apps scroll with the mouse wheel; if off, all apps scroll.");
         if (System.Windows.Forms.Screen.AllScreens.Length > 1)
-            DockToggle(dock, "All monitors", P.AllMonitors, v => P.AllMonitors = v, "Show the dock on every connected monitor.");
+            DockToggle(dock, "All monitors", P.AllMonitors, v => { P.AllMonitors = v; DrawDockSettings(); }, "Show the dock on every connected monitor.");
+        var extra = System.Windows.Forms.Screen.AllScreens.Where(item => !item.Primary).ToList();
+        if (P.AllMonitors && extra.Count > 0)
+        {
+            SettingsRow(dock, Text("Windows on docks", 14, true), Segments(P.WindowsOnDocks, value => { P.WindowsOnDocks = value; model.Save(); },
+                ("Own monitor", "own"), ("Main only", "main"), ("All", "all")), "Which dock shows each open window; windows on other monitors get a ring.");
+            foreach (var other in extra)
+            {
+                string device = other.DeviceName;
+                string current = P.Monitors.TryGetValue(device, out var setup) ? setup.Widgets : "same";
+                int number = Array.IndexOf(System.Windows.Forms.Screen.AllScreens, other) + 1;
+                SettingsRow(dock, Text(L10n.T("Widgets on monitor") + " " + number, 14, true), Segments(current, value => model.SetMonitorWidgets(device, value),
+                    ("Same as main", "same"), ("Own layout", "own"), ("Apps only", "none")), "Own layout has its own widgets, set by dragging and the gallery on that dock.");
+            }
+        }
         DockToggle(dock, "Lock dock", P.Locked, v => P.Locked = v, "Prevent dragging and rearranging items.");
         var behaviour = SettingsGroup(holder, "Behaviour");
         SettingsRow(behaviour, Text("Clock", 14, true), Segments(P.Hour24, value => { P.Hour24 = value; model.Save(); },
@@ -706,9 +781,9 @@ internal sealed partial class DockWindow
                     var widget = Widgets.Available[id];
                     var face = Widgets.Face(widget, model, true, out Action update);
                     (face, update) = Widgets.ServicePreview(widget, model, face, update);
-                    var card = Button(face, () => { model.ToggleWidget(id); Render(false); }, Brush("#121213"), 17);
+                    var card = Button(face, () => { model.ToggleWidget(id, Items); Render(false); }, Brush("#121213"), 17);
                     card.Padding = new(8, 2, 8, 2);
-                    var added = P.Items.Contains(id);
+                    var added = Items.Contains(id);
                     string action = L10n.T(added ? "Remove" : "Add") + " · " + L10n.T(widget.Name);
                     System.Windows.Automation.AutomationProperties.SetName(card, L10n.Russian ? action : $"{(added ? "Remove" : "Add")} {widget.Name}");
                     var frame = Card(card, 18, Brushes.Transparent, Brush("#363638"));
@@ -750,7 +825,7 @@ internal sealed partial class DockWindow
             }
             if (content.Children.Count == 0) content.Children.Add(Text("No matching widgets", 15, true, Muted));
             count.Text = shown.ToString();
-            inBar.Text = L10n.F($"{P.Items.Count(id => Widgets.Available.ContainsKey(id) && !Widgets.WindowsFolders.Contains(id))} in bar");
+            inBar.Text = L10n.F($"{Items.Count(id => Widgets.Available.ContainsKey(id) && !Widgets.WindowsFolders.Contains(id))} in bar");
             foreach (var entry in links) entry.Value.Background = entry.Key == active && term.Length == 0 ? Accent(P) : Brushes.Transparent;
             if (reset) scroll.ScrollToTop(); else scroll.ScrollToVerticalOffset(offset);
         }
@@ -813,6 +888,7 @@ internal sealed partial class DockWindow
 
     public Window? OpenWidget(string id, FrameworkElement? anchor = null)
     {
+        if (id == "TikTok") { TikTokFeed.Toggle(model); return null; }
         var destination = NativeWidgetAction(id);
         if (destination is not null) { destination(); return null; }
         if (surfaces.TryGetValue(id, out var current) && !smoke) { current.Close(); return null; }
@@ -1307,7 +1383,7 @@ internal sealed partial class DockWindow
                 if (!name.Contains(input.Text, StringComparison.CurrentCultureIgnoreCase)) continue;
                 string id = "app:" + app;
                 list.Children.Add(Right(Button(RawText(name, 14, true), () => WindowsShell.Launch(app)),
-                    Button(P.Items.Contains(id) ? "Unpin" : "Pin", () => { model.ToggleWidget(id); Filter(); })));
+                    Button(Items.Contains(id) ? "Unpin" : "Pin", () => { model.ToggleWidget(id, Items); Filter(); })));
             }
         }
         input.TextChanged += (_, _) => Filter();

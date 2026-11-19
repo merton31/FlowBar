@@ -61,7 +61,7 @@ internal sealed partial class DockWindow
                 actions.Add(update);
                 var choose = Button(preview, () =>
                 {
-                    if (id == current || model.SelectWidgetStyle(current, id)) window.Close();
+                    if (id == current || model.SelectWidgetStyle(current, id, Items)) window.Close();
                 }, Brush("#151518"), 13);
                 choose.Width = id == "Segment Clock" ? 191 : Math.Clamp(spec.Width * 1.15, 80, 205);
                 choose.Height = 66;

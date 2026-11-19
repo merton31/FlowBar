@@ -16,7 +16,7 @@ internal sealed class LiveGlass : IDisposable
     private Bitmap? capture;
     private WriteableBitmap? output;
     private byte[] previous = [];
-    private int lastDispersion = int.MinValue;
+    private int lastDispersion = int.MinValue, lastRefraction = -1;
 
     // false, если кадр экрана под доком не изменился с прошлого раза: перерисовывать стекло не нужно
     public bool Changed { get; private set; } = true;
@@ -24,10 +24,11 @@ internal sealed class LiveGlass : IDisposable
     private int[] sourceColumns = [];
 
     private int shape = -1;
+    private const double GlassFloor = 28;
 
 
     // detail: 1 — обычное стекло, 4 — матовое (в четыре раза крупнее размытие); dispersion — сдвиг красного и синего каналов у призмы
-    public ImageSource? Update(int x, int y, int width, int height, int detail = 1, int dispersion = 0)
+    public ImageSource? Update(int x, int y, int width, int height, int detail = 1, int dispersion = 0, int refraction = 50, Bitmap? source = null, int offsetX = 0, int offsetY = 0)
     {
         if (width < 4 || height < 4) return null;
         int columns = Math.Max(4, Math.Min(width, 760 / Math.Max(1, detail)));
@@ -48,17 +49,28 @@ internal sealed class LiveGlass : IDisposable
             previous = new byte[sample.Length];
             lastDispersion = int.MinValue;
             sourceColumns = new int[columns];
+            lastRefraction = -1;
+        }
+        // Степень преломления (0–100): сдвиг картинки у краёв стекла по горизонтали и изгиб по вертикали; 50 — прежнее стекло
+        if (refraction != lastRefraction)
+        {
+            lastRefraction = refraction;
+            lastDispersion = int.MinValue;
             for (int column = 0; column < columns; column++)
             {
                 double edge = 2d * column / (columns - 1) - 1;
-                sourceColumns[column] = Math.Clamp(column - (int)(6 * Math.Pow(edge, 7) * columns / 760d), 0, columns - 1);
+                sourceColumns[column] = Math.Clamp(column - (int)(12 * refraction / 100d * Math.Pow(edge, 7) * columns / 760d), 0, columns - 1);
             }
         }
         try
         {
             // The standard desktop blit omits layered windows, including the WPF dock.
+            // source — готовая картинка вместо снимка экрана (обои): снимок с исключением дока из захвата на части систем делает док чёрным
             using (var screen = Graphics.FromImage(capture))
-                screen.CopyFromScreen(x, y, 0, 0, capture.Size, CopyPixelOperation.SourceCopy);
+            {
+                if (source is null) screen.CopyFromScreen(x, y, 0, 0, capture.Size, CopyPixelOperation.SourceCopy);
+                else screen.DrawImage(source, new Rectangle(0, 0, width, height), new Rectangle(offsetX, offsetY, width, height), GraphicsUnit.Pixel);
+            }
             using (var resize = Graphics.FromImage(scaled))
             {
                 resize.InterpolationMode = InterpolationMode.Bilinear;
@@ -78,7 +90,7 @@ internal sealed class LiveGlass : IDisposable
         for (int row = 0; row < rows; row++)
         {
             double curvature = 2.0 * row / (rows - 1) - 1;
-            int sourceY = Math.Clamp((int)Math.Round(row - 4 * curvature * Math.Abs(curvature)), 0, rows - 1);
+            int sourceY = Math.Clamp((int)Math.Round(row - 8 * refraction / 100d * curvature * Math.Abs(curvature)), 0, rows - 1);
             int above = Math.Max(0, sourceY - 1);
             int below = Math.Min(rows - 1, sourceY + 1);
             double highlight = 22 * Math.Exp(-row / 2.1) + 7 * Math.Exp(-(rows - 1 - row) / 3d);
@@ -95,7 +107,7 @@ internal sealed class LiveGlass : IDisposable
                     int brightness = (sample[center + component] * 4 + sample[(sourceY * columns + left) * 4 + component]
                         + sample[(sourceY * columns + right) * 4 + component] + sample[(above * columns + sourceX) * 4 + component]
                         + sample[(below * columns + sourceX) * 4 + component]) / 8;
-                    refracted[target + component] = (byte)Math.Clamp(brightness * .77 + 7 + highlight, 0, 255);
+                    refracted[target + component] = (byte)Math.Clamp(brightness * .74 + GlassFloor + highlight, 0, 255); // пол яркости: над чёрными обоями стекло остаётся тёмно-серым, а не чёрным
                 }
             }
         }

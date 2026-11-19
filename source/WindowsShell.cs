@@ -26,6 +26,8 @@ internal static partial class WindowsShell
             if (!IsWindowVisible(window) || GetWindow(window, 4) != 0) return true;
             var style = GetWindowLongPtr(window, -20).ToInt64();
             if ((style & 0x80) != 0 || IsCloaked(window)) return true;
+            // служебные окна размером в точку (например, у Parsec «ParsecMinFrameRate4» 1×1) — не программа, плитки им не нужны
+            if (GetWindowRect(window, out var box) && (box.Right - box.Left < 8 || box.Bottom - box.Top < 8)) return true;
             var title = new StringBuilder(512);
             if (GetWindowText(window, title, title.Capacity) == 0) return true;
             GetWindowThreadProcessId(window, out uint pid);
@@ -298,6 +300,23 @@ internal static partial class WindowsShell
         }
     }
 
+    // Повторное нажатие на значок: если одно из окон программы сейчас активно (само или его владелец), оно сворачивается, иначе открывается первое
+    public static void ActivateOrMinimize(IReadOnlyList<WindowInfo> windows)
+    {
+        nint current = GetForegroundWindow();
+        nint root = current == 0 ? 0 : GetAncestor(current, 3);
+        var active = System.Linq.Enumerable.FirstOrDefault(windows, window => window.Handle == current || window.Handle == root);
+        if (active is not null && !IsIconic(active.Handle)) ShowWindowAsync(active.Handle, 6);
+        else if (windows.Count > 0) Activate(windows[0].Handle);
+    }
+
+    public static nint Foreground() => GetForegroundWindow();
+
+    public static bool Minimized(nint window) => IsIconic(window);
+
+    // Устройство монитора, на котором сейчас окно (для значков «окно открыто здесь / на другом мониторе»)
+    public static string ScreenOf(nint window) => System.Windows.Forms.Screen.FromHandle(window).DeviceName;
+
     public static void ActivateNext(IReadOnlyList<WindowInfo> windows)
     {
         nint current = GetForegroundWindow();
@@ -494,6 +513,7 @@ internal static partial class WindowsShell
     [DllImport("user32")] private static extern bool RegisterShellHookWindow(nint window);
     [DllImport("user32")] private static extern bool DeregisterShellHookWindow(nint window);
     [DllImport("user32")] private static extern nint GetForegroundWindow();
+    [DllImport("user32")] private static extern nint GetAncestor(nint window, uint flags);
     [DllImport("user32")] private static extern bool SetForegroundWindow(nint window);
     [DllImport("user32")] private static extern bool ShowWindowAsync(nint window, int command);
     [DllImport("user32", CharSet = CharSet.Unicode)] private static extern nint FindWindow(string className, string? title);

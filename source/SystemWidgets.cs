@@ -98,7 +98,7 @@ internal static partial class WindowsShell
                     var value = Convert.ToDouble(((dynamic)zone).CurrentTemperature, CultureInfo.InvariantCulture) / 10 - 273.15;
                     if (value > -20 && value < 150) temperatures.Add(value);
                 }
-                finally { Marshal.ReleaseComObject(zone); }
+                finally { if (zone is not null && Marshal.IsComObject(zone)) Marshal.ReleaseComObject(zone); }
             }
             return temperatures.Count == 0 ? null : temperatures.Max();
         }

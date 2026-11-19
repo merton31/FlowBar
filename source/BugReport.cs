@@ -14,6 +14,33 @@ using Microsoft.Win32;
 
 namespace LumaDock;
 
+// Последние действия с панелью: нажатия на плитки и пункты меню, открытые и закрытые окна, показ и скрытие дока, события системы (экран, панель задач, полноэкранное окно).
+// Живёт в памяти кольцом из 80 записей; уходит в отчёт и дописывается в error.log рядом с ошибкой. Имён программ и путей здесь нет.
+internal static class ActivityLog
+{
+    private const int Capacity = 80;
+    private static readonly object gate = new();
+    private static readonly Queue<string> events = new();
+
+    public static void Record(string kind, string? detail = null)
+    {
+        var line = DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture) + " " + kind + (string.IsNullOrEmpty(detail) ? "" : " " + detail);
+        lock (gate)
+        {
+            events.Enqueue(line.Length > 160 ? line[..160] : line);
+            while (events.Count > Capacity) events.Dequeue();
+        }
+    }
+
+    // Идентификатор плитки без имени программы: «app:game.exe» → «app»
+    public static string Tile(string id) => id.StartsWith("app:", StringComparison.Ordinal) ? "app" : id;
+
+    public static string[] Last(int count)
+    {
+        lock (gate) return events.Skip(Math.Max(0, events.Count - count)).ToArray();
+    }
+}
+
 // Журнал необработанных ошибок: нужен, чтобы в отчёте об ошибке было что-то кроме версии
 internal static class ErrorLog
 {
@@ -43,8 +70,10 @@ internal static class ErrorLog
                 Directory.CreateDirectory(AppData.Root);
                 var file = new FileInfo(PathOf);
                 if (file.Exists && file.Length > 256 * 1024) File.Move(PathOf, System.IO.Path.Combine(AppData.Root, "error.old.log"), true);
+                // после ошибки — что делали с панелью перед ней (строки с отступом, разбор отчёта их пропускает)
+                var before = string.Concat(ActivityLog.Last(15).Select(entry => "    действия: " + entry + Environment.NewLine));
                 File.AppendAllText(PathOf, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss ", CultureInfo.InvariantCulture)
-                    + (area is null ? "" : "[" + area + "] ") + text + Environment.NewLine, Encoding.UTF8);
+                    + (area is null ? "" : "[" + area + "] ") + text + Environment.NewLine + before, Encoding.UTF8);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -57,19 +86,13 @@ internal static class BugReport
 {
     public const string Url = "https://flowbat-reports.netlify.app/bug-report";
     public const int MaxBytes = 32 * 1024;
+    public const int DiagnosticsLimit = 10000; // знаков диагностики: вместе с описанием укладывается в MaxBytes
     private static readonly HttpClient client = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(12) };
 
     public sealed class DeliveryException(bool limited) : Exception("The report was not delivered") { public bool Limited { get; } = limited; }
 
     // 2.0.0.3 → 2.0.0c (буква — четвёртое число версии)
-    public static string VersionText
-    {
-        get
-        {
-            var version = Updates.Current;
-            return version.ToString(3) + (version.Revision is > 0 and <= 26 ? ((char)('a' + version.Revision - 1)).ToString() : "");
-        }
-    }
+    public static string VersionText => Updates.Display(Updates.Current);
 
     // Приёмник принимает только HTTPS без учётных данных, запроса и якоря
     public static Uri? Endpoint(string? url) =>
@@ -184,7 +207,23 @@ internal static class BugReport
     }
 
     // Диагностика, которая уйдёт вместе с отчётом: версия, Windows, мониторы, основные настройки (без имён программ и путей) и последние ошибки
-    public static string Diagnostics(Preferences settings)
+    // Все настройки-переключатели и числа (bool, числа, перечисления) и несколько безопасных строк; списки, пути, города и учётные данные не включаются
+    public static string SettingsSummary(Preferences settings)
+    {
+        var allowedText = new HashSet<string> { "Style", "Accent", "Sound", "UiLanguage", "VoiceEngine", "ClearWidgets", "WindowsOnDocks" };
+        var parts = new List<string>();
+        foreach (var property in typeof(Preferences).GetProperties())
+        {
+            if (!property.CanRead || property.GetIndexParameters().Length > 0) continue;
+            var type = property.PropertyType;
+            if (type == typeof(string) ? !allowedText.Contains(property.Name) : !(type == typeof(bool) || type == typeof(int) || type == typeof(double) || type.IsEnum)) continue;
+            object? value = property.GetValue(settings);
+            parts.Add(property.Name + "=" + (value is IFormattable number ? number.ToString(null, CultureInfo.InvariantCulture) : value));
+        }
+        return string.Join(", ", parts);
+    }
+
+    public static string Diagnostics(Preferences settings, IEnumerable<string>? openWindows = null)
     {
         var text = new StringBuilder();
         text.AppendLine("FlowBar " + VersionText);
@@ -200,8 +239,13 @@ internal static class BugReport
         int number = 0;
         foreach (var screen in System.Windows.Forms.Screen.AllScreens)
             text.AppendLine($"Монитор {++number}{(screen.Primary ? " (основной)" : "")}, {screen.Bounds.Width} × {screen.Bounds.Height}");
-        text.AppendLine($"Настройки: стиль {settings.Style}, размер {settings.Size:0}, увеличение {(settings.Magnification ? "вкл" : "выкл")}, на всех мониторах {(settings.AllMonitors ? "да" : "нет")}, язык {settings.UiLanguage}");
-        text.AppendLine("Виджеты: " + string.Join(", ", settings.Items.Where(item => !item.StartsWith("app:", StringComparison.Ordinal))));
+        text.AppendLine("Настройки: " + SettingsSummary(settings));
+        int apps = settings.Items.Count(item => item.StartsWith("app:", StringComparison.Ordinal));
+        text.AppendLine("Виджеты в доке (по порядку): " + string.Join(", ", settings.Items.Select(item => item.StartsWith("app:", StringComparison.Ordinal) ? "app" : item)) + $" (программ: {apps})");
+        if (openWindows is not null) text.AppendLine("Открыто сейчас: " + (openWindows.Any() ? string.Join(", ", openWindows) : "ничего"));
+        var recent = ActivityLog.Last(40);
+        text.AppendLine().AppendLine("Последние действия с панелью (старые сверху)");
+        text.AppendLine(recent.Length == 0 ? "Записей нет." : string.Join("\r\n", recent));
         var lines = new List<string>();
         foreach (var name in new[] { "error.old.log", "error.log" })
         {
@@ -209,7 +253,10 @@ internal static class BugReport
             try { if (File.Exists(path)) lines.AddRange(File.ReadLines(path)); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
-        var clean = CleanLog(lines.Skip(Math.Max(0, lines.Count - 400)));
+        var clean = CleanLog(lines.Skip(Math.Max(0, lines.Count - 1200)));
+        // весь отчёт укладывается в лимит приёмника: если не влезает, отрезаются самые старые ошибки (с целой строки), а не свежие
+        int room = DiagnosticsLimit - text.Length - 40;
+        if (clean.Length > room) clean = room <= 0 ? "" : clean[^room..].Substring(clean[^room..].IndexOf('\n') + 1);
         text.AppendLine().AppendLine("Последние ошибки");
         text.AppendLine(clean.Length == 0 ? "Записей для отправки нет." : clean);
         return text.ToString();

@@ -136,6 +136,10 @@ internal static class Updates
 
     public static Version Current => typeof(Updates).Assembly.GetName().Version ?? new Version(2, 0, 0, 0);
 
+    // 2.0.0.3 → «2.0.0c»: четвёртое число — буква, как в названии выпуска; без неё мелкие выпуски (2.0.0b, 2.0.0c) выглядели бы одинаково
+    public static string Display(Version version) =>
+        version.ToString(3) + (version.Revision is > 0 and <= 26 ? ((char)('a' + version.Revision - 1)).ToString() : "");
+
     // 2.0.0 → 2.0.0.0, 1.6.13f → 1.6.13.6 (буква в конце — четвёртое число, как в FlowBar 1.x)
     public static bool TryParseTag(string tag, out Version version)
     {
