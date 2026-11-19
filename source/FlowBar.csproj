@@ -7,11 +7,14 @@
     <Nullable>enable</Nullable>
     <AssemblyName>FlowBar</AssemblyName>
     <Product>FlowBar</Product>
-    <Version>2.0.0.3</Version>
+    <Version>2.0.0.4</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="voice-orb.png" />
     <Resource Include="Services\*.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
   </ItemGroup>
 </Project>

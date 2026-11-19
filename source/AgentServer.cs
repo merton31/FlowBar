@@ -54,7 +54,12 @@ internal static class Agent
                     await pipe.WaitForConnectionAsync();
                     _ = Task.Run(() => ServeConnection(pipe, model, ui));
                 }
-                catch (IOException) { await Task.Delay(1000); }
+                catch (Exception ex)
+                {
+                    // любая ошибка приёма не должна убивать цикл, иначе инструменты агентов молча замолчат до перезапуска
+                    ErrorLog.Write(ex, "Agent pipe");
+                    await Task.Delay(1000);
+                }
             }
         });
     }

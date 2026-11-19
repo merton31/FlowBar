@@ -347,7 +347,8 @@ internal static partial class Widgets
                 micRow.VerticalAlignment = VerticalAlignment.Center;
                 return micRow;
             case "Audio Output":
-                var volume = FilledMeter(Accent(p), gallery ? 24 : 14, widget.Id, track);
+                if (!gallery) return AudioFace(widget, model, ink, muted, accent, chip, track, out update);
+                var volume =FilledMeter(Accent(p), gallery ? 24 : 14, widget.Id, track);
                 volume.Margin = new(0, 6, 0, 0);
                 var speaker = Symbol("", gallery ? 15 : 11, muted);
                 speaker.Margin = new(0, 0, 8, 0);

@@ -32,6 +32,8 @@ internal static partial class Program
             return InstallCheck.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-network")
             return NetworkCheck.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--check-tiktok")
+            return TikTokFeed.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-tray")
             return TrayCheck.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-connections")
@@ -338,9 +340,128 @@ internal static partial class Program
                         model.ToggleTodo(model.Settings.Todos.Last());
                         model.ToggleWidget("Notes");
                         model.MoveItem("Notes", "Todos");
+                        model.MoveItem("Notes", null);
+                        if (model.Settings.Items[^1] != "Notes") throw new InvalidOperationException("Moving a tile to the end failed.");
+                        model.MoveItem("Notes", "Todos");
+                        var order = new System.Collections.Generic.List<string> { "a", "b", "c" };
+                        if (!model.Shift("b", 1, order) || !order.SequenceEqual(new[] { "a", "c", "b" }) || model.Shift("b", 1, order) || model.Shift("a", -1, order))
+                            throw new InvalidOperationException("Swapping a tile with its neighbour failed.");
+                        // рогатка: значение под точкой дорожки, крайние значения достижимы, цель летит туда же, куда ушла мышь
+                        if (SlingSlider.ValueAt(10, 180, 0, 100, false, 5) != 0 || SlingSlider.ValueAt(999, 180, 0, 100, false, 5) != 100
+                            || SlingSlider.ValueAt(10, 180, 0, 100, true, 5) != 100 || SlingSlider.ValueAt(100, 180, 0, 100, false, 5) is < 49.9 or > 50.1
+                            || SlingSlider.Shot(new System.Windows.Vector(-40, 0), 180, out _) >= 0 || SlingSlider.Shot(new System.Windows.Vector(40, 0), 180, out double pull) <= 0 || pull is <= 0 or > 1)
+                            throw new InvalidOperationException("Slingshot slider maths failed.");
+                        var secondLayout = new System.Collections.Generic.List<string> { "Start", "app:a.exe" };
+                        model.ToggleWidget("app:b.exe", secondLayout);
+                        model.MoveItem("app:b.exe", "Start", secondLayout);
+                        if (!secondLayout.SequenceEqual(new[] { "app:b.exe", "Start", "app:a.exe" }) || model.Settings.Items.Contains("app:b.exe"))
+                            throw new InvalidOperationException("A monitor's own layout must pin and move apps without touching the main one.");
+                        model.ToggleWidget("app:b.exe", secondLayout);
+                        if (secondLayout.Contains("app:b.exe")) throw new InvalidOperationException("Unpin failed.");
                         var reloaded = new DockModel(model.Profile);
                         if (!reloaded.Settings.Todos.Last().Done || reloaded.Settings.Items.IndexOf("Notes") != 0)
                             throw new InvalidOperationException("Profile round trip failed");
+                        // обновление не должно терять закреплённые программы, порядок, размеры и стили виджетов: всё это переживает перезапуск
+                        static double Wide(Preferences settings) => settings.WidgetWidths.TryGetValue("Audio Output", out double width) ? width : 0;
+                        var keepPath = Path.Combine(args[1], "keep-profile.json");
+                        var keep = new DockModel(keepPath);
+                        keep.ToggleWidget("app:keep.exe");
+                        keep.Settings.WidgetWidths["Audio Output"] = 330;
+                        keep.Settings.Style = "Clear";
+                        keep.MoveItem("app:keep.exe", "Start");
+                        keep.Save(false);
+                        var keepItems = keep.Settings.Items.ToArray();
+                        keep = new DockModel(keepPath); // «перезапуск» той же версии
+                        if (!keep.Settings.Items.SequenceEqual(keepItems) || Wide(keep.Settings) != 330 || keep.Settings.Style != "Clear")
+                            throw new InvalidOperationException("Pinned apps, order or widget size were lost on restart.");
+                        // профиль, записанный прежней версией: читается целиком, рядом остаётся его копия
+                        keep.Settings.LastVersion = "0.0.1";
+                        keep.Save(false);
+                        keep = new DockModel(keepPath);
+                        if (!keep.Settings.Items.SequenceEqual(keepItems) || !File.Exists(Path.Combine(args[1], "profile.before-0.0.1.json")) || keep.Settings.LastVersion != Updates.Current.ToString())
+                            throw new InvalidOperationException("Update from an older version lost the profile or did not keep a copy.");
+                        // повреждённый профиль не затирается пустым: копия .broken и возврат к последнему удачному (.bak)
+                        keep.Settings.Items.Add("Notes");
+                        keep.Save(false); // .bak — состояние до этого запуска без «Notes»
+                        File.WriteAllText(keepPath, "{ not json");
+                        var recovered = new DockModel(keepPath);
+                        if (!File.Exists(keepPath + ".broken") || !recovered.Settings.Items.Contains("app:keep.exe") || Wide(recovered.Settings) != 330)
+                            throw new InvalidOperationException("A broken profile was not quarantined or the backup was not used.");
+                        recovered.Save(false);
+                        if (new DockModel(keepPath).Settings.Items.Contains("app:keep.exe") == false || !File.ReadAllText(keepPath + ".bak").Contains("keep.exe"))
+                            throw new InvalidOperationException("Saving after recovery damaged the backup.");
+                        // занятый другим процессом профиль не считается повреждённым: после короткого ожидания читается как обычно, .broken не создаётся
+                        File.Delete(keepPath + ".broken");
+                        using (var lockedProfile = new FileStream(keepPath, FileMode.Open, FileAccess.Read, FileShare.None))
+                        {
+                            _ = System.Threading.Tasks.Task.Run(() => { System.Threading.Thread.Sleep(300); lockedProfile.Dispose(); });
+                            var afterLock = new DockModel(keepPath);
+                            if (File.Exists(keepPath + ".broken") || !afterLock.Settings.Items.Contains("app:keep.exe") || Wide(afterLock.Settings) != 330)
+                                throw new InvalidOperationException("A briefly locked profile was treated as broken.");
+                        }
+                        // копий прошлых версий остаётся не больше пяти
+                        for (int copy = 0; copy < 8; copy++)
+                        {
+                            var oldCopy = Path.Combine(args[1], $"profile.before-9.{copy}.json");
+                            File.WriteAllText(oldCopy, "{}");
+                            File.SetLastWriteTimeUtc(oldCopy, DateTime.UtcNow.AddDays(-30 + copy));
+                        }
+                        keep.Settings.LastVersion = "0.0.2";
+                        keep.Save(false);
+                        _ = new DockModel(keepPath);
+                        if (Directory.GetFiles(args[1], "profile.before-*.json").Length != 5)
+                            throw new InvalidOperationException("Copies of older versions were not trimmed to five.");
+                        // квитанции панели задач от упавшего запуска: берётся самая свежая после загрузки Windows, все старые удаляются, своя не трогается
+                        var receipts = Path.Combine(args[1], "receipts");
+                        Directory.CreateDirectory(receipts);
+                        File.WriteAllText(Path.Combine(receipts, "taskbar-2147483000.restore"), "1|True");
+                        File.WriteAllText(Path.Combine(receipts, "taskbar-2147483001.restore"), "3|False");
+                        File.SetLastWriteTimeUtc(Path.Combine(receipts, "taskbar-2147483000.restore"), DateTime.UtcNow.AddMinutes(-2));
+                        File.WriteAllText(Path.Combine(receipts, $"taskbar-{Environment.ProcessId}.restore"), "0|True");
+                        var prior = WindowsShell.TakeOverStaleReceipts(receipts);
+                        if (prior != (3u, false) || Directory.GetFiles(receipts).Length != 1 || !File.Exists(Path.Combine(receipts, $"taskbar-{Environment.ProcessId}.restore")))
+                            throw new InvalidOperationException("Stale taskbar receipts were not taken over correctly.");
+                        // при обновлении прежний запуск ещё жив и держит панель скрытой: его квитанция берётся для нового запуска, но не удаляется
+                        using (var alive = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c ping -n 6 127.0.0.1 >nul") { CreateNoWindow = true, UseShellExecute = false })!)
+                        {
+                            var handoverFile = Path.Combine(receipts, $"taskbar-{alive.Id}.restore");
+                            File.WriteAllText(handoverFile, "2|True");
+                            bool onlyDead = WindowsShell.TakeOverStaleReceipts(receipts) is null;
+                            var handed = WindowsShell.TakeOverStaleReceipts(receipts, true);
+                            if (!onlyDead || handed != (2u, true) || !File.Exists(handoverFile))
+                                throw new InvalidOperationException("A running instance's taskbar receipt was handled wrongly.");
+                            alive.Kill();
+                            File.Delete(handoverFile);
+                        }
+                        // виджет звука: свой вид на каждый размер, число громкости видно, выключенный звук не ломает вид
+                        var savedAudio = model.Audio;
+                        var savedWidth = Wide(model.Settings);
+                        var looks = new System.Collections.Generic.List<Widgets.VolumeLook>();
+                        foreach (var (_, audioWidth) in Widgets.SizeChoices("Audio Output"))
+                        {
+                            model.Settings.WidgetWidths["Audio Output"] = audioWidth;
+                            looks.Add(Widgets.VolumeLookFor(audioWidth));
+                            foreach (bool silent in new[] { false, true })
+                            {
+                                model.Audio = (.5, silent);
+                                var audioFace = Widgets.Face(Widgets.Available["Audio Output"], model, false, out var audioUpdate);
+                                audioUpdate();
+                                if (!FaceText(audioFace).Contains("50%") && !silent) throw new InvalidOperationException($"Sound widget {audioWidth} does not show the volume.");
+                                // снимок для глаз: плитка 47 px высотой на тёмном фоне, как в доке
+                                var holder = new System.Windows.Controls.Border { Width = audioWidth, Height = 47, Background = System.Windows.Media.Brushes.Black, Padding = new System.Windows.Thickness(10, 1, 10, 1), Child = audioFace };
+                                holder.Measure(new System.Windows.Size(audioWidth, 47));
+                                holder.Arrange(new System.Windows.Rect(0, 0, audioWidth, 47));
+                                holder.UpdateLayout();
+                                var shot = new System.Windows.Media.Imaging.RenderTargetBitmap((int)audioWidth * 2, 94, 192, 192, System.Windows.Media.PixelFormats.Pbgra32);
+                                shot.Render(holder);
+                                var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                                png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(shot));
+                                using (var pngFile = File.Create(Path.Combine(args[1], $"sound-{audioWidth}-{(silent ? "muted" : "on")}.png"))) png.Save(pngFile);
+                            }
+                        }
+                        if (looks.Distinct().Count() != 4) throw new InvalidOperationException("Every sound widget size must have its own style.");
+                        model.Audio = savedAudio;
+                        if (savedWidth == 0) model.Settings.WidgetWidths.Remove("Audio Output"); else model.Settings.WidgetWidths["Audio Output"] = savedWidth;
                         model.Activity.ClearSites();
                         reloaded = new DockModel(model.Profile);
                         if (reloaded.Settings.TrackWebsites || reloaded.Activity.Between(sample.Date, sample.Date.AddDays(1)).Single().Site is not null)
@@ -484,6 +605,14 @@ internal static partial class Program
             try { BugReport.ReadReceipt(bad); } catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException) { rejected = true; }
             Need(rejected, "bad receipt accepted: " + bad);
         }
+        // журнал действий и настройки в диагностике: имена программ не попадают, настройки видны, свежие события есть
+        Need(ActivityLog.Tile("app:C:\\Games\\secret.exe") == "app" && ActivityLog.Tile("CPU") == "CPU", "an app name reached the activity log");
+        ActivityLog.Record("нажатие на плитку", "ПроверкаЖурнала");
+        var prefs = new Preferences { AutoHide = true, Items = ["CPU", "app:C:\\Games\\secret.exe"], WorldTimeCity = "SecretCity" };
+        var diag = BugReport.Diagnostics(prefs, ["Settings"]);
+        Need(diag.Contains("AutoHide=True") && diag.Contains("Открыто сейчас: Settings") && diag.Contains("нажатие на плитку ПроверкаЖурнала"), "settings, open windows or activity are missing");
+        Need(!diag.Contains("secret") && !diag.Contains("SecretCity"), "private data reached the diagnostics");
+        Need(diag.Length <= BugReport.DiagnosticsLimit, "diagnostics exceed the limit");
         var endpoint = new Uri(BugReport.Url);
         string Json(string id) => "{\"ok\":true,\"report_id\":\"" + id + "\"}";
         System.Net.Http.HttpResponseMessage Answer(System.Net.HttpStatusCode code, string body) =>

@@ -12,7 +12,7 @@ namespace LumaDock;
 // Окно «Сообщить об ошибке»: пользователь описывает проблему, видит диагностику, которая уйдёт вместе с ней, и сам нажимает «Отправить» (или сохраняет всё в файл).
 internal sealed partial class DockWindow
 {
-    private const int ReportTextLimit = 10000; // знаков диагностики: вместе с описанием укладывается в 32 КиБ приёмника
+    private const int ReportTextLimit = BugReport.DiagnosticsLimit; // знаков диагностики: вместе с описанием укладывается в 32 КиБ приёмника
 
     internal Window OpenBugReport() => Surface("Report a problem", 560, 640, false, (window, shell) =>
     {
@@ -41,7 +41,7 @@ internal sealed partial class DockWindow
         string diagnostics = "";
         try
         {
-            diagnostics = BugReport.Diagnostics(P);
+            diagnostics = BugReport.Diagnostics(P, new System.Collections.Generic.List<string>(surfaces.Keys));
             if (diagnostics.Length > ReportTextLimit) diagnostics = diagnostics[..ReportTextLimit];
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { }

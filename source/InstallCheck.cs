@@ -32,6 +32,11 @@ internal static class InstallCheck
             if (!Updates.TryParseTag("v1.6.13f", out var old) || old != new Version(1, 6, 13, 6) || two <= old)
                 throw new InvalidOperationException("Tag v1.6.13f was not read or is not older.");
             if (Updates.TryParseTag("v2.0", out _)) throw new InvalidOperationException("Tag v2.0 must be rejected.");
+            // 2.0.0c → 2.0.0d считается обновлением, а в окне настроек версия показывается с буквой
+            if (!Updates.TryParseTag("v2.0.0c", out var three) || !Updates.TryParseTag("v2.0.0d", out var four) || four <= three || three <= two)
+                throw new InvalidOperationException("Letter tags are not ordered.");
+            if (Updates.Display(three) != "2.0.0c" || Updates.Display(four) != "2.0.0d" || Updates.Display(two) != "2.0.0")
+                throw new InvalidOperationException("The version is shown without its letter.");
             var release = Updates.ParseLatest("""
                 {"tag_name":"v2.0.0","html_url":"https://github.com/merton31/FlowBar/releases/tag/v2.0.0","assets":[
                 {"name":"notes.txt","browser_download_url":"https://github.com/merton31/FlowBar/releases/download/v2.0.0/notes.txt"},

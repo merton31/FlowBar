@@ -8,6 +8,8 @@ namespace LumaDock;
 
 internal sealed class Preferences
 {
+    // версия программы, которая записывала профиль: при смене версии рядом остаётся копия прежнего профиля
+    public string LastVersion { get; set; } = "";
     public string UiLanguage { get; set; } = "system";
     public string Style { get; set; } = "Liquid";
     public string ClearWidgets { get; set; } = "Black";
@@ -41,8 +43,20 @@ internal sealed class Preferences
     public bool AppBadges { get; set; } = true;
     // Если подключено несколько мониторов, на каждом из них свой док (по умолчанию включено)
     public bool AllMonitors { get; set; } = true;
+    // Степень преломления живого стекла, 0–100 (50 — как было) и рамки вокруг плиток: у Windows их нет, поэтому можно убрать
+    public int Refraction { get; set; } = 50;
+    public bool TileBorders { get; set; } = true;
+    // Толщина границы по краям панели, px (0 — без границы)
+    public double DockBorder { get; set; } = 1;
+    // Размер окна ленты TikTok (запоминается при закрытии)
+    public double TikTokWidth { get; set; } = 380;
+    public double TikTokHeight { get; set; } = 680;
+    // Свой набор виджетов у дополнительного монитора: имя устройства → настройка (как в 1.x: «как на основном», «своя раскладка», «без виджетов»)
+    public Dictionary<string, MonitorSetup> Monitors { get; set; } = [];
+    // Где показывать значки открытых окон: own — на доке того монитора, где окно открыто; main — ещё и на основном; all — на всех
+    public string WindowsOnDocks { get; set; } = "own";
     // Закреплённые приложения всегда на месте: когда док не вмещает всё, колесом мыши прокручиваются только открытые приложения (выключено — прокручиваются все)
-    public bool StickyPinnedApps { get; set; } = true;
+    public bool StickyPinnedApps { get; set; }
     // Ширина виджетов, размер которых можно менять (пока только «Вывод звука»): идентификатор виджета -> ширина плитки
     public Dictionary<string, double> WidgetWidths { get; set; } = [];
     // Плеер в доке по умолчанию в виде обложки с кнопками; у уже существующего профиля меняется один раз
@@ -79,6 +93,13 @@ internal sealed class Preferences
         ["Todos", "Start", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Audio Output", "Quick Toggles", "Tray", "Clock"];
     public List<Todo> Todos { get; set; } = [];
     public string Notes { get; set; } = "";
+}
+
+// Раскладка дополнительного монитора: same — как на основном, own — свой список Items, none — только значки программ
+internal sealed class MonitorSetup
+{
+    public string Widgets { get; set; } = "same";
+    public List<string> Items { get; set; } = [];
 }
 
 internal sealed class FileGroup
@@ -127,23 +148,42 @@ internal sealed class DockModel
         Activity = new DesktopActivity(Path.Combine(Path.GetDirectoryName(Profile)!, "desktop-activity.json"));
         Automation = new AutomationRunner(this);
         bool exists = File.Exists(Profile);
-        try
+        var loaded = ReadProfile(Profile, out bool damaged);
+        if (exists && loaded is null)
         {
-            Settings = exists
-                ? JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Profile)) ?? new()
-                : new();
+            // профиль не читается: оставляем его копию рядом (только если он действительно повреждён, а не просто занят) и берём последнюю удачную, а не затираем пустыми настройками
+            if (damaged)
+            {
+                try { File.Copy(Profile, Profile + ".broken", true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write(ex, "Settings quarantine"); }
+            }
+            loaded = ReadProfile(Profile + ".bak", out _);
+            backedUp = true; // прежняя копия .bak хорошая — первое сохранение её не трогает
         }
-        catch (JsonException ex) { ErrorLog.Write(ex, "Settings load"); Settings = new(); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write(ex, "Settings load"); Settings = new(); }
+        Settings = loaded ?? new();
+        string version = Updates.Current.ToString();
+        if (loaded is not null && Settings.LastVersion != version)
+        {
+            // первый запуск после обновления: профиль прежней версии лежит рядом, если новая что-то прочла не так
+            try { File.Copy(Profile, Path.Combine(Path.GetDirectoryName(Profile)!, $"profile.before-{(Settings.LastVersion.Length > 0 ? Settings.LastVersion : "older")}.json"), true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write(ex, "Settings version copy"); }
+            // копий прошлых версий хранится не больше пяти, самые свежие по времени записи
+            try
+            {
+                foreach (var old in new DirectoryInfo(Path.GetDirectoryName(Profile)!).GetFiles("profile.before-*.json").OrderByDescending(file => file.LastWriteTimeUtc).Skip(5))
+                    old.Delete();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write(ex, "Settings version cleanup"); }
+        }
+        Settings.LastVersion = version;
         if (!exists && path is null)
         {
+            // Первый запуск на этом устройстве: ярлыки как на панели задач Windows 11 — Edge, Проводник, Microsoft Store (какие из них есть в меню «Пуск»)
             var shortcuts = WindowsShell.StartMenuShortcuts();
-            var apps = new[] { "WhatsApp", "Telegram", "Spotify", "Discord", "Google Chrome", "Steam", "Codex",
-                "Claude", "Gemini", "Ollama", "Happ", "Hermes" };
-            var available = apps.Select(name => shortcuts.FirstOrDefault(shortcut =>
-                name.Equals(Path.GetFileNameWithoutExtension(shortcut), StringComparison.OrdinalIgnoreCase)))
-                .OfType<string>().Select(shortcut => "app:" + shortcut);
-            Settings.Items.InsertRange(Settings.Items.IndexOf("app:explorer.exe") + 1, available);
+            string? Find(string name) => shortcuts.FirstOrDefault(shortcut => name.Equals(Path.GetFileNameWithoutExtension(shortcut), StringComparison.OrdinalIgnoreCase));
+            int explorer = Settings.Items.IndexOf("app:explorer.exe");
+            if (Find("Microsoft Edge") is { } edge) { Settings.Items.Insert(explorer, "app:" + edge); explorer++; }
+            if (Find("Microsoft Store") is { } store) Settings.Items.Insert(explorer + 1, "app:" + store);
         }
         LocalVoice.Pins = Settings.VoiceModelPins;
         if (!Settings.ThemeToggleRemoved)
@@ -158,14 +198,66 @@ internal sealed class DockModel
             if (player >= 0 && !Settings.Items.Contains("Now Playing Artwork")) Settings.Items[player] = "Now Playing Artwork";
         }
         EnsurePinned();
+        savedSummary = BugReport.SettingsSummary(Settings); // исходное состояние для сравнения при первом сохранении
+        savedItems = Settings.Items.Select(ActivityLog.Tile).ToArray();
+    }
+
+    private string? savedSummary;
+    private string[]? savedItems;
+    private bool backedUp; // копия профиля перед первым сохранением за запуск уже сделана
+
+    // damaged = true, когда файл прочитан, но не разобран (JSON повреждён); занятый файл (антивирус, синхронизация) сначала перечитывается с короткой паузой
+    private static Preferences? ReadProfile(string file, out bool damaged)
+    {
+        damaged = false;
+        for (int attempt = 1; ; attempt++)
+        {
+            try { return File.Exists(file) ? JsonSerializer.Deserialize<Preferences>(File.ReadAllText(file)) : null; }
+            catch (JsonException ex) { damaged = true; ErrorLog.Write(ex, "Settings load"); return null; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt < 3) { System.Threading.Thread.Sleep(200); continue; }
+                ErrorLog.Write(ex, "Settings load");
+                return null;
+            }
+        }
+    }
+
+    // В журнал действий попадает, что именно изменилось: настройки (имя=значение) и состав виджетов в доке
+    private void NoteChanges()
+    {
+        var summary = BugReport.SettingsSummary(Settings);
+        if (savedSummary is not null && summary != savedSummary)
+        {
+            var before = savedSummary.Split(", ").ToHashSet();
+            ActivityLog.Record("настройки изменены", string.Join(", ", summary.Split(", ").Where(part => !before.Contains(part))));
+        }
+        savedSummary = summary;
+        var items = Settings.Items.Select(ActivityLog.Tile).ToArray();
+        if (savedItems is not null && !items.SequenceEqual(savedItems))
+        {
+            var added = items.Except(savedItems).ToArray();
+            var removed = savedItems.Except(items).ToArray();
+            ActivityLog.Record("виджеты в доке изменены", added.Length + removed.Length == 0 ? "порядок или число программ" :
+                (added.Length > 0 ? "добавлены " + string.Join(", ", added) : "") + (removed.Length > 0 ? " убраны " + string.Join(", ", removed) : ""));
+        }
+        savedItems = items;
     }
 
     public void Save(bool redraw = true)
     {
+        NoteChanges();
         var pending = Profile + ".tmp";
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Profile)!);
+            // перед первым сохранением за запуск прежний (читавшийся без ошибок) профиль сохраняется как .bak
+            if (!backedUp && File.Exists(Profile))
+            {
+                try { File.Copy(Profile, Profile + ".bak", true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write(ex, "Settings backup"); }
+            }
+            backedUp = true;
             File.WriteAllText(pending, JsonSerializer.Serialize(Settings, new JsonSerializerOptions { WriteIndented = true }));
             File.Move(pending, Profile, true);
         }
@@ -175,6 +267,15 @@ internal sealed class DockModel
             SaveFailed?.Invoke(ex.Message);
         }
         if (redraw) Changed?.Invoke();
+    }
+
+    // Раскладка дополнительного монитора: same / own / none; при первом включении «своей» берётся копия основного набора
+    public void SetMonitorWidgets(string device, string mode)
+    {
+        if (!Settings.Monitors.TryGetValue(device, out var setup)) Settings.Monitors[device] = setup = new MonitorSetup();
+        if (mode == "own" && setup.Items.Count == 0) setup.Items = [.. Settings.Items];
+        setup.Widgets = mode;
+        Save();
     }
 
     // Системные виджеты (звук, переключатели сети, тема) остаются в доке всегда, пока включён «Keep system widgets»
@@ -192,28 +293,44 @@ internal sealed class DockModel
         }
     }
 
-    public void ToggleWidget(string id)
+    // items — список виджетов того дока, где сделано действие (у дополнительного монитора со своей раскладкой он свой); без него — основной
+    public void ToggleWidget(string id, List<string>? items = null)
     {
-        if (Settings.Items.Contains(id) && IsPinned(id)) return;
-        if (!Settings.Items.Remove(id)) Settings.Items.Add(id);
+        var list = items ?? Settings.Items;
+        if (list == Settings.Items && list.Contains(id) && IsPinned(id)) return;
+        if (!list.Remove(id)) list.Add(id);
         Save();
     }
 
-    public bool SelectWidgetStyle(string from, string to)
+    public bool SelectWidgetStyle(string from, string to, List<string>? items = null)
     {
-        int source = Settings.Items.IndexOf(from);
+        var list = items ?? Settings.Items;
+        int source = list.IndexOf(from);
         if (source < 0 || from == to || !Widgets.Styles(from).Contains(to)) return false;
-        int target = Settings.Items.IndexOf(to);
-        Settings.Items[source] = to;
-        if (target >= 0) Settings.Items[target] = from;
+        int target = list.IndexOf(to);
+        list[source] = to;
+        if (target >= 0) list[target] = from;
         Save();
         return true;
     }
 
-    public void MoveItem(string item, string before)
+    // before == null: в конец списка (перетаскивание правее последней плитки)
+    // Меняет ярлык местами с соседним (delta -1 — влево, +1 — вправо); у края и при закреплённой панели ничего не делает
+    public bool Shift(string item, int delta, List<string>? items = null)
     {
-        if (Settings.Locked || item == before || !Settings.Items.Contains(before) || !Settings.Items.Remove(item)) return;
-        Settings.Items.Insert(Settings.Items.IndexOf(before), item);
+        var list = items ?? Settings.Items;
+        int from = list.IndexOf(item), to = from + delta;
+        if (Settings.Locked || from < 0 || to < 0 || to >= list.Count) return false;
+        (list[from], list[to]) = (list[to], list[from]);
+        Save();
+        return true;
+    }
+
+    public void MoveItem(string item, string? before, List<string>? items = null)
+    {
+        var list = items ?? Settings.Items;
+        if (Settings.Locked || item == before || before is not null && !list.Contains(before) || !list.Remove(item)) return;
+        if (before is null) list.Add(item); else list.Insert(list.IndexOf(before), item);
         Save();
     }
 

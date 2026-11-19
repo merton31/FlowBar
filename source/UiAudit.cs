@@ -47,7 +47,8 @@ internal static partial class Program
                         throw new InvalidOperationException($"Widget face has invalid dimensions: {id}");
                 }
                 string route;
-                if (DockWindow.NativeWidgetAction(id) is not null) route = "Native action assigned; not executed";
+                if (id == "TikTok") route = "Лента в отдельном окне браузера; здесь не открывается";
+                else if (DockWindow.NativeWidgetAction(id) is not null) route = "Native action assigned; not executed";
                 else
                 {
                     route = "Window opened";

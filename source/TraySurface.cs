@@ -143,6 +143,22 @@ internal sealed partial class DockWindow
                 ? L10n.T("Windows did not expose tray icons.") : L10n.T("Show the Windows taskbar to read its tray icons.");
         }
 
+        // Правый щелчок: настоящее меню значка есть только у значков панели Windows. Когда её скрывает FlowBar, список строится из запущенных программ
+        // (Open != null), у них своего меню не прочитать, поэтому показываем своё: «Открыть» и «Закрыть программу» (обычное закрытие окна, без принудительного).
+        void TrayMenu(FrameworkElement entry, WindowsShell.TrayItem item)
+        {
+            if (item.Open is null) { _ = Run(item, true); return; }
+            var menu = DockMenu();
+            menu.Items.Add(Menu("Open", () => _ = Run(item, false)));
+            menu.Items.Add(Menu("Quit app", () =>
+            {
+                bool closed = WindowsShell.QuitTrayApp(item.Id["app:".Length..]);
+                status.Text = L10n.T(closed ? "Asked the app to close." : "The app has no window to close. Use its menu in the Windows tray.");
+            }));
+            menu.PlacementTarget = entry;
+            menu.IsOpen = true;
+        }
+
         void AddIcons(WindowsShell.TrayItem[] entries)
         {
             foreach (var group in entries.Chunk(7))
@@ -170,12 +186,12 @@ internal sealed partial class DockWindow
                     entry.Padding = new(0);
                     entry.ToolTip = item.Name;
                     AutomationProperties.SetName(entry, item.Name);
-                    entry.PreviewMouseRightButtonUp += (_, e) => { e.Handled = true; _ = Run(item, true); };
+                    entry.PreviewMouseRightButtonUp += (_, e) => { e.Handled = true; TrayMenu(entry, item); };
                     entry.PreviewKeyDown += (_, e) =>
                     {
                         if (e.Key != Key.Apps && (e.Key != Key.F10 || (Keyboard.Modifiers & ModifierKeys.Shift) == 0)) return;
                         e.Handled = true;
-                        _ = Run(item, true);
+                        TrayMenu(entry, item);
                     };
                     row.Children.Add(entry);
                 }

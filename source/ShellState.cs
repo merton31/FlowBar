@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -46,6 +47,12 @@ internal static partial class WindowsShell
             var data = new AppBarData { Size = Marshal.SizeOf<AppBarData>(), Hwnd = taskbar };
             originalTaskbarState = (uint)SHAppBarMessage(4, ref data);
             originalTaskbarVisibility = IsWindowVisible(taskbar);
+            // если прежний запуск упал и панель всё ещё скрыта им, настоящее состояние лежит в его квитанции, а не в том, что видно сейчас
+            if (TakeOverStaleReceipts(recoveryDirectory, true) is var (priorState, priorVisible))
+            {
+                originalTaskbarState = priorState;
+                originalTaskbarVisibility = priorVisible;
+            }
             var receipt = Path.Combine(recoveryDirectory, $"taskbar-{Environment.ProcessId}.restore");
             try
             {
@@ -78,16 +85,75 @@ internal static partial class WindowsShell
             taskbarAutoHideOnly = autoHideOnly;
         }
         else if (!autoHideOnly && IsWindowVisible(taskbar)) SetTaskbarWindow(taskbar, false);
+        // Панели задач на остальных мониторах (Shell_SecondaryTrayWnd) скрываются вместе с главной, иначе на втором экране системная стоит рядом с доком
+        SetSecondaryTaskbars(false);
         return true;
+    }
+
+    // Показывает или прячет панели задач Windows на втором и следующих мониторах; прячет только видимые, чтобы не дёргать окна каждую секунду
+    private static void SetSecondaryTaskbars(bool visible)
+    {
+        var name = new StringBuilder(64);
+        EnumWindows((window, _) =>
+        {
+            name.Clear();
+            GetClassName(window, name, name.Capacity);
+            if (name.ToString() == "Shell_SecondaryTrayWnd" && (visible || IsWindowVisible(window))) SetTaskbarWindow(window, visible);
+            return true;
+        }, 0);
+    }
+
+    // Квитанции чужих запусков: в них настоящее состояние панели до скрытия (после падения, а при обновлении прежний запуск ещё доживает и держит панель скрытой).
+    // Берётся самая свежая из записанных после загрузки Windows (старше — уже не актуальна). Удаляются только квитанции умерших процессов, чтобы файлы не копились;
+    // живой запуск уберёт свою сам. handover = true: учитывать и квитанции живых запусков (так делает новый запуск, когда сам прячет панель).
+    internal static (uint State, bool Visible)? TakeOverStaleReceipts(string directory, bool handover = false)
+    {
+        (uint, bool)? result = null;
+        try
+        {
+            if (!Directory.Exists(directory)) return null;
+            var boot = DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+            var others = new System.Collections.Generic.List<(string File, bool Dead)>();
+            foreach (string file in Directory.GetFiles(directory, "taskbar-*.restore").OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                if (!int.TryParse(Path.GetFileNameWithoutExtension(file)["taskbar-".Length..], out int id) || id == Environment.ProcessId) continue;
+                bool dead;
+                try { using var other = System.Diagnostics.Process.GetProcessById(id); dead = other.HasExited; }
+                catch (ArgumentException) { dead = true; }
+                others.Add((file, dead));
+            }
+            foreach (var (file, dead) in others)
+            {
+                if (result is null && (dead || handover) && File.GetLastWriteTimeUtc(file) > boot)
+                {
+                    var record = File.ReadAllText(file).Split('|');
+                    if (record.Length == 2 && uint.TryParse(record[0], out var state) && bool.TryParse(record[1], out var visible)) result = (state & 3, visible);
+                }
+                if (dead) TryDelete(file);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return result;
     }
 
     public static void RestoreTaskbar()
     {
-        if (recovery is null) return;
+        if (recovery is null)
+        {
+            // сторож мог уступить новому запуску, который панель не прячет: возвращаем её по оставшейся квитанции
+            if (TakeOverStaleReceipts(recoveryDirectory) is var (priorState, priorVisible) && FindWindow("Shell_TrayWnd", null) is var main and not 0)
+            {
+                ApplyTaskbarState(main, priorState, priorVisible);
+                SetSecondaryTaskbars(true);
+            }
+            return;
+        }
         var taskbar = FindWindow("Shell_TrayWnd", null);
         if (taskbar == 0) return;
         ApplyTaskbarState(taskbar, originalTaskbarState, originalTaskbarVisibility);
+        SetSecondaryTaskbars(true);
         TryDelete(recovery);
+        TakeOverStaleReceipts(recoveryDirectory); // заодно убирает квитанции умерших запусков, их состояние уже не нужно
         recovery = null;
         hiddenTaskbar = 0;
     }
@@ -119,6 +185,7 @@ internal static partial class WindowsShell
                 var record = File.ReadAllText(receipt).Split('|');
                 bool visible = record.Length < 2 || !bool.TryParse(record[1], out var prior) || prior;
                 if (uint.TryParse(record[0], out var state)) ApplyTaskbarState(taskbar, state & 3, visible);
+                SetSecondaryTaskbars(true);
                 TryDelete(receipt);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -127,6 +194,7 @@ internal static partial class WindowsShell
         {
             var taskbar = FindWindow("Shell_TrayWnd", null);
             if (taskbar != 0) SetTaskbarWindow(taskbar, true);
+            SetSecondaryTaskbars(true);
         }
     }
 

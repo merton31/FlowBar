@@ -74,11 +74,8 @@ internal static partial class Visuals
 
     public static Slider FilledSlider(Brush accent, double value, double height, string name, double min = 0, double max = 100)
     {
-        var slider = new DockRangeSlider
-        {
-            Minimum = min, Maximum = max, Value = value, Height = height, Foreground = accent,
-            Background = TrackInk, Template = RangeTemplate(typeof(Slider), interactive: true), IsMoveToPointEnabled = true
-        };
+        // все ползунки панели — «рогатка» из прошлой версии (SlingSlider)
+        var slider = new SlingSlider(accent, height) { Minimum = min, Maximum = max, Value = value };
         AutomationProperties.SetName(slider, L10n.T(name));
         return slider;
     }
@@ -88,13 +85,13 @@ internal static partial class Visuals
         var meter = new ProgressBar
         {
             Height = height, Foreground = accent, Background = track ?? TrackInk,
-            Template = RangeTemplate(typeof(ProgressBar), interactive: false)
+            Template = RangeTemplate(typeof(ProgressBar))
         };
         AutomationProperties.SetName(meter, L10n.T(name));
         return meter;
     }
 
-    private static ControlTemplate RangeTemplate(Type controlType, bool interactive)
+    private static ControlTemplate RangeTemplate(Type controlType)
     {
         var stack = new FrameworkElementFactory(typeof(Grid));
         var fill = new FrameworkElementFactory(typeof(RangeFill));
@@ -106,29 +103,11 @@ internal static partial class Visuals
         })
             fill.SetBinding(property, new Binding(name) { RelativeSource = RelativeSource.TemplatedParent });
         stack.AppendChild(fill);
-        if (interactive) stack.AppendChild(new FrameworkElementFactory(typeof(Track), "PART_Track"));
         var template = new ControlTemplate(controlType) { VisualTree = stack };
         var disabled = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
         disabled.Setters.Add(new Setter(UIElement.OpacityProperty, .5));
         template.Triggers.Add(disabled);
         return template;
-    }
-
-    private sealed class DockRangeSlider : Slider
-    {
-        public override void OnApplyTemplate()
-        {
-            base.OnApplyTemplate();
-            if (GetTemplateChild("PART_Track") is not Track track) return;
-            var buttonSurface = new FrameworkElementFactory(typeof(Border));
-            buttonSurface.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-            var repeat = new ControlTemplate(typeof(RepeatButton)) { VisualTree = buttonSurface };
-            track.DecreaseRepeatButton = new RepeatButton { Template = repeat, Command = DecreaseLarge, Focusable = false };
-            track.IncreaseRepeatButton = new RepeatButton { Template = repeat, Command = IncreaseLarge, Focusable = false };
-            var thumbSurface = new FrameworkElementFactory(typeof(Border));
-            thumbSurface.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-            track.Thumb = new Thumb { Width = 13, Template = new ControlTemplate(typeof(Thumb)) { VisualTree = thumbSurface } };
-        }
     }
 
     private sealed class RangeFill : FrameworkElement

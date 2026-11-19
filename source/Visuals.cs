@@ -129,14 +129,14 @@ internal static partial class Visuals
     public static MenuItem Menu(string title, Action click, object? icon = null)
     {
         var item = new MenuItem { Header = L10n.T(title), Icon = icon };
-        item.Click += (_, _) => click();
+        item.Click += (_, _) => { ActivityLog.Record("пункт меню", title); click(); };
         return item;
     }
 
     // Пункт с готовым текстом (названия окон и программ не переводятся); длинный текст обрезается многоточием
     public static MenuItem MenuText(string title, Action click, object? icon = null)
     {
-        var item = Menu(title, click, icon);
+        var item = Menu("(пункт с названием окна или программы)", click, icon); // само название в журнал не попадает
         item.Header = new TextBlock { Text = title, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 300 };
         return item;
     }
