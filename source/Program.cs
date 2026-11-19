@@ -235,6 +235,7 @@ internal static partial class Program
                         await VerifyDeviceLists(dock, args[1]);
                         await VerifyPlayer(dock, model, args[1]);
                         VerifyIcons();
+                        if (WindowsPins.Verify() is { Length: > 0 } pinProblem) throw new InvalidOperationException("Windows pins: " + pinProblem);
                         await VerifyAgent(dock, model);
                         await VerifyEndTask(dock);
                         await VerifyLocalVoice();
@@ -1072,6 +1073,15 @@ internal static partial class Program
             if (WindowsShell.ResolveApp(running) != running) throw new InvalidOperationException("A versioned exe without a stub was changed.");
             File.WriteAllBytes(stub, [0]);
             if (WindowsShell.ResolveApp(running) != stub) throw new InvalidOperationException("A versioned exe was not matched to its launcher.");
+            // ярлык из панели Windows «Update.exe --processStart X.exe» и ярлык на сам X.exe — одна программа, иначе в доке появится второй значок
+            File.WriteAllBytes(Path.Combine(root, "Update.exe"), [0]);
+            File.WriteAllBytes(running, [0]);
+            var link = ((dynamic)Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!)!).CreateShortcut(Path.Combine(root, "X.lnk"));
+            link.TargetPath = Path.Combine(root, "Update.exe"); link.Arguments = "--processStart X.exe"; link.Save();
+            var direct = ((dynamic)Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!)!).CreateShortcut(Path.Combine(root, "Direct.lnk"));
+            direct.TargetPath = running; direct.Save();
+            if (WindowsShell.MatchApp(Path.Combine(root, "X.lnk")) != stub || WindowsShell.MatchApp(Path.Combine(root, "Direct.lnk")) != stub)
+                throw new InvalidOperationException("Shortcuts to one Squirrel app resolve to different programs.");
         }
         finally { Directory.Delete(root, true); }
     }

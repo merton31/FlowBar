@@ -841,7 +841,7 @@ internal static partial class L10n
         ["Wind"] = "Ветер",
         ["Now"] = "Сейчас",
         ["Keep system widgets"] = "Закрепить системные виджеты",
-        ["Sound, network switches and the tray icon always stay in the dock."] = "Звук, переключатели сети и значок трея всегда остаются в доке и не снимаются случайно.",
+        ["Input language, sound, network switches and the tray icon always stay in the dock."] = "Язык ввода, звук, переключатели сети и значок трея всегда остаются в доке и не снимаются случайно.",
         ["Weather: Clear"] = "Ясно",
         ["Partly cloudy"] = "Переменная облачность",
         ["Overcast"] = "Пасмурно",

@@ -278,6 +278,16 @@ internal sealed partial class DockWindow : Window
         finally { readingBrightness = false; }
     }
 
+    // Раз в десять секунд (и при запуске) сверяем закреплённые значки панели Windows; читаем их заново, только если они поменялись
+    private string? pinSignature;
+    private void SyncWindowsPins()
+    {
+        string signature = WindowsPins.Signature();
+        if (signature.Length == 0 || signature == pinSignature) return;
+        pinSignature = signature;
+        model.ImportWindowsPins(WindowsPins.Read());
+    }
+
     private bool windowsDirty;
     private DateTime hoverUntil;
     private bool lastFullscreen;
@@ -289,6 +299,7 @@ internal sealed partial class DockWindow : Window
             ReadLive();
             if (!smoke && !secondary) model.Automation.Tick(DateTime.Now);
             if (!smoke && !secondary && ticks % 120 == 4) RefreshOnline();
+            if (!smoke && !secondary && ticks % 40 == 8) SyncWindowsPins();
             if (!smoke && !secondary && P.ReplaceTaskbar && WindowsShell.TaskbarChanged) WindowsShell.HideTaskbar(P.AutoHideWindows);
         }
         if (windowsDirty && !IsMouseOver && ContextMenu?.IsOpen != true && thumbnail is null) { windowsDirty = false; Refresh(); }
@@ -529,8 +540,18 @@ internal sealed partial class DockWindow : Window
         var iconSize = P.IconSize * .76;
         var tileHeight = Math.Max(47, iconSize + 10);
         var tiles = Items.Distinct(StringComparer.OrdinalIgnoreCase).Where(id => !AppsOnly || id == "Start" || id.StartsWith("app:", StringComparison.Ordinal)).ToList();
+        // Закреплённое приложение из магазина (id «shell:AppsFolder\идентификатор») ищется среди открытых по идентификатору окна: у открытого путь exe лежит в WindowsApps
+        var storeKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in groups.Concat(elsewhereGroups))
+            if (pair.Key.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase) && JumpList.AppId(pair.Value[0].Handle) is { Length: > 0 } appId)
+                storeKeys.TryAdd(WindowsShell.StorePrefix + appId, pair.Key);
+        string AppKey(string path)
+        {
+            var key = WindowsShell.MatchApp(path);
+            return WindowsShell.IsStoreApp(key) && storeKeys.TryGetValue(key, out var open) ? open : key;
+        }
         var pinned = tiles.Where(id => id.StartsWith("app:", StringComparison.Ordinal))
-            .Select(id => WindowsShell.MatchApp(id[4..])).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .Select(id => AppKey(id[4..])).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var afterApps = tiles.FindLastIndex(id => id.StartsWith("app:", StringComparison.Ordinal) || id == "Start") + 1;
         // открытые программы идут в порядке, который задал перенос мышью; новые встают в конец (по алфавиту, если появились сразу несколько)
         var unpinned = groups.Keys.Where(path => !pinned.Contains(path)).OrderBy(path => path).ToList();
@@ -564,7 +585,7 @@ internal sealed partial class DockWindow : Window
             }
             else if (id.StartsWith("app:", StringComparison.Ordinal))
             {
-                var appKey = WindowsShell.MatchApp(id[4..]);
+                var appKey = AppKey(id[4..]);
                 groups.TryGetValue(appKey, out var running);
                 elsewhereGroups.TryGetValue(appKey, out var other);
                 AddApp(AppTile(id, running ?? [], other ?? [], tileHeight, iconSize), Items.Contains(id, StringComparer.OrdinalIgnoreCase));
@@ -846,7 +867,7 @@ internal sealed partial class DockWindow : Window
         var shift = new TranslateTransform();
         tile.RenderTransform = new TransformGroup { Children = { magnify, shift } };
         magnets.Add((tile, magnify, shift, app, width));
-        var name = app ? Path.GetFileNameWithoutExtension(id[4..]) : id;
+        var name = app ? WindowsShell.AppLabel(id[4..]) : id;
         AutomationProperties.SetName(button, app ? name : L10n.T(name));
         if (P.Names) tile.ToolTip = app ? name : L10n.T(name);
         // переносятся закреплённые плитки и значки открытых программ (их порядок помнится, пока работает панель)

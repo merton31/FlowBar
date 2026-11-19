@@ -661,7 +661,7 @@ internal sealed partial class DockWindow
         DockToggle(dock, "Auto-hide", P.AutoHide, v => { P.AutoHide = v; DrawDockSettings(); }, "Reveal the dock when the pointer reaches the edge.");
         if (P.AutoHide)
             DockToggle(dock, "Show on desktop", P.ShowOnDesktop, v => P.ShowOnDesktop = v, "Keep the dock visible while the desktop is active.");
-        DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Sound, network switches and the tray icon always stay in the dock.");
+        DockToggle(dock, "Keep system widgets", P.PinSystem, v => { P.PinSystem = v; model.EnsurePinned(); }, "Input language, sound, network switches and the tray icon always stay in the dock.");
         DockToggle(dock, "Pinned apps stay in place", P.StickyPinnedApps, v => P.StickyPinnedApps = v, "When the dock is full, only open apps scroll with the mouse wheel; if off, all apps scroll.");
         if (System.Windows.Forms.Screen.AllScreens.Length > 1)
             DockToggle(dock, "All monitors", P.AllMonitors, v => { P.AllMonitors = v; DrawDockSettings(); }, "Show the dock on every connected monitor.");

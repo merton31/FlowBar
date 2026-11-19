@@ -54,7 +54,7 @@ internal static partial class Widgets
     // ширина кнопки Wi-Fi в быстрых настройках вместе с полями: 47 + 2 * 2
     internal const double WifiTileWidth = 51;
 
-    public static readonly string[] SystemPinned = ["Audio Output", "Quick Toggles", "Tray"];
+    public static readonly string[] SystemPinned = ["Language", "Audio Output", "Quick Toggles", "Tray"];
 
     // Позиции каталога эталона Lumabar без функций FlowBar
     public static IEnumerable<(string Name, string Glyph, string Catalog)> ReferenceCategories => Categories.Where(category => category.Name != FlowBarCategory);

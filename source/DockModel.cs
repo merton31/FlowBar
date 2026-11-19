@@ -57,6 +57,8 @@ internal sealed class Preferences
     public string WindowsOnDocks { get; set; } = "all"; // как в Windows: открытые программы видны на панелях всех мониторов
     // Закреплённые приложения всегда на месте: когда док не вмещает всё, колесом мыши прокручиваются только открытые приложения (выключено — прокручиваются все)
     public bool StickyPinnedApps { get; set; }
+    // Программы из панели задач Windows, которые док уже видел и добавил (или они уже стояли): убранные из дока обратно не возвращаются (WindowsPins.Merge)
+    public List<string> SeenWindowsPins { get; set; } = [];
     // Ширина виджетов, размер которых можно менять (пока только «Вывод звука»): идентификатор виджета -> ширина плитки
     public Dictionary<string, double> WidgetWidths { get; set; } = [];
     // Плеер в доке по умолчанию в виде обложки с кнопками; у уже существующего профиля меняется один раз
@@ -90,7 +92,7 @@ internal sealed class Preferences
     public bool AlertSound { get; set; } = true;
     public string Sound { get; set; } = "Crystal";
     public List<string> Items { get; set; } =
-        ["Todos", "Start", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Audio Output", "Quick Toggles", "Tray", "Clock"];
+        ["Todos", "Start", "app:explorer.exe", "Now Playing Artwork", "CPU", "RAM", "Pomodoro", "Language", "Audio Output", "Quick Toggles", "Tray", "Clock"];
     public List<Todo> Todos { get; set; } = [];
     public string Notes { get; set; } = "";
 }
@@ -281,6 +283,12 @@ internal sealed class DockModel
     // Системные виджеты (звук, переключатели сети, тема) остаются в доке всегда, пока включён «Keep system widgets»
     public bool IsPinned(string id) => Settings.PinSystem && Widgets.SystemPinned.Contains(id);
 
+    // Закреплённые в панели задач Windows программы добавляются и в док (ChatGPT, WhatsApp, Claude из магазина тоже); если что-то добавилось, док перерисуется
+    public void ImportWindowsPins(List<string> pins)
+    {
+        if (WindowsPins.Merge(Settings.Items, Settings.SeenWindowsPins, pins, id => WindowsShell.MatchApp(id[4..]))) Save();
+    }
+
     // Возвращает в док закреплённые виджеты, которых там нет (например, после старого профиля), перед часами или в конце
     public void EnsurePinned()
     {
@@ -288,8 +296,10 @@ internal sealed class DockModel
         foreach (var id in Widgets.SystemPinned)
         {
             if (Settings.Items.Contains(id)) continue;
+            // встаёт перед уже стоящими системными виджетами (язык ввода, как в Windows, слева от звука и сети), иначе перед часами или в конце
+            int first = Settings.Items.FindIndex(item => Widgets.SystemPinned.Contains(item));
             int clock = Settings.Items.IndexOf("Clock");
-            Settings.Items.Insert(clock >= 0 ? clock : Settings.Items.Count, id);
+            Settings.Items.Insert(first >= 0 ? first : clock >= 0 ? clock : Settings.Items.Count, id);
         }
     }
 
