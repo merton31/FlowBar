@@ -188,9 +188,16 @@ internal static class Updates
     public static async Task InstallAsync(Release release)
     {
         if (release.Sha256 is null) throw new InvalidOperationException("GitHub did not supply a checksum.");
-        string folder = Path.Combine(Path.GetTempPath(), "FlowBar-update", release.Tag);
-        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        // Папка у каждой попытки своя: от прошлой попытки мог остаться архив, занятый антивирусом, запущенной копией или зависшей загрузкой,
+        // и тогда удаление падало с «FlowBar.zip используется другим процессом», а обновиться было уже нельзя (так было у пользователя)
+        string root = Path.Combine(Path.GetTempPath(), "FlowBar-update");
+        string folder = Path.Combine(root, release.Tag + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(folder);
+        foreach (var old in Directory.GetDirectories(root)) // чужие старше суток убираем по возможности, занятые оставляем
+        {
+            try { if (old != folder && DateTime.UtcNow - Directory.GetLastWriteTimeUtc(old) > TimeSpan.FromDays(1)) Directory.Delete(old, true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
         string zip = Path.Combine(folder, release.Asset);
         using (var client = Client())
         using (var response = await client.GetAsync(release.Url, HttpCompletionOption.ResponseHeadersRead))

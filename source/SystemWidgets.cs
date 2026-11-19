@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -59,9 +59,16 @@ internal static partial class WindowsShell
 
     public static bool EmptyRecycleBin(nint owner) => SHEmptyRecycleBin(owner, null, 0) == 0;
 
-    public static (double Brightness, bool Supported) Brightness(nint window, double? set = null)
+    public static (double Brightness, bool Supported) Brightness(nint window, double? set = null) =>
+        MonitorBrightness(MonitorFromWindow(window, 2), set);
+
+    // Монитор по границам экрана (для яркости каждого подключённого монитора, не только того, где стоит док)
+    public static nint MonitorOf(System.Drawing.Rectangle bounds) =>
+        MonitorFromPoint(new ScreenPoint { X = bounds.Left + bounds.Width / 2, Y = bounds.Top + bounds.Height / 2 }, 2);
+
+    // Яркость монитора по DDC/CI; у встроенных экранов ноутбуков этого нет — для них Supported = false
+    public static (double Brightness, bool Supported) MonitorBrightness(nint monitor, double? set = null)
     {
-        var monitor = MonitorFromWindow(window, 2);
         if (monitor == 0 || !GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, out var count) || count is 0 or > 16)
             return (0, false);
         var monitors = new PhysicalMonitor[count];
@@ -98,16 +105,22 @@ internal static partial class WindowsShell
                     var value = Convert.ToDouble(((dynamic)zone).CurrentTemperature, CultureInfo.InvariantCulture) / 10 - 273.15;
                     if (value > -20 && value < 150) temperatures.Add(value);
                 }
-                finally { if (zone is not null && Marshal.IsComObject(zone)) Marshal.ReleaseComObject(zone); }
+                finally { Release(zone); }
             }
             return temperatures.Count == 0 ? null : temperatures.Max();
         }
         catch (Exception ex) when (ex is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or UnauthorizedAccessException) { return null; }
         finally
         {
-            foreach (object? value in new[] { results, service, locator })
-                if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+            foreach (object? value in new[] { results, service, locator }) Release(value);
         }
+    }
+
+    // У части компьютеров ReleaseComObject падает с NullReferenceException (в отчёте пользователя — раз в минуту, 42 раза); память всё равно освободит сборщик мусора
+    private static void Release(object? value)
+    {
+        try { if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value); }
+        catch (Exception ex) when (ex is NullReferenceException or COMException or InvalidComObjectException) { }
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct RecycleBinInfo { public int Size; public long Bytes, Items; }
@@ -118,7 +131,9 @@ internal static partial class WindowsShell
     }
     [DllImport("shell32", CharSet = CharSet.Unicode)] private static extern int SHQueryRecycleBin(string? root, ref RecycleBinInfo info);
     [DllImport("shell32", CharSet = CharSet.Unicode)] private static extern int SHEmptyRecycleBin(nint owner, string? root, uint flags);
+    [StructLayout(LayoutKind.Sequential)] private struct ScreenPoint { public int X, Y; }
     [DllImport("user32")] private static extern nint MonitorFromWindow(nint window, uint flags);
+    [DllImport("user32")] private static extern nint MonitorFromPoint(ScreenPoint point, uint flags);
     [DllImport("dxva2")] private static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(nint monitor, out uint count);
     [DllImport("dxva2")] private static extern bool GetPhysicalMonitorsFromHMONITOR(nint monitor, uint count, [Out] PhysicalMonitor[] monitors);
     [DllImport("dxva2")] private static extern bool DestroyPhysicalMonitors(uint count, PhysicalMonitor[] monitors);

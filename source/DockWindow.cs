@@ -60,7 +60,7 @@ internal sealed partial class DockWindow : Window
     private (string? Key, long At) closedByFocus;
     // плитки программ по пути (для прыжка значка при мигании окна) и время, до которого док показывается из-за мигания
     private readonly Dictionary<string, Border> appTiles = new(StringComparer.OrdinalIgnoreCase);
-    private DateTime flashUntil;
+    private DateTime flashUntil, dragOverUntil;
     private List<WindowsShell.WindowInfo> windows = [];
     private string windowSignature = "";
     // Монитор каждого окна и активное окно: из них складываются значки открытых окон под иконками
@@ -120,10 +120,13 @@ internal sealed partial class DockWindow : Window
         ContextMenu = CommonMenu();
         AllowDrop = true;
         WireDrag();
+        // Пока тянут файл из другой программы, IsMouseOver у дока не меняется: держим док открытым по самому перетаскиванию
+        DragOver += (_, _) => dragOverUntil = DateTime.UtcNow.AddMilliseconds(600);
         Drop += (_, e) =>
         {
             if (!e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
-            if (!P.Locked) PinPaths(paths);
+            // как на панели задач Windows: перетаскиванием закрепляются программы, ярлыки и папки, а документ — нет (для него есть «Закрепить файл или программу…»)
+            if (!P.Locked) PinPaths(paths.Where(path => Directory.Exists(path) || new[] { ".exe", ".lnk", ".url", ".appref-ms", ".bat", ".cmd" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)));
         };
         closePreview.Tick += (_, _) => { closePreview.Stop(); CloseThumbnail(); };
         if (!secondary) model.SaveFailed += message => Report(L10n.F($"Could not save the profile.\n{message}"));
@@ -288,6 +291,21 @@ internal sealed partial class DockWindow : Window
         model.ImportWindowsPins(WindowsPins.Read());
     }
 
+    // Системный трей Windows над плиткой, по которой нажали (на экране этой панели)
+    private void OpenWindowsTray(FrameworkElement? tile)
+    {
+        CloseThumbnail();
+        var screen = (monitor ?? Screen.PrimaryScreen)?.Bounds ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
+        var anchor = new System.Drawing.Rectangle(screen.Left + screen.Width / 2, screen.Bottom, 0, 0);
+        if (tile is not null && tile.IsLoaded)
+        {
+            var topLeft = tile.PointToScreen(new Point(0, 0));
+            var bottomRight = tile.PointToScreen(new Point(tile.ActualWidth, tile.ActualHeight)); // PointToScreen уже в физических пикселях
+            anchor = new System.Drawing.Rectangle((int)topLeft.X, (int)topLeft.Y, (int)(bottomRight.X - topLeft.X), (int)(bottomRight.Y - topLeft.Y));
+        }
+        _ = WindowsShell.OpenTrayFlyout(anchor, screen);
+    }
+
     private bool windowsDirty;
     private DateTime hoverUntil;
     private bool lastFullscreen;
@@ -309,13 +327,18 @@ internal sealed partial class DockWindow : Window
             bool fullscreen = WindowsShell.IsFullscreen(display);
             var pointer = System.Windows.Forms.Cursor.Position;
             var dpi = VisualTreeHelper.GetDpi(this);
-            bool atEdge = pointer.Y >= (Top + Height) * dpi.DpiScaleY - 3 &&
+            // над игрой на весь экран край не выдвигает док (как панель Windows); над браузером и видео — выдвигает
+            bool game = fullscreen && WindowsShell.IsGameForeground();
+            bool atEdge = !game && pointer.Y >= (Top + Height) * dpi.DpiScaleY - 3 &&
                 pointer.X >= Left * dpi.DpiScaleX && pointer.X < (Left + Width) * dpi.DpiScaleX;
             // поверх полноэкранного окна (браузер, видео) дока не видно, но он выезжает, если подержать указатель у нижнего края (около полсекунды: в играх от случайного касания края он не мешает)
             edgeTicks = fullscreen && atEdge ? edgeTicks + 1 : 0;
             // док не прячется, пока открыто что-то от него: меню, виджет или настройки (даже если окно потеряло фокус), миниатюра; после ухода указателя держится ещё секунду с небольшим
-            bool held = surfaces.Values.Any(surface => surface.IsVisible) || ContextMenu?.IsOpen == true || thumbnail is not null || DateTime.UtcNow < flashUntil || dragTile is not null;
-            if (held || IsMouseOver) hoverUntil = DateTime.UtcNow.AddMilliseconds(1200);
+            bool held = surfaces.Values.Any(surface => surface.IsVisible) || ContextMenu?.IsOpen == true || thumbnail is not null || DateTime.UtcNow < flashUntil || dragTile is not null
+                || DateTime.UtcNow < dragOverUntil;
+            // Выезд от края тоже продлевает показ: при перетаскивании файла из другой программы указатель уходит с полоски у края на док раньше, чем придёт первое событие DragOver
+            bool revealedByEdge = atEdge && (!fullscreen || edgeTicks >= 2);
+            if (held || IsMouseOver || revealedByEdge) hoverUntil = DateTime.UtcNow.AddMilliseconds(1200);
             var visible = BarShouldShow(fullscreen, P.AutoHide, P.ShowOnDesktop && WindowsShell.IsDesktopActive() && windows.All(item => WindowsShell.Minimized(item.Handle)), DateTime.UtcNow < hoverUntil, atEdge, edgeTicks, held);
             if (fullscreen != lastFullscreen)
             {
@@ -519,6 +542,27 @@ internal sealed partial class DockWindow : Window
         finally { P.Magnification = was; magnetX = null; }
     }
 
+    private record WindowFacts(string? AppId, List<string> Hosts);
+    private readonly Dictionary<(nint Handle, string App), WindowFacts> windowFacts = [];
+
+    // Под какой плиткой показывать окно. Обычно по программе окна, но Windows сводит окна по AppUserModelID, и у многих программ окно принадлежит
+    // другому процессу, чем закреплённый файл (Steam: окно у steamwebhelper.exe, закреплён steam.exe). Поэтому окно без своей закреплённой программы
+    // ищет закреплённую по тому же AppUserModelID (из ярлыка или пакета магазина), а при его наличии — среди главных программ в цепочке запуска.
+    private string GroupKey(WindowsShell.WindowInfo window, Dictionary<string, string?> pinned)
+    {
+        string own = WindowsShell.ResolveApp(window.App);
+        if (window.Handle == 0 || pinned.ContainsKey(own)) return own;
+        if (!windowFacts.TryGetValue((window.Handle, own), out var facts))
+        {
+            string? id = JumpList.AppId(window.Handle);
+            windowFacts[(window.Handle, own)] = facts = new(id, string.IsNullOrEmpty(id) ? [] : WindowsShell.HostApps(window.Handle, window.App));
+        }
+        if (string.IsNullOrEmpty(facts.AppId)) return own;
+        foreach (var (key, id) in pinned)
+            if (string.Equals(id, facts.AppId, StringComparison.OrdinalIgnoreCase)) return key;
+        return facts.Hosts.FirstOrDefault(pinned.ContainsKey) ?? own;
+    }
+
     private void Refresh()
     {
         EndDrag(false); // плитки пересобираются, перенос в этот момент прерывается
@@ -532,24 +576,20 @@ internal sealed partial class DockWindow : Window
         var mode = P.WindowsOnDocks;
         var shown = mode == "all" || mode == "main" && !secondary ? windows : mode == "main" ? [] : windows.Where(OnThisScreen).ToList();
         var elsewhere = windows.Except(shown).ToList();
-        var groups = shown.GroupBy(item => WindowsShell.ResolveApp(item.App), StringComparer.OrdinalIgnoreCase)
+        // закреплённые программы: путь для сопоставления -> AppUserModelID (у приложений магазина из id, у остальных из ярлыка)
+        var pinnedApps = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in Items.Where(id => id.StartsWith("app:", StringComparison.Ordinal)))
+            pinnedApps[WindowsShell.MatchApp(id[4..])] = WindowsShell.IsStoreApp(id[4..]) ? id[(4 + WindowsShell.StorePrefix.Length)..] : JumpList.ShortcutAppId(id[4..]);
+        windowFacts.Keys.Where(key => !windows.Any(window => window.Handle == key.Handle)).ToList().ForEach(key => windowFacts.Remove(key));
+        var groups = shown.GroupBy(item => GroupKey(item, pinnedApps), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
-        var elsewhereGroups = elsewhere.GroupBy(item => WindowsShell.ResolveApp(item.App), StringComparer.OrdinalIgnoreCase)
+        var elsewhereGroups = elsewhere.GroupBy(item => GroupKey(item, pinnedApps), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
         var scale = P.Size / 75;
         var iconSize = P.IconSize * .76;
         var tileHeight = Math.Max(47, iconSize + 10);
-        var tiles = Items.Distinct(StringComparer.OrdinalIgnoreCase).Where(id => !AppsOnly || id == "Start" || id.StartsWith("app:", StringComparison.Ordinal)).ToList();
-        // Закреплённое приложение из магазина (id «shell:AppsFolder\идентификатор») ищется среди открытых по идентификатору окна: у открытого путь exe лежит в WindowsApps
-        var storeKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pair in groups.Concat(elsewhereGroups))
-            if (pair.Key.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase) && JumpList.AppId(pair.Value[0].Handle) is { Length: > 0 } appId)
-                storeKeys.TryAdd(WindowsShell.StorePrefix + appId, pair.Key);
-        string AppKey(string path)
-        {
-            var key = WindowsShell.MatchApp(path);
-            return WindowsShell.IsStoreApp(key) && storeKeys.TryGetValue(key, out var open) ? open : key;
-        }
+        var tiles = Items.Distinct(StringComparer.OrdinalIgnoreCase).Where(id => !AppsOnly || id is "Start" or "Search" || id.StartsWith("app:", StringComparison.Ordinal)).ToList();
+        string AppKey(string path) => WindowsShell.MatchApp(path);
         var pinned = tiles.Where(id => id.StartsWith("app:", StringComparison.Ordinal))
             .Select(id => AppKey(id[4..])).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var afterApps = tiles.FindLastIndex(id => id.StartsWith("app:", StringComparison.Ordinal) || id == "Start") + 1;
@@ -948,6 +988,12 @@ internal sealed partial class DockWindow : Window
             }
             else if (!WindowsShell.Launch(path)) Report(L10n.F($"Could not open {path}"));
         });
+        if (running.Count + elsewhere.Count > 0) DwellOpen(tile, () =>
+        {
+            var targets = running.Count > 0 ? running : elsewhere;
+            if (targets.Count == 1) WindowsShell.Activate(targets[0].Handle);
+            else ShowThumbnail(tile, targets, true); // несколько окон: показываем карточки, как Windows, и выбор окна — тоже наведением
+        });
         // Меню собирается заново при каждом открытии, чтобы список переходов программы был свежим
         var appMenu = DockMenu();
         tile.ContextMenuOpening += (_, _) => FillAppMenu(appMenu, id, path, running, image);
@@ -972,6 +1018,31 @@ internal sealed partial class DockWindow : Window
         appTiles[path] = tile;
         appTiles[WindowsShell.ResolveApp(path)] = tile;
         return tile;
+    }
+
+    // Как в Windows: файл, который тянут и держат над значком или карточкой, открывает это окно (около 0,7 с), чтобы можно было бросить файл в него
+    private void DwellOpen(UIElement target, Action open)
+    {
+        var wait = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+        var lastOver = DateTime.MinValue;
+        bool done = false; // один раз за наведение: иначе миниатюры мигали бы заново каждые 0,7 с
+        target.AllowDrop = true;
+        target.DragOver += (_, _) =>
+        {
+            var now = DateTime.UtcNow;
+            if (now - lastOver > TimeSpan.FromMilliseconds(400)) done = false; // указатель уходил и вернулся
+            lastOver = now;
+            closePreview.Stop();
+            if (!done && !wait.IsEnabled) wait.Start();
+        };
+        target.DragLeave += (_, _) => { if (thumbnail is not null) { closePreview.Stop(); closePreview.Start(); } };
+        wait.Tick += (_, _) =>
+        {
+            wait.Stop();
+            if (DateTime.UtcNow - lastOver >= TimeSpan.FromMilliseconds(300)) return; // указатель уже ушёл
+            done = true;
+            open();
+        };
     }
 
     // Регистрирует глобальные сочетания из настроек (Hotkeys.cs); возвращает номера, которые Windows не приняла, например, если сочетание занято другой программой
@@ -1030,6 +1101,8 @@ internal sealed partial class DockWindow : Window
         var preview = new Window { WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize,
             ShowActivated = false, ShowInTaskbar = false, Topmost = true, Background = SurfaceInk,
             Width = columns * (cardWidth + gap) - gap + pad * 2, Height = rows * (cardHeight + gap) - gap + pad * 2, Owner = this };
+        preview.AllowDrop = true;
+        preview.DragOver += (_, _) => closePreview.Stop(); // и пока над карточками тянут файл
         preview.MouseEnter += (_, _) => closePreview.Stop();
         preview.MouseLeave += (_, _) => { closePreview.Stop(); closePreview.Start(); };
         preview.PreviewKeyDown += (_, args) => { if (args.Key == Key.Escape) CloseThumbnail(); };
@@ -1082,6 +1155,7 @@ internal sealed partial class DockWindow : Window
             card.MouseEnter += (_, _) => { card.Background = Brush("#22FFFFFF"); card.BorderBrush = Accent(P); };
             card.MouseLeave += (_, _) => { card.Background = Brushes.Transparent; card.BorderBrush = Brush("#26FFFFFF"); };
             card.MouseLeftButtonUp += (_, _) => { CloseThumbnail(); WindowsShell.Activate(window.Handle, true); };
+            DwellOpen(card, () => { CloseThumbnail(); WindowsShell.Activate(window.Handle); });
             card.MouseDown += (_, args) => { if (args.ChangedButton == MouseButton.Middle) { args.Handled = true; CloseWindow(window); } };
             Canvas.SetLeft(card, x);
             Canvas.SetTop(card, y);

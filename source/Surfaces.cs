@@ -906,7 +906,7 @@ internal sealed partial class DockWindow
         if (id is "Quick Toggles" or "Wi-Fi" or "Bluetooth")
             return Surface(id, 390, id == "Quick Toggles" ? 362 : 500, true,
                 (window, shell) => QuickToggleSurface(window, shell, id, anchor), anchor);
-        if (id == "Tray") return Surface(id, 420, 460, true, TraySurface, anchor, closeOnDeactivate: false);
+        if (id == "Tray") { OpenWindowsTray(anchor); return null; } // своего трея нет: открываем системный
         if (id is "Calendar" or "Clock" or "Today" or "Date" or "7 Days")
             return Surface(id, 720, 560, true, CalendarSurface, anchor);
         bool large = id is "Todos" or "Notes" or "Apps" or "Screen Time";

@@ -34,8 +34,6 @@ internal static partial class Program
             return NetworkCheck.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-tiktok")
             return TikTokFeed.Run(args[1]);
-        if (args.Length == 2 && args[0] == "--check-tray")
-            return TrayCheck.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-connections")
             return ConnectionCheck.Run(args[1]);
         if (args.Length == 0 && Installer.RunFromElsewhere())
@@ -192,6 +190,15 @@ internal static partial class Program
                         // значок трея закреплён вместе с системными и есть в списке нового профиля
                         if (!Widgets.SystemPinned.Contains("Tray") || !new DockModel(Path.Combine(args[1], "fresh-profile.json")).Settings.Items.Contains("Tray"))
                             throw new InvalidOperationException("The tray icon is not pinned with the system widgets.");
+                        // кнопка поиска стоит сразу после «Пуск»: в новом профиле и один раз в старом, убранная позже не возвращается
+                        var oldProfile = Path.Combine(args[1], "old-search-profile.json");
+                        File.WriteAllText(oldProfile, "{\"Items\":[\"Todos\",\"Start\",\"app:x.exe\"]}");
+                        var oldItems = new DockModel(oldProfile).Settings.Items;
+                        var freshItems = new DockModel(Path.Combine(args[1], "fresh-profile.json")).Settings.Items;
+                        if (!oldItems.Take(3).SequenceEqual(["Todos", "Start", "Search"]) || freshItems.IndexOf("Search") != freshItems.IndexOf("Start") + 1)
+                            throw new InvalidOperationException("The search button does not follow the Start button.");
+                        var keptSearch = new DockModel(oldProfile); keptSearch.Settings.Items.Remove("Search"); keptSearch.Save();
+                        if (new DockModel(oldProfile).Settings.Items.Contains("Search")) throw new InvalidOperationException("A removed search button came back.");
                         // виджет WhatsApp: в проверках счётчик фиксированный (3), подпись «Unread»
                         var whatsapp = Widgets.Face(Widgets.Available["WhatsApp"], model, true, out var whatsappUpdate);
                         whatsappUpdate();
@@ -264,7 +271,7 @@ internal static partial class Program
                             $"Wi-Fi: {model.Radios.Read("Wi-Fi")}; Bluetooth: {model.Radios.Read("Bluetooth")}");
                         foreach (var id in new[] { "Calendar", "Screen Time", "Day Timeline", "Weather", "Audio Output", "World Clocks", "World Time", "Network",
                             "Now Playing", "AI Limits", "Total Revenue", "Storage", "Wallpaper Gallery", "Hourly", "Sunrise & Sunset",
-                            "Stock Chart", "Quick Toggles", "Bluetooth", "Tray" })
+                            "Stock Chart", "Quick Toggles", "Bluetooth" })
                         {
                             surface = dock.OpenWidget(id) ?? throw new InvalidOperationException(id + " did not open");
                             Capture(surface, Path.Combine(args[1], id.Replace(' ', '-') + ".png"));
@@ -290,10 +297,6 @@ internal static partial class Program
                                 Click(surface, "°C");
                             }
                             if (id == "Stock Chart") Click(surface, "1W");
-                            if (id == "Tray" && (FindControl(surface, "Sample tray icon") is not Button
-                                || !WindowsShell.IsOverflowButton("SystemTray.ChevronIconView", "", "")
-                                || WindowsShell.IsOverflowButton("SystemTray.NotifyIconView", "SystemTrayIcon", "Example sync")))
-                                throw new InvalidOperationException("Tray icon layout or chevron classification failed.");
                             surface.Close();
                         }
                         surface = null;
@@ -1084,6 +1087,13 @@ internal static partial class Program
                 throw new InvalidOperationException("Shortcuts to one Squirrel app resolve to different programs.");
         }
         finally { Directory.Delete(root, true); }
+        // окно у помощника (steamwebhelper) относится к главной программе (steam.exe) выше по папке, но не к Проводнику и не к программе рядом
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (!WindowsShell.IsHostOf(@"C:\Games\Steam\bin\cef\steamwebhelper.exe", @"C:\Games\Steam\steam.exe")
+            || WindowsShell.IsHostOf(@"C:\Games\Steam\bin\cef\steamwebhelper.exe", @"C:\Games\Other\other.exe")
+            || WindowsShell.IsHostOf(Path.Combine(windows, @"System32\notepad.exe"), Path.Combine(windows, "explorer.exe"))
+            || WindowsShell.IsHostOf(@"C:\Games\a.exe", @"C:\Games\a.exe"))
+            throw new InvalidOperationException("The rule for helper processes of a pinned app is wrong.");
     }
 
     // Док на втором мониторе: настройка включена по умолчанию, дополнительный док стоит внизу своего монитора и целиком в его границах (на одном мониторе проверка пропускается)

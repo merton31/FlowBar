@@ -277,6 +277,33 @@ internal static class JumpList
         finally { CloseHandle(handle); }
     }
 
+    [DllImport("shell32", CharSet = CharSet.Unicode)]
+    private static extern int SHGetPropertyStoreFromParsingName(string path, nint context, int flags, ref Guid id, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore? store);
+
+    private static readonly Dictionary<string, string?> LinkIds = new(StringComparer.OrdinalIgnoreCase);
+
+    // AppUserModelID, записанный в самом ярлыке (у Discord и Hermes есть, у Steam и Ollama нет): по нему Windows сводит окна с закреплённым значком
+    internal static string? ShortcutAppId(string path)
+    {
+        if (!path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return null;
+        if (LinkIds.TryGetValue(path, out var cached)) return cached;
+        IPropertyStore? store = null;
+        string? result = null;
+        try
+        {
+            var id = typeof(IPropertyStore).GUID;
+            var key = new PropertyKey { Format = AppIdFormat, Id = 5 };
+            if (File.Exists(path) && SHGetPropertyStoreFromParsingName(path, 0, 0, ref id, out store) >= 0 && store is not null && store.GetValue(ref key, out var value) >= 0)
+            {
+                try { if (value.Type == 31 && value.Pointer != 0) result = Marshal.PtrToStringUni(value.Pointer); }
+                finally { PropVariantClear(ref value); }
+            }
+        }
+        catch (Exception ex) when (ex is COMException or InvalidCastException) { }
+        finally { if (store is not null) Marshal.ReleaseComObject(store); }
+        return LinkIds[path] = string.IsNullOrEmpty(result) ? null : result;
+    }
+
     private static string? WindowAppId(nint window)
     {
         IPropertyStore? store = null;

@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
@@ -90,16 +91,9 @@ internal sealed partial class DockWindow
         Sync(WindowsShell.Audio());
         AutomationProperties.SetName(speaker, L10n.T("Mute"));
 
-        // яркость: строка появляется, только если монитор позволяет её менять
-        var sun = Symbol("", 16, Muted);
-        sun.Width = 36;
-        var brightness = FilledSlider(Accent(P), 0, 18, "Brightness");
-        brightness.Margin = new(6, 0, 4, 0);
-        var brightnessRow = new DockPanel { Margin = new(3, 6, 3, 0), Visibility = Visibility.Collapsed };
-        DockPanel.SetDock(sun, Dock.Left);
-        brightnessRow.Children.Add(sun);
-        brightnessRow.Children.Add(brightness);
-        panel.Children.Add(brightnessRow);
+        // яркость: по строке на каждый подключённый монитор, который позволяет её менять (строки появляются после опроса мониторов)
+        var brightnessBox = new StackPanel { Margin = new(3, 6, 3, 0), Visibility = Visibility.Collapsed };
+        panel.Children.Add(brightnessBox);
 
         panel.Children.Add(status);
         var windows = Button("Windows quick settings", () => { window.Close(); WindowsShell.Key(0x5B, 0x41); });
@@ -154,22 +148,45 @@ internal sealed partial class DockWindow
 
         async Task LoadBrightness()
         {
-            var result = await Task.Run(() => WindowsShell.Brightness(handle));
-            if (!window.IsLoaded || !result.Supported) return;
-            model.BrightnessLevel = result.Brightness;
-            brightness.Value = 100 * result.Brightness;
-            brightnessRow.Visibility = Visibility.Visible;
-            // изменения применяются с задержкой 250 мс: монитор не успевает за каждым шагом ползунка
-            var apply = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            apply.Tick += async (_, _) =>
+            string own = System.Windows.Forms.Screen.FromHandle(handle).DeviceName;
+            var found = await Task.Run(() => System.Windows.Forms.Screen.AllScreens.Select((screen, index) =>
             {
-                apply.Stop();
-                double value = brightness.Value / 100;
-                var updated = await Task.Run(() => WindowsShell.Brightness(handle, value));
-                model.BrightnessLevel = updated.Supported ? updated.Brightness : null;
-            };
-            window.Closed += (_, _) => apply.Stop();
-            brightness.ValueChanged += (_, _) => { apply.Stop(); apply.Start(); };
+                nint monitor = WindowsShell.MonitorOf(screen.Bounds);
+                return (Screen: screen, Number: index + 1, Monitor: monitor, Level: WindowsShell.MonitorBrightness(monitor));
+            }).Where(item => item.Level.Supported).ToArray());
+            if (!window.IsLoaded || found.Length == 0) return;
+            foreach (var item in found)
+            {
+                if (item.Screen.DeviceName == own) model.BrightnessLevel = item.Level.Brightness;
+                var sun = Symbol("", 16, Muted);
+                sun.Width = 36;
+                var slider = FilledSlider(Accent(P), 0, 18, "Brightness");
+                slider.Margin = new(6, 0, 4, 0);
+                slider.Value = 100 * item.Level.Brightness;
+                var row = new DockPanel { Margin = new(0, 2, 0, 0) };
+                DockPanel.SetDock(sun, Dock.Left);
+                row.Children.Add(sun);
+                row.Children.Add(slider);
+                if (found.Length > 1) // подпись нужна, только когда мониторов несколько
+                {
+                    var caption = Text(item.Screen.Primary ? L10n.F($"Monitor {item.Number} (main)") : L10n.F($"Monitor {item.Number}"), 11.5, false, Muted);
+                    caption.Margin = new(3, 6, 0, 0);
+                    brightnessBox.Children.Add(caption);
+                }
+                brightnessBox.Children.Add(row);
+                // изменения применяются с задержкой 250 мс: монитор не успевает за каждым шагом ползунка
+                var apply = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+                apply.Tick += async (_, _) =>
+                {
+                    apply.Stop();
+                    double value = slider.Value / 100;
+                    var updated = await Task.Run(() => WindowsShell.MonitorBrightness(item.Monitor, value));
+                    if (item.Screen.DeviceName == own) model.BrightnessLevel = updated.Supported ? updated.Brightness : null;
+                };
+                window.Closed += (_, _) => apply.Stop();
+                slider.ValueChanged += (_, _) => { apply.Stop(); apply.Start(); };
+            }
+            brightnessBox.Visibility = Visibility.Visible;
         }
     }
 }
