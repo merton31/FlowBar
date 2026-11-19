@@ -1043,12 +1043,44 @@ internal static partial class Program
         // значок приложения из магазина берётся из «Приложений» по идентификатору (у exe таких приложений своего значка нет)
         var packaged = WindowsShell.ShellImage(@"shell:AppsFolder\windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel", 256);
         if (packaged is null || packaged.PixelWidth < 64) throw new InvalidOperationException("The Store app icon from the Apps folder is missing.");
+        // exe без значка среди ресурсов (как Ollama) узнаётся, чтобы вместо серой заглушки оболочки взять значок окна
+        var bare = Path.Combine(Path.GetTempPath(), "flowbar-no-icon-" + Environment.ProcessId + ".exe");
+        File.WriteAllBytes(bare, new byte[2048]);
+        try
+        {
+            if (WindowsShell.HasOwnIcon(bare)) throw new InvalidOperationException("A file without icon resources was taken for an app with its own icon.");
+            if (!WindowsShell.HasOwnIcon(Path.Combine(Environment.SystemDirectory, "notepad.exe"))) throw new InvalidOperationException("Notepad has its own icon, but it was not found.");
+        }
+        finally { File.Delete(bare); }
+        // значок, который задан в самом ярлыке, читается; пустой — нет (иначе у Ollama остаётся серая заглушка вместо app.ico)
+        var shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!)!;
+        string notepad = Path.Combine(Environment.SystemDirectory, "notepad.exe"), withIcon = Path.Combine(Path.GetTempPath(), "flowbar-icon-" + Environment.ProcessId + ".lnk"), without = Path.ChangeExtension(withIcon, ".b.lnk");
+        try
+        {
+            dynamic a = ((dynamic)shell).CreateShortcut(withIcon); a.TargetPath = Path.Combine(Environment.SystemDirectory, "cmd.exe"); a.IconLocation = notepad + ",0"; a.Save();
+            dynamic b = ((dynamic)shell).CreateShortcut(without); b.TargetPath = notepad; b.Save();
+            if (!string.Equals(WindowsShell.LinkIconFile(withIcon), notepad, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("The icon set in a shortcut was not read.");
+            if (WindowsShell.LinkIconFile(without) is not null) throw new InvalidOperationException("A shortcut without its own icon reported one.");
+        }
+        finally { File.Delete(withIcon); File.Delete(without); System.Runtime.InteropServices.Marshal.ReleaseComObject(shell); }
+        // Discord: запущенный «папка\app-1.0.9\X.exe» и ярлык на «папка\X.exe» — одна программа, а без заглушки путь остаётся как есть
+        var root = Path.Combine(Path.GetTempPath(), "flowbar-stub-" + Environment.ProcessId);
+        Directory.CreateDirectory(Path.Combine(root, "app-1.0.9"));
+        try
+        {
+            string running = Path.Combine(root, "app-1.0.9", "X.exe"), stub = Path.Combine(root, "X.exe");
+            if (WindowsShell.ResolveApp(running) != running) throw new InvalidOperationException("A versioned exe without a stub was changed.");
+            File.WriteAllBytes(stub, [0]);
+            if (WindowsShell.ResolveApp(running) != stub) throw new InvalidOperationException("A versioned exe was not matched to its launcher.");
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     // Док на втором мониторе: настройка включена по умолчанию, дополнительный док стоит внизу своего монитора и целиком в его границах (на одном мониторе проверка пропускается)
     private static async System.Threading.Tasks.Task VerifyMonitors(DockModel model)
     {
         if (!new Preferences().AllMonitors) throw new InvalidOperationException("The dock must be shown on all monitors by default.");
+        if (new Preferences().WindowsOnDocks != "all") throw new InvalidOperationException("Open windows must be shown on every dock by default.");
         var other = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(screen => !screen.Primary);
         if (other is null) return;
         var extra = new DockWindow(model, true, false, other);
@@ -1335,12 +1367,44 @@ internal static partial class Program
             cursor = new Point(bounds.Right + 400, bounds.Bottom + 400);
             down = true; // щелчок в другой программе: меню закрывается
             await WaitFor(() => !menu.IsOpen, 8000); // таймер слежения за меню под нагрузкой (сразу после сборки) иногда опаздывает больше 2 секунд
+            down = false;
+            await VerifyPopoverWatch(v => down = v, p => cursor = p);
         }
         finally
         {
             (MenuWatch.ButtonDown, MenuWatch.Cursor) = (savedDown, savedCursor);
             menu.IsOpen = false;
         }
+    }
+
+    // Карточка виджета закрывается новым нажатием вне неё, остаётся при нажатии внутри и при кнопке, зажатой ещё до начала слежения
+    private static async System.Threading.Tasks.Task VerifyPopoverWatch(Action<bool> press, Action<Point> moveTo)
+    {
+        var window = new Window { WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, ShowActivated = false,
+            Width = 200, Height = 100, Left = 300, Top = 300 };
+        window.Show();
+        try
+        {
+            int closed = 0;
+            var inside = window.PointToScreen(new Point(100, 50));
+            moveTo(new Point(-6000, -6000));
+            press(true); // кнопка зажата ещё до слежения: это не новое нажатие
+            PopoverWatch.Attach(window, () => closed++);
+            await System.Threading.Tasks.Task.Delay(250);
+            if (closed != 0) throw new InvalidOperationException("The card closed on a button held before watching began.");
+            press(false);
+            await System.Threading.Tasks.Task.Delay(120);
+            moveTo(inside);
+            press(true);
+            await System.Threading.Tasks.Task.Delay(250);
+            if (closed != 0) throw new InvalidOperationException("The card closed after a click inside it.");
+            press(false);
+            await System.Threading.Tasks.Task.Delay(120);
+            moveTo(new Point(-6000, -6000));
+            press(true);
+            await WaitFor(() => closed > 0, 8000);
+        }
+        finally { press(false); window.Close(); }
     }
 
     // Список переходов: имена файлов по AppUserModelID совпадают с настоящими файлами Windows, разделы читаются из файла, пункт запускается
