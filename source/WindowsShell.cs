@@ -149,7 +149,18 @@ internal static partial class WindowsShell
 
     public static string ResolveApp(string path) => path.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), path)
-        : path;
+        : VersionedStub(path);
+
+    // Discord, Slack и другие на Squirrel запускаются из «папка\app-1.0.9\X.exe», а ярлык указывает на «папка\X.exe».
+    // Приводим запущенный файл к ярлыку, иначе закреплённая и открытая плитки считаются разными программами.
+    private static string VersionedStub(string path)
+    {
+        var folder = Path.GetDirectoryName(path);
+        if (folder is null || !Path.GetFileName(folder).StartsWith("app-", StringComparison.OrdinalIgnoreCase)) return path;
+        var parent = Path.GetDirectoryName(folder);
+        var stub = parent is null ? null : Path.Combine(parent, Path.GetFileName(path));
+        return stub is not null && File.Exists(stub) ? stub : path;
+    }
 
     public static void PreventActivation(nint window) =>
         SetWindowLongPtr(window, -20, new nint(GetWindowLongPtr(window, -20).ToInt64() | 0x08000000));
@@ -192,6 +203,38 @@ internal static partial class WindowsShell
         return ShortcutTargets[path] = result;
     }
 
+    private static readonly Dictionary<string, string?> LinkIcons = new(StringComparer.OrdinalIgnoreCase);
+
+    // Файл значка, который ярлык задаёт сам (поле «Сменить значок»): только первый значок существующего файла, не сам exe-цель; null — значок не задан
+    internal static string? LinkIconFile(string path)
+    {
+        if (!path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return null;
+        if (LinkIcons.TryGetValue(path, out var cached)) return cached;
+        object? automation = null, link = null;
+        string? result = null;
+        try
+        {
+            var type = Type.GetTypeFromProgID("WScript.Shell");
+            if (type is not null)
+            {
+                automation = Activator.CreateInstance(type);
+                link = ((dynamic)automation!).CreateShortcut(path);
+                string location = ((dynamic)link).IconLocation;
+                int comma = location.LastIndexOf(',');
+                string file = Environment.ExpandEnvironmentVariables(comma >= 0 ? location[..comma] : location).Trim();
+                bool first = comma < 0 || int.TryParse(location[(comma + 1)..], out int index) && index == 0;
+                if (first && Path.IsPathFullyQualified(file) && File.Exists(file)) result = file;
+            }
+        }
+        catch (Exception ex) when (ex is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or ArgumentException) { }
+        finally
+        {
+            if (link is not null && Marshal.IsComObject(link)) Marshal.ReleaseComObject(link);
+            if (automation is not null && Marshal.IsComObject(automation)) Marshal.ReleaseComObject(automation);
+        }
+        return LinkIcons[path] = result;
+    }
+
     public static bool Launch(string path)
     {
         try
@@ -211,7 +254,11 @@ internal static partial class WindowsShell
             && JumpList.AppId(window) is { Length: > 0 } appId
             && ShellImage("shell:AppsFolder\\" + appId, 256) is { } packaged) return packaged;
         // сначала значок высокого разрешения из оболочки (до 256 px): значок окна и ExtractAssociatedIcon дают только 32 px, они расплываются на плитке и при увеличении
-        var sharp = HighResIcon(MatchApp(app));
+        // значок, заданный в самом ярлыке (у Ollama exe без значка, а картинка лежит в app.ico рядом): он главнее значка exe
+        if (LinkIconFile(app) is { } linked && HighResIcon(linked) is { } fromLink) return fromLink;
+        // у exe без своего значка оболочка отдаёт серую заглушку «окно»: её не берём, пока есть значок окна (Ollama и подобные ставят его на окно при работе)
+        string matched = MatchApp(app);
+        var sharp = window != 0 && !HasOwnIcon(matched) ? null : HighResIcon(matched);
         if (sharp is not null) return sharp;
         if (window != 0)
         {
@@ -286,6 +333,9 @@ internal static partial class WindowsShell
         if (className.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
         DwmGetWindowAttribute(handle, 9, out NativeRect frame, Marshal.SizeOf<NativeRect>());
         if (frame.Right > frame.Left) rect = frame;
+        // Развёрнутое обычное окно (с заголовком, например «Настройки» или Проводник) — не полноэкранное: пока панель Windows скрыта, оно занимает весь экран,
+        // и док выезжал бы только после удержания указателя; полноэкранные видео и игры заголовка не имеют
+        if (IsZoomed(handle) && (GetWindowLongPtr(handle, -16).ToInt64() & 0xC00000) == 0xC00000) return false;
         return rect.Left <= screenPixels.Left && rect.Top <= screenPixels.Top
             && rect.Right >= screenPixels.Right && rect.Bottom >= screenPixels.Bottom;
     }
@@ -502,6 +552,11 @@ internal static partial class WindowsShell
     [DllImport("user32")] private static extern bool EnumChildWindows(nint parent, WindowEnumerator callback, nint param);
     [DllImport("user32")] private static extern bool IsWindowVisible(nint window);
     [DllImport("user32")] private static extern bool IsIconic(nint window);
+    [DllImport("user32")] private static extern bool IsZoomed(nint window);
+    [DllImport("shell32", CharSet = CharSet.Unicode)] private static extern uint ExtractIconEx(string file, int index, nint[]? large, nint[]? small, uint count);
+
+    // Есть ли в файле хотя бы один значок среди ресурсов (index −1 — только посчитать)
+    internal static bool HasOwnIcon(string path) => !File.Exists(path) || ExtractIconEx(path, -1, null, null, 0) > 0;
     [DllImport("user32")] private static extern nint GetWindow(nint window, uint command);
     [DllImport("user32", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint window, int index);
     [DllImport("user32", EntryPoint = "SetWindowLongPtrW")] private static extern nint SetWindowLongPtr(nint window, int index, nint value);

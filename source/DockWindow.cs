@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -330,9 +330,13 @@ internal sealed partial class DockWindow : Window
         return fullscreen ? reveal : !autoHide || desktopShown || reveal;
     }
 
+    // Чистая прозрачность (без материала и без стиля Liquid): док остаётся настоящим прозрачным окном, и сквозь него видно всё, что под ним — окна, видео, обои.
+    // Картинка-стекло из обоев тут не нужна: она закрывала окна под доком (рабочая область равна экрану) и делала док непрозрачным.
+    private bool SeeThrough => !previewLiveGlass && Looks.Glassy(P) && Looks.Material(P) == "theme" && P.Style != "Liquid";
+
     private void SampleGlass()
     {
-        if (!IsLoaded || !Looks.Glassy(P) || background.ActualWidth <= 0 || background.ActualHeight <= 0) return;
+        if (!IsLoaded || !Looks.Glassy(P) || SeeThrough || background.ActualWidth <= 0 || background.ActualHeight <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         var position = background.PointToScreen(new Point());
         // Обычный режим: стекло из обоев (док не исключается из захвата, на части систем это даёт чёрную панель). Проверки с живым снимком экрана — как раньше
@@ -484,6 +488,10 @@ internal sealed partial class DockWindow : Window
         P.Magnification = true;
         try
         {
+            // Над рядом нет слоя обрезки: иначе увеличенный значок срезается по верхней границе ряда (кроме окна просмотра списка, оно с запасом)
+            for (DependencyObject d = first.Tile; d is not null && !ReferenceEquals(d, background); d = VisualTreeHelper.GetParent(d))
+                if (d is Visual visual && d is not System.Windows.Controls.ScrollContentPresenter && VisualTreeHelper.GetClip(visual) is not null)
+                    return $"{d.GetType().Name} обрезает содержимое: увеличенные значки будут срезаны";
             magnetLast = RowOffset(first.Tile) + first.Tile.ActualWidth / 2;
             magnetX = magnetLast;
             for (int step = 0; step < 90; step++) MagnifyStep(.03);
@@ -636,11 +644,14 @@ internal sealed partial class DockWindow : Window
         row.LayoutTransform = new ScaleTransform(scale, scale);
         bool useLiveGlass = Looks.Glassy(P) && (!smoke || previewLiveGlass);
         var inner = Card(row, 15, Looks.Material(P) == "theme" && !Looks.Glassy(P) ? DockFinish(P.Style) : Looks.Surface(P, useLiveGlass));
-        inner.Padding = new(Math.Max(0, P.Padding) * scale);
+        // Отступ — целое число пикселей: при дробном (3 DIP = 3,75 px) Windows округляет высоту карточки вниз, ряд оказывается меньше нужного
+        // и получает слой обрезки по своим границам, а он срезает увеличенные значки, выступающие над рядом
+        double pixel = 1 / VisualTreeHelper.GetDpi(this).DpiScaleX;
+        inner.Padding = new(Math.Round(Math.Max(0, P.Padding) * scale / pixel) * pixel);
         background.Child = inner;
         background.BorderThickness = new(Math.Clamp(P.DockBorder, 0, 4)); // толщина границы по краям панели, 0 — без границы
         background.BorderBrush = Looks.Rim(P);
-        background.Background = useLiveGlass
+        background.Background = useLiveGlass && !SeeThrough
             ? liveBackdrop.ImageSource is not null ? liveBackdrop : WallpaperBackdrop() ?? Brushes.Transparent
             : Brushes.Transparent;
         PlaceLayout(inner);

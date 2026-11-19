@@ -62,14 +62,20 @@ internal sealed partial class DockWindow
             if (Environment.TickCount64 - lastMove > 1000) ActivityLog.Record("окно перемещено", key);
             lastMove = Environment.TickCount64;
         };
-        if (popover && closeOnDeactivate && !smoke) window.Deactivated += (_, _) => Dispatcher.BeginInvoke(() =>
+        if (popover && closeOnDeactivate && !smoke)
         {
-            if (!window.IsActive && window.IsVisible && !window.OwnedWindows.Cast<Window>().Any(child => child.IsVisible))
+            void CloseByFocus()
             {
-                if (IsMouseOver) closedByFocus = (key, Environment.TickCount64);
-                window.Close();
+                if (window.IsVisible && !window.OwnedWindows.Cast<Window>().Any(child => child.IsVisible))
+                {
+                    if (IsMouseOver) closedByFocus = (key, Environment.TickCount64);
+                    window.Close();
+                }
             }
-        });
+            window.Deactivated += (_, _) => Dispatcher.BeginInvoke(() => { if (!window.IsActive) CloseByFocus(); });
+            // Дополнительно: щелчок по доку не снимает активность с карточки (док не берёт фокус), и Deactivated не приходит
+            PopoverWatch.Attach(window, CloseByFocus);
+        }
         draw(window, shell);
         window.Show();
         return window;
