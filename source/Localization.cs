@@ -139,7 +139,6 @@ internal static partial class L10n
         ["The clipboard is busy."] = "Буфер обмена занят.",
         ["The clipboard has no valid look code."] = "В буфере нет верного кода оформления.",
         ["End task"] = "Завершить задачу",
-        ["End {0}? Unsaved data in it will be lost."] = "Завершить {0}? Несохранённые данные в ней будут потеряны.",
         ["Could not end {0}"] = "Не удалось завершить {0}",
         ["Agent access (MCP)"] = "Доступ для агентов (MCP)",
         ["Let agents read tasks and notes"] = "Разрешить агентам читать задачи и заметки",

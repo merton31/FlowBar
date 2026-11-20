@@ -63,12 +63,11 @@ internal sealed partial class DockWindow
         menu.Items.Add(Menu(Items.Contains(id) ? "Unpin from dock" : "Pin to dock", () => model.ToggleWidget(id, Items)));
         AddShiftItems(menu, id, menu.Items.Count);
         if (running.Count == 0) return;
-        // Красные пункты. «End task» принудительно завершает программу, если она зависла: системные процессы не завершаются, перед завершением спрашиваем
+        // Красные пункты. «End task» принудительно завершает программу, если она зависла: системные процессы не завершаются; по просьбе пользователя без вопроса «Завершить?»
         if (!WindowsShell.IsProtected(running[0].App))
         {
             var end = Menu("End task", () =>
             {
-                if (MessageBox.Show(this, L10n.F($"End {name}? Unsaved data in it will be lost."), "FlowBar", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
                 if (!WindowsShell.EndTasks(running.Select(item => item.Handle).ToArray(), running[0].App)) Report(L10n.F($"Could not end {name}"));
             });
             end.Foreground = Brush("#FF453A");
