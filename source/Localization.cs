@@ -246,6 +246,8 @@ internal static partial class L10n
         ["All"] = "Все",
         ["Which dock shows each open window; windows on other monitors get a ring."] = "Какая панель показывает открытое окно; окна на других мониторах отмечены кольцом.",
         ["Widgets on monitor"] = "Виджеты на мониторе",
+        ["Main"] = "Основной",
+        ["Monitor"] = "Монитор",
         ["Same as main"] = "Как на основной",
         ["Own layout"] = "Своя раскладка",
         ["Apps only"] = "Только приложения",

@@ -673,7 +673,7 @@ internal sealed partial class DockWindow
             foreach (var other in extra)
             {
                 string device = other.DeviceName;
-                string current = P.Monitors.TryGetValue(device, out var setup) ? setup.Widgets : "same";
+                string current = model.SetupFor(device).Widgets;
                 int number = Array.IndexOf(System.Windows.Forms.Screen.AllScreens, other) + 1;
                 SettingsRow(dock, Text(L10n.T("Widgets on monitor") + " " + number, 14, true), Segments(current, value => model.SetMonitorWidgets(device, value),
                     ("Same as main", "same"), ("Own layout", "own"), ("Apps only", "none")), "Own layout has its own widgets, set by dragging and the gallery on that dock.");
@@ -732,7 +732,29 @@ internal sealed partial class DockWindow
         badge.VerticalAlignment = VerticalAlignment.Center;
         var inBar = Text("", 11, false, Muted);
         var title = Text("All Widgets", 20, true);
-        var heading = (FrameworkElement)Right(RowStack(title, badge, inBar), CloseButton(window));
+        // Список, в который галерея ставит виджеты: у дока, где её открыли, или у монитора, выбранного справа от заголовка
+        var target = Items;
+        Action refresh = () => { }; // перерисовка галереи; Render объявлен ниже, поэтому подключается позже
+        var headingItems = new List<UIElement> { title, badge, inBar };
+        var screens = System.Windows.Forms.Screen.AllScreens;
+        if (P.AllMonitors && screens.Length > 1)
+        {
+            // Выбранному монитору включается своя раскладка (если было «Как на основной» или «Только приложения»), иначе виджеты некуда ставить
+            var options = screens.Select((screen, index) => (screen.Primary ? "Main" : L10n.T("Monitor") + " " + (index + 1), screen.Primary ? "" : screen.DeviceName)).ToArray();
+            var chooser = Segments(ReferenceEquals(target, P.Items) ? "" : monitor!.DeviceName, device =>
+            {
+                if (device.Length == 0) target = P.Items;
+                else
+                {
+                    if (model.SetupFor(device).Widgets != "own") model.SetMonitorWidgets(device, "own");
+                    target = model.SetupFor(device).Items;
+                }
+                refresh();
+            }, options);
+            chooser.Margin = new(18, 0, 0, 0);
+            headingItems.Add(chooser);
+        }
+        var heading = (FrameworkElement)Right(RowStack([.. headingItems]), CloseButton(window));
         heading.Margin = new(0, 0, 0, 14);
         DockPanel.SetDock(heading, Dock.Top);
         main.Children.Add(heading);
@@ -787,9 +809,9 @@ internal sealed partial class DockWindow
                     var widget = Widgets.Available[id];
                     var face = Widgets.Face(widget, model, true, out Action update);
                     (face, update) = Widgets.ServicePreview(widget, model, face, update);
-                    var card = Button(face, () => { model.ToggleWidget(id, Items); Render(false); }, Brush("#121213"), 17);
+                    var card = Button(face, () => { model.ToggleWidget(id, target); Render(false); }, Brush("#121213"), 17);
                     card.Padding = new(8, 2, 8, 2);
-                    var added = Items.Contains(id);
+                    var added = target.Contains(id);
                     string action = L10n.T(added ? "Remove" : "Add") + " · " + L10n.T(widget.Name);
                     System.Windows.Automation.AutomationProperties.SetName(card, L10n.Russian ? action : $"{(added ? "Remove" : "Add")} {widget.Name}");
                     var frame = Card(card, 18, Brushes.Transparent, Brush("#363638"));
@@ -831,10 +853,11 @@ internal sealed partial class DockWindow
             }
             if (content.Children.Count == 0) content.Children.Add(Text("No matching widgets", 15, true, Muted));
             count.Text = shown.ToString();
-            inBar.Text = L10n.F($"{Items.Count(id => Widgets.Available.ContainsKey(id) && !Widgets.WindowsFolders.Contains(id))} in bar");
+            inBar.Text = L10n.F($"{target.Count(id => Widgets.Available.ContainsKey(id) && !Widgets.WindowsFolders.Contains(id))} in bar");
             foreach (var entry in links) entry.Value.Background = entry.Key == active && term.Length == 0 ? Accent(P) : Brushes.Transparent;
             if (reset) scroll.ScrollToTop(); else scroll.ScrollToVerticalOffset(offset);
         }
+        refresh = () => Render(false);
         foreach (var category in Widgets.Categories)
         {
             var icon = Symbol(category.Glyph, 17, Brush("#9AC8F5"));

@@ -279,10 +279,19 @@ internal sealed class DockModel
         if (redraw) Changed?.Invoke();
     }
 
+    // Раскладка монитора по умолчанию своя: при первом обращении берётся копия виджетов основного дока, дальше монитор живёт сам по себе.
+    // Явно выбранные «Как на основной» / «Только приложения» остаются как были
+    public MonitorSetup SetupFor(string device)
+    {
+        if (!Settings.Monitors.TryGetValue(device, out var setup))
+            Settings.Monitors[device] = setup = new MonitorSetup { Widgets = "own", Items = [.. Settings.Items] };
+        return setup;
+    }
+
     // Раскладка дополнительного монитора: same / own / none; при первом включении «своей» берётся копия основного набора
     public void SetMonitorWidgets(string device, string mode)
     {
-        if (!Settings.Monitors.TryGetValue(device, out var setup)) Settings.Monitors[device] = setup = new MonitorSetup();
+        var setup = SetupFor(device);
         if (mode == "own" && setup.Items.Count == 0) setup.Items = [.. Settings.Items];
         setup.Widgets = mode;
         Save();

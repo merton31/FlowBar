@@ -71,9 +71,9 @@ internal sealed partial class DockWindow : Window
     private nint activeWindow;
     private Rect display;
     // Виджеты этого дока: у дополнительного монитора со своей раскладкой — его список, иначе общий (основной)
-    internal List<string> Items => monitor is not null && P.Monitors.TryGetValue(monitor.DeviceName, out var setup) && setup.Widgets == "own" ? setup.Items : P.Items;
+    internal List<string> Items => monitor is not null && model.SetupFor(monitor.DeviceName) is { Widgets: "own" } setup ? setup.Items : P.Items;
     // «Только приложения» на дополнительном мониторе: без виджетов, остаются Пуск и значки программ
-    private bool AppsOnly => monitor is not null && P.Monitors.TryGetValue(monitor.DeviceName, out var setup) && setup.Widgets == "none";
+    private bool AppsOnly => monitor is not null && model.SetupFor(monitor.DeviceName).Widgets == "none";
     private bool PinnedHere(string id) => ReferenceEquals(Items, P.Items) && model.IsPinned(id);
     // Монитор этого дока (основной — у главного)
     private Screen ThisScreen => monitor ?? Screen.PrimaryScreen ?? Screen.AllScreens[0];
