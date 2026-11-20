@@ -136,6 +136,15 @@ internal sealed partial class DockWindow
         Draw();
     });
 
+    // Звуковые сеансы Windows программы-источника плеера: по имени её процесса («Spotify.exe», «Chrome» -> chrome).
+    // shortcut: у части магазинных плееров процесс называется иначе, чем в идентификаторе, — их сеанс не находится и ползунок неактивен
+    internal static WindowsShell.AudioSession[] SourceSessions(string source, IEnumerable<WindowsShell.AudioSession> all)
+    {
+        string key = SourceName(source);
+        if (key.Length < 3) return [];
+        return all.Where(session => session.Process.Length >= 3 && (session.Process.Contains(key, StringComparison.OrdinalIgnoreCase) || key.Contains(session.Process, StringComparison.OrdinalIgnoreCase))).ToArray();
+    }
+
     // Название приложения-источника для подписи: «Spotify.exe» -> «Spotify», «Microsoft.ZuneMusic_8weky!App» -> «ZuneMusic»
     internal static string SourceName(string source)
     {
@@ -202,7 +211,7 @@ internal sealed partial class DockWindow
 
         Button Round(string glyph, double glyphSize, double size, Brush background, byte key, string name)
         {
-            var button = Button(Symbol(glyph, glyphSize, Brushes.White), () => WindowsShell.Key(key), background, size / 2);
+            var button = Button(Symbol(glyph, glyphSize, Brushes.White), () => model.Media.Press(key), background, size / 2);
             button.Width = button.Height = size;
             button.Padding = new(0);
             button.Margin = new(7, 0, 7, 0);
@@ -217,7 +226,49 @@ internal sealed partial class DockWindow
         buttons.HorizontalAlignment = HorizontalAlignment.Center;
         buttons.Margin = new(0, 12, 0, 0);
 
-        var body = Stack(head, hit, times, buttons);
+        // Громкость самого плеера (его звуковой сеанс Windows, а не общая): значок выключает и включает его звук, ползунок меняет громкость
+        var volumeGlyph = Symbol("", 15, Brushes.White);
+        var muteButton = Button(volumeGlyph, () => { }, Brush("#2EFFFFFF"), 16);
+        muteButton.Width = muteButton.Height = 32;
+        muteButton.Padding = new(0);
+        var knob = FilledSlider(Brushes.White, 0, 14, L10n.T("Player volume"));
+        knob.Margin = new(10, 0, 8, 0);
+        var percentage = RawText("", 12, false, Muted);
+        percentage.Width = 38;
+        percentage.TextAlignment = TextAlignment.Right;
+        var volumeRow = new DockPanel { Margin = new(0, 14, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(muteButton, Dock.Left);
+        DockPanel.SetDock(percentage, Dock.Right);
+        volumeRow.Children.Add(muteButton);
+        volumeRow.Children.Add(percentage);
+        volumeRow.Children.Add(knob);
+        WindowsShell.AudioSession[] mine = [];
+        DateTime nextLookup = default;
+        bool playerMuted = false, settingVolume = false;
+        void PaintVolume()
+        {
+            volumeGlyph.Text = playerMuted ? "" : "";
+            string action = L10n.T(playerMuted ? "Unmute" : "Mute");
+            muteButton.ToolTip = action;
+            System.Windows.Automation.AutomationProperties.SetName(muteButton, action);
+            knob.Foreground = playerMuted ? Muted : Brushes.White;
+            percentage.Text = playerMuted ? L10n.T("Off") : $"{knob.Value:F0}%";
+        }
+        muteButton.Click += (_, _) =>
+        {
+            if (mine.Length == 0) return;
+            playerMuted = !playerMuted;
+            if (!smoke) foreach (var session in mine) WindowsShell.SessionVolumes(session.Id, setMute: playerMuted);
+            PaintVolume();
+        };
+        knob.ValueChanged += (_, _) =>
+        {
+            if (settingVolume || mine.Length == 0) return;
+            if (!smoke) foreach (var session in mine) WindowsShell.SessionVolumes(session.Id, (float)(knob.Value / 100.0));
+            PaintVolume();
+        };
+
+        var body = Stack(head, hit, times, buttons, volumeRow);
         body.Margin = new(20);
         body.VerticalAlignment = VerticalAlignment.Center;
         var layers = new Grid { ClipToBounds = true };
@@ -228,7 +279,7 @@ internal sealed partial class DockWindow
         var card = Card(layers, 16, Brush("#1A1A1C"));
         content.Children.Add(card);
 
-        Live(window, () =>
+        Action refresh = () =>
         {
             var track = model.Media.Current;
             bool known = !string.IsNullOrWhiteSpace(track?.Title);
@@ -243,6 +294,24 @@ internal sealed partial class DockWindow
                 backdrop.Source = art;
                 placeholder.Visibility = art is null ? Visibility.Visible : Visibility.Collapsed;
             }
+            // раз в две секунды заново ищем звуковой сеанс плеера и берём его громкость, пока ползунок не под мышью
+            if (!known) mine = [];
+            else if (DateTime.UtcNow >= nextLookup)
+            {
+                nextLookup = DateTime.UtcNow.AddSeconds(2);
+                mine = smoke ? [new WindowsShell.AudioSession("preview", "Example player", .64, false, "preview")] : SourceSessions(track!.Source, WindowsShell.SessionVolumes());
+            }
+            volumeRow.Visibility = known ? Visibility.Visible : Visibility.Collapsed;
+            volumeRow.IsEnabled = mine.Length > 0;
+            volumeRow.Opacity = mine.Length > 0 ? 1 : .4;
+            if (mine.Length > 0 && !knob.IsMouseOver && !muteButton.IsMouseOver)
+            {
+                settingVolume = true;
+                knob.Value = mine.Max(session => session.Volume) * 100;
+                settingVolume = false;
+                playerMuted = mine.All(session => session.Muted);
+                PaintVolume();
+            }
             bool playing = track?.State == "Playing";
             ((TextBlock)play.Content).Text = playing ? "\uE769" : "\uE768";
             string playName = L10n.T(playing ? "Pause" : "Play");
@@ -256,7 +325,11 @@ internal sealed partial class DockWindow
             bar.Value = position / length;
             elapsed.Text = ClockText(position);
             total.Text = ClockText(length);
-        });
+        };
+        Live(window, refresh);
+        // чтение или нажатие меняет значок и название сразу, не дожидаясь такта таймера карточки
+        model.Media.Changed += refresh;
+        window.Closed += (_, _) => model.Media.Changed -= refresh;
     }
 
     private void Timeline(DockPanel content)

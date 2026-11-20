@@ -452,6 +452,17 @@ internal static partial class WindowsShell
         SHAppBarMessage(1, ref appbar);
     }
 
+    // Режим экономии включается сам: ноутбук на батарее, экономия заряда Windows, удалённый сеанс или слабый процессор (до 4 потоков).
+    // В нём шарик диктовки и стекло рисуются 30 раз в секунду, плитки обновляются вдвое реже. Читается раз в секунду главным доком.
+    public static bool Economy { get; private set; }
+    public static void ReadEconomy()
+    {
+        GetSystemPowerStatus(out var power);
+        // AC == 0 — от батареи; флаг 128 — батареи нет вовсе; байт Reserved — SystemStatusFlag (1 — экономия заряда включена)
+        bool battery = power.AC == 0 && (power.Flags & 128) == 0;
+        Economy = battery || power.Reserved == 1 || System.Windows.Forms.SystemInformation.TerminalServerSession || Environment.ProcessorCount <= 4;
+    }
+
     public static Usage ReadUsage()
     {
         GetSystemTimes(out ulong idle, out ulong kernel, out ulong user);
