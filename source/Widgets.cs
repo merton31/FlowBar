@@ -116,7 +116,7 @@ internal static partial class Widgets
         {
             case "Dictation":
                 // шарик диктовки из FlowBar: движется всегда, во время записи светится ярче
-                var dictationOrb = new VoiceOrb { Width = gallery ? 46 : 38, Height = gallery ? 46 : 38 };
+                var dictationOrb = new VoiceOrb { Width = gallery ? 46 : 38, Height = gallery ? 46 : 38, IdleRate = 30 };
                 dictationOrb.SetState(Dictation.IsRecording, true);
                 update = () => dictationOrb.SetState(Dictation.IsRecording, true);
                 return dictationOrb;

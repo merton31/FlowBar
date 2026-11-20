@@ -993,6 +993,14 @@ internal static partial class Program
     {
         if (DockWindow.SourceName("Spotify.exe") != "Spotify" || DockWindow.SourceName("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic") != "ZuneMusic" || DockWindow.SourceName("Chrome") != "Chrome")
             throw new InvalidOperationException("The media source name is wrong.");
+        var audio = new[] { new WindowsShell.AudioSession("a", "Spotify", .5, false, "Spotify"), new WindowsShell.AudioSession("b", "Chrome", .5, false, "chrome"), new WindowsShell.AudioSession("c", "System", .5, false, "") };
+        if (DockWindow.SourceSessions("Spotify.exe", audio).Select(session => session.Id).SequenceEqual(["a"]) is false || DockWindow.SourceSessions("Chrome", audio).Select(session => session.Id).SequenceEqual(["b"]) is false || DockWindow.SourceSessions("Nothing.exe", audio).Length != 0)
+            throw new InvalidOperationException("The player audio session is not found by its source.");
+        // из заголовка окна док использует только число непрочитанного в начале: остальные смены заголовка плитки не пересобирают
+        if (DockWindow.UnreadPrefix.Match("(3) Inbox - Mail").Value != "(3) " || DockWindow.UnreadPrefix.Match("(99+) Chat").Value != "(99+) " ||
+            DockWindow.UnreadPrefix.Match("Inbox (3)").Success || DockWindow.UnreadPrefix.Match("Claude Code").Success)
+            throw new InvalidOperationException("The unread title prefix is matched wrongly.");
+        WindowsShell.ReadEconomy(); // режим экономии читается без ошибок на любой машине
         var pixels = new byte[200 * 200 * 4];
         for (int y = 0; y < 200; y++)
             for (int x = 0; x < 200; x++) { int i = (y * 200 + x) * 4; pixels[i] = (byte)(40 + x / 2); pixels[i + 1] = (byte)(80 + y / 3); pixels[i + 2] = 180; pixels[i + 3] = 255; }

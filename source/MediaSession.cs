@@ -1,22 +1,33 @@
 using System;
-using System.Diagnostics;
 using System.IO;
-using System.Text;
-using System.Text.Json;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media.Imaging;
+using Windows.Media.Control;
 
 namespace LumaDock;
 
+// Системный медиасеанс Windows (Spotify, браузер и другие) напрямую через WinRT: без фонового PowerShell (он держал около 100 МБ) и с событиями,
+// поэтому пауза, смена трека и перемотка видны сразу, а не по опросу.
 internal sealed class MediaSession : IDisposable
 {
-    // Position и Duration — секунды с момента чтения; у потоковых передач длительности нет (0)
+    // Position и Duration — секунды с момента чтения; у потоковых передач длительности нет (0). Cover осталось ради проверок: обложка теперь лежит в Artwork
     internal sealed record Track(string Title, string Artist, string State, string Source, string? Cover, double Position = 0, double Duration = 0);
-    private Process? bridge;
     private readonly SemaphoreSlim gate = new(1);
-    private string? coverData;
+    private GlobalSystemMediaTransportControlsSessionManager? manager;
+    private GlobalSystemMediaTransportControlsSession? hooked;
+    private string? coverKey;
     private DateTimeOffset retry;
+    private string? pending;
+    private DateTimeOffset holdUntil;
+    // Пока идёт чтение, пришло ещё одно событие: чтение повторяется, чтобы не потерять свежее состояние
+    private volatile bool dirty;
+    private int poking;
+    private bool disposed;
+    // Состояние изменилось (чтение или нажатие): окна перерисовывают плитки сразу, не дожидаясь своего такта
+    public event Action? Changed;
     public Track? Current { get; private set; }
     public BitmapSource? Artwork { get; private set; }
     // Когда прочитано текущее состояние: между чтениями время дорисовывается по часам
@@ -24,48 +35,149 @@ internal sealed class MediaSession : IDisposable
 
     public async Task Refresh()
     {
-        if (DateTimeOffset.Now < retry || !gate.Wait(0)) return;
+        if (disposed || DateTimeOffset.Now < retry) return;
+        if (!gate.Wait(0)) { dirty = true; return; }
         try
         {
-            if (bridge is null || bridge.HasExited) Start();
-            if (bridge is null) return;
-            await bridge.StandardInput.WriteLineAsync("read");
-            var line = await bridge.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(4));
-            if (line is null) throw new IOException("Media session ended");
-            Current = JsonSerializer.Deserialize<Track>(line);
-            ReadAt = DateTimeOffset.Now;
-            var cover = Current?.Cover;
-            if (cover != coverData)
+            if (manager is null)
             {
-                coverData = cover;
-                Artwork = Decode(cover);
+                manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask();
+                manager.CurrentSessionChanged += (_, _) => Poke();
             }
+            var session = manager.GetCurrentSession();
+            Hook(session);
+            Track? read = null;
+            if (session is not null)
+            {
+                var props = await session.TryGetMediaPropertiesAsync().AsTask();
+                var timeline = session.GetTimelineProperties();
+                string source = session.SourceAppUserModelId ?? "";
+                double span = timeline is null ? 0 : Math.Round((timeline.EndTime - timeline.StartTime).TotalSeconds, 1);
+                double at = timeline is null ? 0 : Math.Round((timeline.Position - timeline.StartTime).TotalSeconds, 1);
+                read = new Track(props.Title ?? "", props.Artist ?? "", session.GetPlaybackInfo().PlaybackStatus.ToString(), source, null, at, span);
+                string key = source + "|" + read.Title + "|" + read.Artist;
+                // обложку читаем при смене трека, а также пока её нет (часть приложений присылает её чуть позже названия)
+                if (key != coverKey || (Artwork is null && props.Thumbnail is not null))
+                {
+                    coverKey = key;
+                    Artwork = await ReadCover(props.Thumbnail);
+                }
+            }
+            else { Artwork = null; coverKey = null; }
+            // пока ждём реакции приложения на клавишу, запоздалое чтение со старым состоянием не должно откатывать значок назад
+            if (read is not null && pending is not null && DateTimeOffset.Now < holdUntil && read.State != pending) read = read with { State = pending };
+            else if (read is not null && read.State == pending) pending = null;
+            Current = read;
+            ReadAt = DateTimeOffset.Now;
         }
-        catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException or
-            System.ComponentModel.Win32Exception or JsonException)
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or UnauthorizedAccessException or IOException or ArgumentException)
         {
             ErrorLog.Write(ex, "Media session");
             retry = DateTimeOffset.Now.AddSeconds(30);
-            CloseBridge();
+            Unhook();
+            manager = null;
             Current = null;
             Artwork = null;
-            coverData = null;
+            coverKey = null;
         }
         finally { gate.Release(); }
+        Changed?.Invoke();
+        if (dirty) { dirty = false; await Refresh(); }
     }
 
-    // Перемотка в системном сеансе (Spotify и другие, которые это позволяют); результат виден при следующем чтении
-    public async Task SeekAsync(double seconds)
+    private static async Task<BitmapSource?> ReadCover(Windows.Storage.Streams.IRandomAccessStreamReference? thumbnail)
     {
-        if (!gate.Wait(0)) return;
+        if (thumbnail is null) return null;
         try
         {
-            if (bridge is null || bridge.HasExited) return;
-            await bridge.StandardInput.WriteLineAsync("seek " + seconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
-            await bridge.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(4));
+            using var source = await thumbnail.OpenReadAsync().AsTask();
+            if (source.Size is 0 or > 4194304) return null;
+            using var copy = new MemoryStream();
+            await source.AsStreamForRead().CopyToAsync(copy);
+            copy.Position = 0;
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.DecodePixelWidth = 640; // обложка в окне плеера крупная
+            bitmap.StreamSource = copy;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
         }
-        catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException) { CloseBridge(); }
-        finally { gate.Release(); }
+        catch (Exception ex) when (ex is COMException or IOException or NotSupportedException or FormatException or ArgumentException) { return null; }
+    }
+
+    // События системного сеанса приходят из чужих потоков: перечитываем в потоке окна, слив частые события в одно (около 60 мс)
+    private void Hook(GlobalSystemMediaTransportControlsSession? session)
+    {
+        if (ReferenceEquals(session, hooked)) return;
+        Unhook();
+        hooked = session;
+        if (session is null) return;
+        session.MediaPropertiesChanged += OnSessionChanged;
+        session.PlaybackInfoChanged += OnSessionChanged;
+        session.TimelinePropertiesChanged += OnSessionChanged;
+    }
+
+    private void Unhook()
+    {
+        if (hooked is null) return;
+        hooked.MediaPropertiesChanged -= OnSessionChanged;
+        hooked.PlaybackInfoChanged -= OnSessionChanged;
+        hooked.TimelinePropertiesChanged -= OnSessionChanged;
+        hooked = null;
+    }
+
+    private void OnSessionChanged(GlobalSystemMediaTransportControlsSession sender, object args) => Poke();
+
+    private void Poke()
+    {
+        if (disposed || Interlocked.Exchange(ref poking, 1) == 1) return;
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null) { poking = 0; return; }
+        dispatcher.BeginInvoke(async () =>
+        {
+            await Task.Delay(60);
+            poking = 0;
+            await Refresh();
+        });
+    }
+
+    // Клавиша мультимедиа из панели: значок воспроизведения меняется сразу, не дожидаясь чтения, а настоящее состояние приходит событием (и ещё перечитывается дважды на случай, если событие не придёт)
+    public void Press(byte key)
+    {
+        WindowsShell.Key(key);
+        if (key == 0xB3 && Current is { } track)
+        {
+            bool playing = track.State == "Playing";
+            double at = track.Position + (playing ? (DateTimeOffset.Now - ReadAt).TotalSeconds : 0);
+            pending = playing ? "Paused" : "Playing";
+            holdUntil = DateTimeOffset.Now.AddSeconds(1.2);
+            Current = track with { State = pending, Position = Math.Min(at, track.Duration > 0 ? track.Duration : at) };
+            ReadAt = DateTimeOffset.Now;
+            Changed?.Invoke();
+        }
+        _ = ReadSoon();
+    }
+
+    private async Task ReadSoon()
+    {
+        foreach (int wait in new[] { 150, 400 })
+        {
+            await Task.Delay(wait);
+            await Refresh();
+        }
+    }
+
+    // Перемотка в системном сеансе (Spotify и другие, которые это позволяют); результат приходит событием
+    public async Task SeekAsync(double seconds)
+    {
+        try
+        {
+            var session = manager?.GetCurrentSession();
+            if (session is not null) await session.TryChangePlaybackPositionAsync((long)(seconds * 10_000_000)).AsTask();
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or UnauthorizedAccessException) { }
     }
 
     // Для самопроверки: подставляет трек и обложку вместо настоящего сеанса
@@ -76,119 +188,10 @@ internal sealed class MediaSession : IDisposable
         ReadAt = DateTimeOffset.Now;
     }
 
-    private static BitmapImage? Decode(string? data)
+    public void Dispose()
     {
-        if (string.IsNullOrEmpty(data)) return null;
-        try
-        {
-            using var stream = new MemoryStream(Convert.FromBase64String(data));
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.DecodePixelWidth = 640; // обложка в окне плеера крупная
-            bitmap.StreamSource = stream;
-            bitmap.EndInit();
-            bitmap.Freeze();
-            return bitmap;
-        }
-        catch (Exception ex) when (ex is FormatException or NotSupportedException or IOException) { return null; }
+        disposed = true;
+        Unhook();
+        manager = null;
     }
-
-    private void Start()
-    {
-        CloseBridge();
-        var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
-            "WindowsPowerShell", "v1.0", "powershell.exe");
-        var start = new ProcessStartInfo(exe)
-        {
-            UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
-            RedirectStandardInput = true, RedirectStandardOutput = true,
-            StandardOutputEncoding = Encoding.UTF8
-        };
-        foreach (var arg in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
-            Convert.ToBase64String(Encoding.Unicode.GetBytes(Script)) }) start.ArgumentList.Add(arg);
-        bridge = Process.Start(start);
-    }
-
-    private const string Script = """
-        $ErrorActionPreference = 'Stop'
-        [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-        Add-Type -AssemblyName System.Runtime.WindowsRuntime
-        $async = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-            $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetGenericArguments().Count -eq 1 -and $_.GetParameters().Count -eq 1 -and
-            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
-        } | Select-Object -First 1
-        function Await($operation, [Type]$type) {
-            $task = $async.MakeGenericMethod($type).Invoke($null, @($operation))
-            $task.GetAwaiter().GetResult()
-        }
-        $managerType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager,Windows.Media,ContentType=WindowsRuntime]
-        $propertiesType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties,Windows.Media,ContentType=WindowsRuntime]
-        $streamType = [Windows.Storage.Streams.IRandomAccessStreamWithContentType,Windows.Storage.Streams,ContentType=WindowsRuntime]
-        $inputType = [Windows.Storage.Streams.IInputStream,Windows.Storage.Streams,ContentType=WindowsRuntime]
-        $sizeProperty = [Windows.Storage.Streams.IRandomAccessStream].GetProperty('Size')
-        $asStream = [System.IO.WindowsRuntimeStreamExtensions].GetMethod('AsStreamForRead', [Type[]]@($inputType))
-        $manager = Await ($managerType::RequestAsync()) $managerType
-        $artKey = ''
-        $cover = $null
-        while (($line = [Console]::ReadLine()) -ne $null) {
-            if ($line -like 'seek *') {
-                try {
-                    $target = [long]([double]::Parse($line.Substring(5), [Globalization.CultureInfo]::InvariantCulture) * 10000000)
-                    $null = Await ($manager.GetCurrentSession().TryChangePlaybackPositionAsync($target)) ([bool])
-                } catch {}
-                [Console]::WriteLine('ok'); continue
-            }
-            if ($line -ne 'read') { continue }
-            try {
-                $session = $manager.GetCurrentSession()
-                if ($null -eq $session) { [Console]::WriteLine('null'); continue }
-                $props = Await ($session.TryGetMediaPropertiesAsync()) $propertiesType
-                $key = $session.SourceAppUserModelId + '|' + $props.Title + '|' + $props.Artist
-                if ($key -ne $artKey) {
-                    $cover = $null
-                    $artKey = $key
-                    if ($null -ne $props.Thumbnail) {
-                        try {
-                            $image = Await ($props.Thumbnail.OpenReadAsync()) $streamType
-                            try {
-                                # Поток приходит как «голый» COM-объект: $image.Size пуст, а AsStreamForRead не находит перегрузку, поэтому обложка пропадала.
-                                # Читаем размер и открываем поток через рефлексию по интерфейсам WinRT.
-                                $size = $sizeProperty.GetValue($image)
-                                if ($size -gt 0 -and $size -le 4194304) {
-                                    $native = $asStream.Invoke($null, @($image))
-                                    $bytes = New-Object System.IO.MemoryStream
-                                    try { $native.CopyTo($bytes); $cover = [Convert]::ToBase64String($bytes.ToArray()) }
-                                    finally { $bytes.Dispose(); $native.Dispose() }
-                                }
-                            } finally { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($image) }
-                        } catch {}
-                    }
-                }
-                $timeline = $session.GetTimelineProperties()
-                $span = 0; $at = 0
-                if ($null -ne $timeline) {
-                    $span = [math]::Round(($timeline.EndTime - $timeline.StartTime).TotalSeconds, 1)
-                    $at = [math]::Round(($timeline.Position - $timeline.StartTime).TotalSeconds, 1)
-                }
-                $data = @{ Title = $props.Title; Artist = $props.Artist; State = $session.GetPlaybackInfo().PlaybackStatus.ToString();
-                    Source = $session.SourceAppUserModelId; Cover = $cover; Position = $at; Duration = $span }
-                [Console]::WriteLine(($data | ConvertTo-Json -Compress))
-            } catch { [Console]::WriteLine('null') }
-        }
-        """;
-
-    private void CloseBridge()
-    {
-        if (bridge is null) return;
-        try
-        {
-            if (!bridge.HasExited) bridge.Kill();
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-        bridge.Dispose();
-        bridge = null;
-    }
-
-    public void Dispose() => CloseBridge();
 }

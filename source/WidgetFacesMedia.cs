@@ -379,7 +379,7 @@ internal static partial class Widgets
             FrameworkElement element = round ? Card(icon, size * s / 2, lightTile ? Brush("#26000000") : Brush("#2C2C2F")) : icon;
             if (round) element.Width = element.Height = size * s;
             else icon.Margin = new(6 * s, 0, 6 * s, 0);
-            if (!gallery) element.PreviewMouseLeftButtonUp += (_, e) => { e.Handled = true; WindowsShell.Key(key); };
+            if (!gallery) element.PreviewMouseLeftButtonUp += (_, e) => { e.Handled = true; model.Media.Press(key); };
             return element;
         }
 

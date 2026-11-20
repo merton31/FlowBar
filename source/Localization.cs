@@ -83,6 +83,7 @@ internal static partial class L10n
     {
         ["Renewal date"] = "Дата продления",
         ["Volume · {0}"] = "Громкость · {0}",
+        ["Player volume"] = "Громкость плеера",
         ["Add task"] = "Добавить задачу",
         ["Remove task"] = "Удалить задачу",
         ["Task progress"] = "Ход выполнения задач",

@@ -32,6 +32,9 @@ internal sealed partial class DockWindow : Window
     private long glassStamp;
     private int glassFrames;
     private int glassIdle;
+    internal static readonly Regex UnreadPrefix = new(@"^\((?<n>[0-9]{1,4}\+?)\)\s", RegexOptions.Compiled);
+    private bool glassSkipped;
+    private (Point, double, double, int, int, int, System.Drawing.Bitmap?) glassInputs;
     private long glassSecond;
     internal int GlassFps { get; private set; }
 
@@ -40,11 +43,11 @@ internal sealed partial class DockWindow : Window
         if (smoke || !barVisible || !Looks.Glassy(P)) return;
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         // Пока фон под доком неподвижен (30 кадров подряд без изменений), снимаем 60 раз в секунду: быстрее незачем, а процессор не греется
-        int rate = glassIdle > 30 ? Math.Min(60, glassHz) : glassHz;
+        int rate = Math.Min(WindowsShell.Economy ? 30 : int.MaxValue, glassIdle > 30 ? Math.Min(60, glassHz) : glassHz);
         if (now - glassStamp < System.Diagnostics.Stopwatch.Frequency * .85 / rate) return;
         glassStamp = now;
         SampleGlass();
-        glassIdle = glass.Changed ? 0 : glassIdle + 1;
+        glassIdle = !glassSkipped && glass.Changed ? 0 : glassIdle + 1;
         glassFrames++;
         if (now - glassSecond >= System.Diagnostics.Stopwatch.Frequency)
         {
@@ -189,8 +192,10 @@ internal sealed partial class DockWindow : Window
             };
             MouseLeave += (_, _) => magnetX = null;
         }
+        model.Media.Changed += RedrawFaces;
         Closed += (_, _) =>
         {
+            model.Media.Changed -= RedrawFaces;
             clock.Stop();
             CompositionTarget.Rendering -= OnRendering;
             CompositionTarget.Rendering -= OnMagnify;
@@ -226,17 +231,17 @@ internal sealed partial class DockWindow : Window
     private void ReadSystem()
     {
         model.Usage = WindowsShell.ReadUsage();
+        WindowsShell.ReadEconomy();
         model.Audio = WindowsShell.Audio();
         if (smoke) return;
         if (ticks % 8 == 0)
         {
             model.Microphone = WindowsShell.Audio(capture: true);
-            _ = model.Media.Refresh();
         }
         if (ticks % 12 == 0) model.Network.Update();
         if (handle != 0 && ticks % 60 == 0 && (P.Items.Contains("Brightness") || surfaces.ContainsKey("Widgets")))
             _ = ReadBrightness();
-        if (ticks % 60 == 0 && (P.Items.Contains("Temperature") || P.Automations.Health))
+        if (ticks % (temperatureMisses >= 3 ? 2400 : 60) == 0 && (P.Items.Contains("Temperature") || P.Automations.Health))
             _ = ReadTemperature();
         if (P.TrackScreenTime)
         {
@@ -258,16 +263,24 @@ internal sealed partial class DockWindow : Window
         if (current.Any(item => item.Handle == front)) activeWindow = front;
         else if (!current.Any(item => item.Handle == activeWindow)) activeWindow = 0;
         var screens = current.ToDictionary(item => item.Handle, item => WindowsShell.ScreenOf(item.Handle));
-        var signature = string.Join('|', current.OrderBy(item => item.Handle).Select(item => $"{item.Handle}:{item.Title}:{screens[item.Handle]}")) + "#" + activeWindow;
-        if (signature == windowSignature) return;
-        windowSignature = signature;
+        // Из заголовка панель использует только число непрочитанного в начале «(3) …»; остальное (индикатор в терминале, загрузка вкладки, таймер игры) меняется часто и не должно пересобирать весь док
+        var signature = string.Join('|', current.OrderBy(item => item.Handle).Select(item => $"{item.Handle}:{UnreadPrefix.Match(item.Title).Value}:{screens[item.Handle]}")) + "#" + activeWindow;
+        // свежие заголовки (для подсказок и миниатюр) сохраняем всегда, а док пересобираем только при изменении подписи
         windows = current;
         windowScreens = screens;
+        if (signature == windowSignature) return;
+        windowSignature = signature;
         if (!IsMouseOver && ContextMenu?.IsOpen != true && thumbnail is null) Refresh();
         else windowsDirty = true;
     }
 
-    private async System.Threading.Tasks.Task ReadTemperature() => model.Temperature = await System.Threading.Tasks.Task.Run(WindowsShell.Temperature);
+    // Без прав администратора Windows не отдаёт температуру: после трёх пустых ответов подряд спрашиваем раз в десять минут, а не каждые 15 секунд
+    private int temperatureMisses;
+    private async System.Threading.Tasks.Task ReadTemperature()
+    {
+        model.Temperature = await System.Threading.Tasks.Task.Run(WindowsShell.Temperature);
+        temperatureMisses = model.Temperature is null ? temperatureMisses + 1 : 0;
+    }
     private bool readingBrightness;
     private async System.Threading.Tasks.Task ReadBrightness()
     {
@@ -309,9 +322,13 @@ internal sealed partial class DockWindow : Window
     private bool windowsDirty;
     private DateTime hoverUntil;
     private bool lastFullscreen;
+    private void RedrawFaces() { if (barVisible) foreach (var update in faces.ToArray()) update(); }
+
     private void Tick()
     {
         if (!secondary) model.Tick();
+        // состояние плеера приходит событиями системного сеанса; раз в две секунды перечитываем на случай пропущенного события
+        if (!smoke && !secondary && ticks % 8 == 0) _ = model.Media.Refresh();
         if (++ticks % 4 == 0)
         {
             ReadLive();
@@ -321,7 +338,8 @@ internal sealed partial class DockWindow : Window
             if (!smoke && !secondary && P.ReplaceTaskbar && WindowsShell.TaskbarChanged) WindowsShell.HideTaskbar(P.AutoHideWindows);
         }
         if (windowsDirty && !IsMouseOver && ContextMenu?.IsOpen != true && thumbnail is null) { windowsDirty = false; Refresh(); }
-        foreach (var update in faces) update();
+        // скрытый док (автоскрытие, игра на весь экран) не виден, поэтому плитки не обновляем; данные собираются как прежде, а при показе плитки обновляются сразу
+        if (barVisible && (!WindowsShell.Economy || ticks % 2 == 0)) foreach (var update in faces) update();
         if (!smoke)
         {
             bool fullscreen = WindowsShell.IsFullscreen(display);
@@ -350,6 +368,7 @@ internal sealed partial class DockWindow : Window
                 ActivityLog.Record(visible ? "док показан" : "док скрыт",
                     fullscreen ? "(полноэкранное окно" + (atEdge ? ", указатель у края)" : ")") : visible ? (held ? "(открыто окно или меню)" : atEdge ? "(указатель у края)" : "(указатель на доке)") : "(автоскрытие)");
                 barVisible = visible;
+                if (visible) RedrawFaces();
                 IsHitTestVisible = visible;
                 BeginAnimation(OpacityProperty, new DoubleAnimation(visible ? 1 : 0, TimeSpan.FromMilliseconds(125)));
             }
@@ -375,6 +394,11 @@ internal sealed partial class DockWindow : Window
         var position = background.PointToScreen(new Point());
         // Обычный режим: стекло из обоев (док не исключается из захвата, на части систем это даёт чёрную панель). Проверки с живым снимком экрана — как раньше
         var shot = previewLiveGlass ? null : WallpaperShot();
+        // Стекло собирается из неподвижных обоев: пока положение, размер, настройки и сами обои те же, пересчёт даёт ту же картинку (около 0,85 мс на кадр, до 144 раз в секунду)
+        var inputs = (position, background.ActualWidth, background.ActualHeight, Looks.Detail(P), Looks.Dispersion(P), P.Refraction, shot);
+        glassSkipped = !previewLiveGlass && liveBackdrop.ImageSource is not null && inputs.Equals(glassInputs);
+        if (glassSkipped) return;
+        glassInputs = inputs;
         var snapshot = glass.Update((int)position.X, (int)position.Y,
             (int)(background.ActualWidth * dpi.DpiScaleX), (int)(background.ActualHeight * dpi.DpiScaleY), Looks.Detail(P), Looks.Dispersion(P), P.Refraction,
             shot, (int)position.X - screenBounds.X, (int)position.Y - screenBounds.Y);
@@ -964,7 +988,7 @@ internal sealed partial class DockWindow : Window
         }
         if (P.AppBadges && running.Count > 0)
         {
-            var unread = running.Select(window => Regex.Match(window.Title, @"^\((?<n>[0-9]{1,4}\+?)\)\s")).FirstOrDefault(match => match.Success);
+            var unread = running.Select(window => UnreadPrefix.Match(window.Title)).FirstOrDefault(match => match.Success);
             if (unread is not null)
             {
                 var badge = Card(Text(unread.Groups["n"].Value, 9, true), 8, Accent(P));

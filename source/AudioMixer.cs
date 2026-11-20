@@ -7,9 +7,10 @@ namespace LumaDock;
 
 internal static partial class WindowsShell
 {
-    public sealed record AudioSession(string Id, string Name, double Volume, bool Muted);
+    // Process — имя exe без расширения (для связи сеанса с плеером); setMute задаёт звук явно, mute переключает
+    public sealed record AudioSession(string Id, string Name, double Volume, bool Muted, string Process = "");
 
-    public static AudioSession[] SessionVolumes(string? selection = null, float? level = null, bool mute = false)
+    public static AudioSession[] SessionVolumes(string? selection = null, float? level = null, bool mute = false, bool? setMute = null)
     {
         object? enumerator = null;
         IMMDevice? device = null;
@@ -37,15 +38,15 @@ internal static partial class WindowsShell
                     if (level.HasValue) volume.SetVolume(Math.Clamp(level.Value, 0, 1), Guid.Empty);
                     volume.GetMute(out bool muted);
                     if (mute) volume.SetMute(muted = !muted, Guid.Empty);
+                    else if (setMute.HasValue) volume.SetMute(muted = setMute.Value, Guid.Empty);
                     volume.GetVolume(out float current);
                     session.GetDisplayName(out string name);
+                    session.GetProcessId(out uint pid);
+                    string process = pid == 0 ? "" : Path.GetFileNameWithoutExtension(ProcessPath(pid));
                     if (string.IsNullOrWhiteSpace(name) || name.StartsWith('@'))
-                    {
-                        session.GetProcessId(out uint pid);
-                        name = pid == 0 ? "System sounds" : Path.GetFileNameWithoutExtension(ProcessPath(pid));
-                    }
+                        name = pid == 0 ? "System sounds" : process;
                     if (string.IsNullOrWhiteSpace(name)) name = "Audio session";
-                    sessions.Add(new AudioSession(id, name, current, muted));
+                    sessions.Add(new AudioSession(id, name, current, muted, process));
                 }
                 catch (Exception ex) when (ex is COMException or UnauthorizedAccessException) { }
                 finally { Marshal.ReleaseComObject(entry); }

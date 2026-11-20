@@ -915,7 +915,7 @@ internal sealed partial class DockWindow
         bool audio = id is "Audio Output" or "Microphone";
         bool player = id is "Now Playing" or "Now Playing Artwork" or "Now Playing Bar" or "Now Playing Mini";
         return Surface(id, player ? 440 : audio ? 420 : large ? 620 : tall ? 480 : 365,
-            id == "Audio Output" ? 566 : id == "Dictation" ? 560 : player ? 424 : audio ? 402 : large ? 460 : tall ? 426 : 259,
+            id == "Audio Output" ? 566 : id == "Dictation" ? 560 : player ? 476 : audio ? 402 : large ? 460 : tall ? 426 : 259,
             true, (window, shell) =>
             {
                 var content = new DockPanel { Margin = new(11), LastChildFill = true };
