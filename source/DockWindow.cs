@@ -828,6 +828,11 @@ internal sealed partial class DockWindow : Window
         }
     }
 
+    // Нижний край дока в пикселях экрана. На втором мониторе при заменённой панели Windows берём край монитора, а не рабочую область: пока прячущаяся
+    // системная панель ещё держит место, рабочая область урезана, док вставал выше низа экрана и сам уже не пересчитывался
+    internal static double BottomEdge(bool replace, bool secondary, bool replaceTaskbar, double? approved, double screenBottom, double workBottom) =>
+        replace ? approved ?? screenBottom : secondary && replaceTaskbar ? screenBottom : workBottom;
+
     private void PlaceLayout(FrameworkElement inner, bool renegotiate = false)
     {
         if (placing) return;
@@ -897,8 +902,8 @@ internal sealed partial class DockWindow : Window
                 approvedArea = null;
                 if (!replace && !secondary) WindowsShell.RestoreTaskbar();
             }
-            var bottom = replace ? approvedArea?.Bottom ?? screenPx.Bottom : workPx.Bottom;
-            Top = bottom / dpi.DpiScaleY - Height - P.Edge - (replace ? 0 : 2);
+            var bottom = BottomEdge(replace, secondary, P.ReplaceTaskbar, approvedArea?.Bottom, screenPx.Bottom, workPx.Bottom);
+            Top = bottom / dpi.DpiScaleY - Height - P.Edge - (replace || secondary && P.ReplaceTaskbar ? 0 : 2);
         }
         finally { placing = false; }
     }

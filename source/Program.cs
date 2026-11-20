@@ -1001,6 +1001,11 @@ internal static partial class Program
             DockWindow.UnreadPrefix.Match("Inbox (3)").Success || DockWindow.UnreadPrefix.Match("Claude Code").Success)
             throw new InvalidOperationException("The unread title prefix is matched wrongly.");
         WindowsShell.ReadEconomy(); // режим экономии читается без ошибок на любой машине
+        // низ дока: на втором мониторе при заменённой панели Windows — край монитора, даже если рабочая область урезана; без замены — рабочая область
+        if (DockWindow.BottomEdge(false, true, true, null, 1565, 1491) != 1565 || DockWindow.BottomEdge(false, true, false, null, 1565, 1491) != 1491 ||
+            DockWindow.BottomEdge(true, false, true, 1400, 1440, 1440) != 1400 || DockWindow.BottomEdge(true, false, true, null, 1440, 1392) != 1440 ||
+            DockWindow.BottomEdge(false, false, false, null, 1440, 1392) != 1392)
+            throw new InvalidOperationException("The dock bottom edge is chosen wrongly.");
         var pixels = new byte[200 * 200 * 4];
         for (int y = 0; y < 200; y++)
             for (int x = 0; x < 200; x++) { int i = (y * 200 + x) * 4; pixels[i] = (byte)(40 + x / 2); pixels[i + 1] = (byte)(80 + y / 3); pixels[i + 2] = 180; pixels[i + 3] = 255; }
