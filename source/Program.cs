@@ -1114,7 +1114,20 @@ internal static partial class Program
     {
         if (!new Preferences().AllMonitors) throw new InvalidOperationException("The dock must be shown on all monitors by default.");
         if (new Preferences().WindowsOnDocks != "all") throw new InvalidOperationException("Open windows must be shown on every dock by default.");
-        var other = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(screen => !screen.Primary);
+        // у монитора по умолчанию свои виджеты: копия основного набора, дальше независимая; явный выбор «Как на основной» не перезаписывается
+        const string fake = "\\\\.\\SMOKE-MONITOR";
+        try
+        {
+            var own = model.SetupFor(fake);
+            own.Items.Add("Smoke Probe");
+            if (own.Widgets != "own" || ReferenceEquals(own.Items, model.Settings.Items) || model.Settings.Items.Contains("Smoke Probe") ||
+                !own.Items.Take(own.Items.Count - 1).SequenceEqual(model.Settings.Items))
+                throw new InvalidOperationException("A monitor must have its own widgets by default.");
+            model.Settings.Monitors[fake] = new MonitorSetup { Widgets = "same" };
+            if (model.SetupFor(fake).Widgets != "same") throw new InvalidOperationException("An explicit monitor choice must not be overwritten.");
+        }
+        finally { model.Settings.Monitors.Remove(fake); }
+        var other =System.Windows.Forms.Screen.AllScreens.FirstOrDefault(screen => !screen.Primary);
         if (other is null) return;
         var extra = new DockWindow(model, true, false, other);
         try
@@ -1125,6 +1138,15 @@ internal static partial class Program
             var area = other.Bounds;
             if (bounds.Width < 100 || bounds.Left < area.Left - 2 || bounds.Right > area.Right + 2 || bounds.Bottom > area.Bottom + 2 || bounds.Bottom < area.Bottom - area.Height / 4.0)
                 throw new InvalidOperationException($"The dock on the second monitor is misplaced: {bounds} in {area}.");
+            // выбор монитора в галерее виджетов: монитор с «Только приложения» после выбора получает свою раскладку
+            model.Settings.Monitors[other.DeviceName] = new MonitorSetup { Widgets = "none" };
+            var gallery = extra.OpenGallery();
+            try
+            {
+                Click(gallery, L10n.T("Monitor") + " " + (Array.IndexOf(System.Windows.Forms.Screen.AllScreens, other) + 1));
+                if (model.SetupFor(other.DeviceName).Widgets != "own") throw new InvalidOperationException("The gallery monitor choice did not give the monitor its own widgets.");
+            }
+            finally { gallery.Close(); model.Settings.Monitors.Remove(other.DeviceName); }
         }
         finally { extra.Close(); }
     }
