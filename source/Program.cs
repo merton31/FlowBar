@@ -1006,6 +1006,26 @@ internal static partial class Program
             DockWindow.BottomEdge(true, false, true, 1400, 1440, 1440) != 1400 || DockWindow.BottomEdge(true, false, true, null, 1440, 1392) != 1440 ||
             DockWindow.BottomEdge(false, false, false, null, 1440, 1392) != 1392)
             throw new InvalidOperationException("The dock bottom edge is chosen wrongly.");
+        // скорость сети всегда в мегабайтах в секунду: 0,5 МБ/с, а не 512 КБ/с
+        string slow = Widgets.Rate(512 * 1024);
+        if (slow.Contains("KB") || slow.Contains("КБ") || !slow.Contains("50")) throw new InvalidOperationException($"The network speed must be in megabytes per second, got {slow}.");
+        // кнопки плеера в доке крупные: у каждого варианта есть область нажатия не меньше 32x24 и она ловит мышь (непрозрачный для попадания фон)
+        foreach (var playerId in new[] { "Now Playing", "Now Playing Mini", "Now Playing Artwork", "Now Playing Bar" })
+        {
+            var playerFace = Widgets.Face(Widgets.Available[playerId], model, false, out _);
+            int buttons = 0;
+            void Walk(DependencyObject node)
+            {
+                if (node is Border { Cursor: { } cursor, Background: { } back } hit && cursor == System.Windows.Input.Cursors.Hand && back == Brushes.Transparent)
+                {
+                    buttons++;
+                    if (hit.Width < 32 || hit.Height < 24) throw new InvalidOperationException($"A player button in {playerId} is too small: {hit.Width}x{hit.Height}.");
+                }
+                foreach (var child in LogicalTreeHelper.GetChildren(node).OfType<DependencyObject>()) Walk(child);
+            }
+            Walk(playerFace);
+            if (buttons == 0) throw new InvalidOperationException($"No clickable player buttons in {playerId}.");
+        }
         var pixels = new byte[200 * 200 * 4];
         for (int y = 0; y < 200; y++)
             for (int x = 0; x < 200; x++) { int i = (y * 200 + x) * 4; pixels[i] = (byte)(40 + x / 2); pixels[i + 1] = (byte)(80 + y / 3); pixels[i + 2] = 180; pixels[i + 3] = 255; }
