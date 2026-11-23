@@ -133,6 +133,7 @@ internal sealed class DockModel
     public (double Volume, bool Muted)? Audio { get; set; }
     public readonly MediaSession Media = new();
     public readonly LinkTraffic Network = new();
+    public readonly AppTraffic NetworkApps = new();
     public readonly LiveData Data = new();
     public readonly ConnectedData Connected = new();
     public AiMetrics.ModelUsage[] ClaudeUsage { get; set; } = [];

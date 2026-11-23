@@ -1026,6 +1026,49 @@ internal static partial class Program
             Walk(playerFace);
             if (buttons == 0) throw new InvalidOperationException($"No clickable player buttons in {playerId}.");
         }
+        // сеть по приложениям: события ETW разбираются верно (приём 11/43, отправка 10/58, прочие игнорируются), топ считается по направлению
+        {
+            var traffic = new AppTraffic();
+            foreach (var (eventId, size) in new[] { (11, 1000), (10, 700), (43, 1000), (58, 700), (12, 5000) })
+            {
+                var record = System.Runtime.InteropServices.Marshal.AllocHGlobal(112);
+                var payload = System.Runtime.InteropServices.Marshal.AllocHGlobal(16);
+                try
+                {
+                    for (int offset = 0; offset < 112; offset += 8) System.Runtime.InteropServices.Marshal.WriteInt64(record, offset, 0);
+                    System.Runtime.InteropServices.Marshal.WriteInt16(record, 40, (short)eventId);
+                    System.Runtime.InteropServices.Marshal.WriteInt16(record, 86, 16);
+                    System.Runtime.InteropServices.Marshal.WriteIntPtr(record, 96, payload);
+                    System.Runtime.InteropServices.Marshal.WriteInt32(payload, 0, 4242);
+                    System.Runtime.InteropServices.Marshal.WriteInt32(payload, 4, size);
+                    traffic.Handle(record);
+                }
+                finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(record); System.Runtime.InteropServices.Marshal.FreeHGlobal(payload); }
+            }
+            var counted = traffic.Bytes(4242);
+            if (counted[0] != 2000 || counted[1] != 1400) throw new InvalidOperationException($"Network events are counted wrongly: {counted[0]}/{counted[1]}.");
+            // живая проверка нужна права на трассировку (администратор или группа журналов производительности): без них пропускается
+            var live = new AppTraffic();
+            if (live.Start())
+            {
+                try
+                {
+                    var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                    listener.Start();
+                    using var client = new System.Net.Sockets.TcpClient();
+                    client.Connect(System.Net.IPAddress.Loopback, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port);
+                    using var accepted = listener.AcceptTcpClient();
+                    accepted.GetStream().Write(new byte[256 * 1024]);
+                    var sink = new byte[256 * 1024];
+                    for (int got = 0; got < sink.Length;) got += client.GetStream().Read(sink, got, sink.Length - got);
+                    listener.Stop();
+                    long[] seen = [0, 0];
+                    for (int wait = 0; wait < 50 && (seen[0] < 100_000 || seen[1] < 100_000); wait++) { System.Threading.Thread.Sleep(100); seen = live.Bytes(Environment.ProcessId); }
+                    if (seen[0] < 100_000 || seen[1] < 100_000) throw new InvalidOperationException($"Live network trace did not see our own traffic: {seen[0]}/{seen[1]}.");
+                }
+                finally { live.Stop(); }
+            }
+        }
         var pixels = new byte[200 * 200 * 4];
         for (int y = 0; y < 200; y++)
             for (int x = 0; x < 200; x++) { int i = (y * 200 + x) * 4; pixels[i] = (byte)(40 + x / 2); pixels[i + 1] = (byte)(80 + y / 3); pixels[i + 2] = 180; pixels[i + 3] = 255; }
