@@ -372,15 +372,41 @@ internal static partial class Widgets
         // Круглая кнопка или значок управления: в панели нажатие шлёт клавишу мультимедиа
         FrameworkElement Control(string glyph, byte key, double size, double glyphSize, bool round)
         {
-            var icon = Symbol(glyph, glyphSize * s, ink);
+            // В доке кнопка всегда круглая и крупная (не меньше 24-30 px), play залит цветом текста, чтобы не промахнуться;
+            // в галерее — прежний вид (там нажатия не нужны)
+            bool primary = key == 0xB3;
+            double box = gallery ? size * s : Math.Max(size * s, round ? 30 : 24);
+            double glyphPx = gallery ? glyphSize * s : Math.Max(glyphSize * s * 1.15, box * .46);
+            var glyphInk = !gallery && primary ? (lightTile ? Brushes.White : Brush("#101012")) : ink;
+            var icon = Symbol(glyph, glyphPx, glyphInk);
             icon.HorizontalAlignment = HorizontalAlignment.Center;
             icon.VerticalAlignment = VerticalAlignment.Center;
-            if (key == 0xB3) playIcon = icon;
-            FrameworkElement element = round ? Card(icon, size * s / 2, lightTile ? Brush("#26000000") : Brush("#2C2C2F")) : icon;
-            if (round) element.Width = element.Height = size * s;
-            else icon.Margin = new(6 * s, 0, 6 * s, 0);
-            if (!gallery) element.PreviewMouseLeftButtonUp += (_, e) => { e.Handled = true; model.Media.Press(key); };
-            return element;
+            if (primary) playIcon = icon;
+            if (gallery)
+            {
+                FrameworkElement plain = round ? Card(icon, box / 2, lightTile ? Brush("#26000000") : Brush("#2C2C2F")) : icon;
+                if (round) plain.Width = plain.Height = box;
+                else icon.Margin = new(6 * s, 0, 6 * s, 0);
+                return plain;
+            }
+            var disc = Card(icon, box / 2, primary ? ink : lightTile ? Brush("#26000000") : Brush("#3DFFFFFF"));
+            disc.Width = disc.Height = box;
+            // прозрачная рамка шире кружка: попадание засчитывается и рядом с ним
+            var hit = new Border { Background = Brushes.Transparent, Child = disc, Width = box + 8, Height = box, Cursor = System.Windows.Input.Cursors.Hand };
+            bool pressed = false;
+            // Кнопка плитки при нажатии захватывает мышь, и отпускание достаётся ей, а не нашей кнопке:
+            // гасим нажатие сами (плитка не откроется и не начнёт перетаскивание), нажатие клавиши шлём при отпускании
+            hit.PreviewMouseLeftButtonDown += (_, e) => { e.Handled = true; pressed = true; hit.CaptureMouse(); };
+            hit.PreviewMouseLeftButtonUp += (_, e) =>
+            {
+                if (!pressed) return;
+                pressed = false;
+                e.Handled = true;
+                bool inside = hit.IsMouseOver;
+                hit.ReleaseMouseCapture();
+                if (inside) model.Media.Press(key);
+            };
+            return hit;
         }
 
         bool sample = false;
@@ -410,7 +436,7 @@ internal static partial class Widgets
             case "Now Playing Mini":
             {
                 var play = Control("", 0xB3, 0, 13, false);
-                ((TextBlock)play).Margin = new();
+                play.Margin = new();
                 var cover = Cover(46, 0, true);
                 var veil = new Border { Width = 46 * s, Height = 46 * s, CornerRadius = new(23 * s), Background = new SolidColorBrush(Color.FromArgb(0x66, 0, 0, 0)) };
                 var ring = new Shapes.Ellipse { Width = 52 * s, Height = 52 * s, Stroke = Brush("#3A3A3D"), StrokeThickness = 2 };

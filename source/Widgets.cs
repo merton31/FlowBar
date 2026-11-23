@@ -508,7 +508,12 @@ internal static partial class Widgets
     public static string Duration(TimeSpan left) => $"{(int)left.TotalMinutes:00}:{left.Seconds:00}";
     public static string CompactDuration(int seconds) => seconds >= 3600 ? L10n.F($"{seconds / 3600}h {seconds % 3600 / 60}m")
         : seconds >= 60 ? L10n.F($"{seconds / 60}m") : L10n.T(seconds > 0 ? "<1m" : "0m");
-    public static string Rate(double speed) => speed >= 1024 * 1024 ? L10n.F($"{speed / (1024 * 1024):0.0} MB/s") : L10n.F($"{speed / 1024:0.0} KB/s");
+    // Скорость сети всегда в мегабайтах в секунду (не в КБ/с и не в битах): до 10 МБ/с два знака, чтобы небольшая скорость не превращалась в «0.0»
+    public static string Rate(double speed)
+    {
+        double megabytes = speed / (1024 * 1024);
+        return megabytes >= 10 ? L10n.F($"{megabytes:0.0} MB/s") : L10n.F($"{megabytes:0.00} MB/s");
+    }
 
     private sealed class Meter : FrameworkElement
     {
