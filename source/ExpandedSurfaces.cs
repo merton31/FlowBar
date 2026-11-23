@@ -665,9 +665,49 @@ internal sealed partial class DockWindow
         var chart = Card(face, 14, SurfaceInk, Line);
         chart.Padding = new(12);
         main.Children.Add(chart);
-        main.Children.Add(Button("Network settings", () => WindowsShell.Launch("ms-settings:network-status")));
+
+        // Разбивка по приложениям: пять самых «тратящих», переключатель загрузка/выгрузка
+        var apps = model.NetworkApps;
+        bool upload = false;
+        var rows = Stack();
+        void Paint()
+        {
+            rows.Children.Clear();
+            if (!apps.Running)
+            {
+                var why = Text(apps.Denied ? "Per-app traffic needs a one-time permission from Windows. Press Allow, confirm the Windows prompt, then sign out of Windows and back in."
+                    : "Per-app traffic could not be started.", 12, false, Muted);
+                why.TextWrapping = TextWrapping.Wrap;
+                rows.Children.Add(why);
+                if (apps.Denied) { var allow = Button("Allow", () => AppTraffic.GrantAccess()); allow.Margin = new(0, 8, 0, 0); allow.HorizontalAlignment = HorizontalAlignment.Left; rows.Children.Add(allow); }
+                return;
+            }
+            var top = apps.Top(upload);
+            if (top.Count == 0) { rows.Children.Add(Text("No app traffic right now", 12, false, Muted)); return; }
+            foreach (var (app, rate) in top)
+            {
+                var bar = FilledMeter(Accent(P), 3, app, Row);
+                bar.Maximum = top[0].Rate;
+                bar.Value = rate;
+                var line = Stack(Right(RawText(app, 13, false, Paper), RawText(Widgets.Rate(rate), 13, false, Muted)), bar);
+                line.Margin = new(0, 0, 0, 7);
+                rows.Children.Add(line);
+            }
+        }
+        var heading = Right(Text("Top apps", 13, true), Segments(upload, value => { upload = value; Paint(); }, ("Download", false), ("Upload", true)));
+        heading.Margin = new(5, 12, 0, 8);
+        rows.Margin = new(5, 0, 5, 0);
+        main.Children.Add(heading);
+        main.Children.Add(rows);
+        apps.Start();
+        window.Closed += (_, _) => apps.Stop();
+        Paint();
+
+        var settings = Button("Network settings", () => WindowsShell.Launch("ms-settings:network-status"));
+        settings.Margin = new(0, 6, 0, 0);
+        main.Children.Add(settings);
         content.Children.Add(main);
-        Live(window, () => { name.Text = L10n.T(model.Network.Adapter); update(); });
+        Live(window, () => { name.Text = L10n.T(model.Network.Adapter); update(); if (apps.Update()) Paint(); });
     }
 
     private static string Bytes(long value) => value >= 1024L * 1024 * 1024
