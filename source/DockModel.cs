@@ -325,9 +325,55 @@ internal sealed class DockModel
     public void ToggleWidget(string id, List<string>? items = null)
     {
         var list = items ?? Settings.Items;
+        if (id.StartsWith("app:", StringComparison.Ordinal))
+        {
+            SetAppPinned(id, !IsAppPinned(id, list), list);
+            return;
+        }
         if (list == Settings.Items && list.Contains(id) && IsPinned(id)) return;
         if (!list.Remove(id)) list.Add(id);
         Save();
+    }
+
+    // Ярлык, exe и регистр пути могут различаться, хотя плитка относится к одной программе.
+    // Храним исходный ярлык (с его параметрами запуска), сопоставляем по той же цели, что и открытые окна.
+    internal bool IsAppPinned(string id, List<string>? items = null)
+        => AppPins(id, items ?? Settings.Items).Any();
+
+    private static IEnumerable<string> AppPins(string id, List<string> items)
+    {
+        string key = WindowsShell.MatchApp(id[4..]);
+        return items.Where(item => item.StartsWith("app:", StringComparison.Ordinal)
+            && string.Equals(WindowsShell.MatchApp(item[4..]), key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal void SetAppPinned(string id, bool pin, List<string>? items = null)
+    {
+        if (!id.StartsWith("app:", StringComparison.Ordinal) || id.Length <= 4) return;
+        var list = items ?? Settings.Items;
+        var matches = AppPins(id, list).ToArray();
+        bool changed = false;
+        if (pin && matches.Length == 0)
+        {
+            int at = list.FindLastIndex(item => item.StartsWith("app:", StringComparison.Ordinal) || item is "Start" or "Search");
+            list.Insert(at + 1, id);
+            changed = true;
+        }
+        else
+        {
+            // Убираем и старые дубли; при закреплении оставляем первый ярлык и его место.
+            foreach (string match in matches.Skip(pin ? 1 : 0)) changed |= list.Remove(match);
+        }
+        if (!pin && ReferenceEquals(list, Settings.Items))
+        {
+            string key = WindowsShell.MatchApp(id[4..]);
+            if (!Settings.SeenWindowsPins.Contains(key, StringComparer.OrdinalIgnoreCase))
+            {
+                Settings.SeenWindowsPins.Add(key);
+                changed = true;
+            }
+        }
+        if (changed) Save();
     }
 
     public bool SelectWidgetStyle(string from, string to, List<string>? items = null)

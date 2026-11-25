@@ -60,7 +60,21 @@ internal sealed partial class DockWindow
             else if (running.Count > 1) WindowsShell.ActivateNext(running);
             else if (!WindowsShell.Launch(path)) Report(L10n.F($"Could not open {path}"));
         }, icon is null ? MenuGlyph("") : MenuIcon(icon)));
-        menu.Items.Add(Menu(Items.Contains(id) ? "Unpin from dock" : "Pin to dock", () => model.ToggleWidget(id, Items)));
+        bool pinned = model.IsAppPinned(id, Items);
+        menu.Items.Add(Menu(pinned ? "Unpin from dock" : "Pin to dock", () =>
+        {
+            CloseThumbnail();
+            string target = id;
+            // Путь MSIX содержит версию пакета и меняется после обновления. Сохраняем стабильный идентификатор запуска.
+            if (!pinned && (path.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(path).Equals("ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase)))
+            {
+                var appId = running.Select(window => JumpList.AppId(window.Handle)).FirstOrDefault(value => !string.IsNullOrEmpty(value));
+                if (appId is not null && WindowsShell.StoreAppExists(WindowsShell.StorePrefix + appId))
+                    target = "app:" + WindowsShell.StorePrefix + appId;
+            }
+            model.SetAppPinned(target, !pinned, Items);
+        }));
         AddShiftItems(menu, id, menu.Items.Count);
         if (running.Count == 0) return;
         // Красные пункты. «End task» принудительно завершает программу, если она зависла: системные процессы не завершаются; по просьбе пользователя без вопроса «Завершить?»

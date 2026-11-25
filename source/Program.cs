@@ -18,6 +18,8 @@ internal static partial class Program
     [STAThread]
     static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--check-widget-contrast")
+            return WidgetContrastCheck.Run(args[1]);
         if (args.Length == 2 && args[0] == "--check-wallpapers")
             return CheckWallpapers(args[1]);
         if (args.Length == 2 && args[0] == "--check-jumplist")
@@ -55,7 +57,8 @@ internal static partial class Program
         var liveCheck = args.Length == 2 && args[0] == "--check-live";
         var uiAudit = args.Length == 2 && args[0] == "--audit-ui";
         var glassPreview = args.Length == 2 && args[0] == "--preview-glass";
-        var testing = args.Length == 2 && (args[0] == "--smoke" || shellCheck || liveCheck || uiAudit || glassPreview);
+        var pinCheck = args.Length == 2 && args[0] == "--check-pinning";
+        var testing = args.Length == 2 && (args[0] == "--smoke" || shellCheck || liveCheck || uiAudit || glassPreview || pinCheck);
         bool smoke = testing;
         using var instance = new Mutex(true, "Local\\FlowBar2.Desktop", out bool first);
         if (!first && !smoke) return 0;
@@ -92,6 +95,12 @@ internal static partial class Program
                     Window? surface = null;
                     try
                     {
+                        if (pinCheck)
+                        {
+                            await VerifyAppPinning(args[1]);
+                            File.WriteAllText(Path.Combine(args[1], "result.txt"), "OK");
+                            return;
+                        }
                         if (uiAudit)
                         {
                             L10n.TrackMissing = true;
@@ -249,6 +258,7 @@ internal static partial class Program
                         await VerifyVoiceTools(dock, args[1]);
                         await VerifyHotkeys(dock, model);
                         await VerifyAppMenu(dock, args[1]);
+                        await VerifyAppPinning(args[1]);
                         await VerifyJumpList();
                         VerifyLookCode(model);
                         await VerifyStyleMixer(dock, model, args[1]);

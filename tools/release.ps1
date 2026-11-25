@@ -21,7 +21,7 @@ $expected = $vm.Groups[1].Value + '.' + $(if ($vm.Groups[2].Value) { [int][char]
 $built = (Get-Item $exe).VersionInfo.FileVersion
 if ($built -ne $expected) { throw "FlowBar.exe версии $built, а выпуск $Version (ждали $expected)" }
 # проверки на собранном файле
-foreach ($mode in '--smoke', '--audit-ui', '--check-install', '--check-dictation', '--check-places', '--check-jumplist', '--preview-glass', '--check-live') {
+foreach ($mode in '--smoke', '--audit-ui', '--check-install', '--check-dictation', '--check-places', '--check-jumplist', '--preview-glass', '--check-live', '--check-widget-contrast') {
     $folder = Join-Path $tmp ('check' + $mode)
     New-Item -ItemType Directory $folder | Out-Null
     $p = Start-Process $exe -ArgumentList $mode, $folder -PassThru

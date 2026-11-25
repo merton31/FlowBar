@@ -326,6 +326,7 @@ internal sealed partial class DockWindow : Window
 
     private void Tick()
     {
+        if (!smoke && barVisible) RefreshWidgetContrast();
         if (!secondary) model.Tick();
         // состояние плеера приходит событиями системного сеанса; раз в две секунды перечитываем на случай пропущенного события
         if (!smoke && !secondary && ticks % 8 == 0) _ = model.Media.Refresh();
@@ -591,6 +592,7 @@ internal sealed partial class DockWindow : Window
     {
         EndDrag(false); // плитки пересобираются, перенос в этот момент прерывается
         faces.Clear();
+        contrastTiles.Clear();
         magnets.Clear();
         dragTiles.Clear();
         appScroller = null;
@@ -930,6 +932,7 @@ internal sealed partial class DockWindow : Window
         double spacing = Math.Max(0, P.Spacing) / 2;
         tile.Margin = new(spacing, 0, spacing, 0);
         button.Padding = new(width > 60 ? 8 : 2, 1, width > 60 ? 8 : 2, 1);
+        if (!app && Looks.Glassy(P)) RegisterWidgetContrast(tile, button, light);
         tile.RenderTransformOrigin = new(.5, 1);
         // Масштаб и сдвиг плитки задаёт MagnifyStep каждый кадр (увеличение как в Dock на Mac), здесь только заготовки преобразований
         var magnify = new ScaleTransform();
@@ -1025,8 +1028,9 @@ internal sealed partial class DockWindow : Window
         });
         // Меню собирается заново при каждом открытии, чтобы список переходов программы был свежим
         var appMenu = DockMenu();
-        tile.ContextMenuOpening += (_, _) => FillAppMenu(appMenu, id, path, running, image);
-        FillAppMenu(appMenu, id, path, running, image);
+        var menuWindows = running.Concat(elsewhere).ToList();
+        tile.ContextMenuOpening += (_, _) => FillAppMenu(appMenu, id, path, menuWindows, image);
+        FillAppMenu(appMenu, id, path, menuWindows, image);
         tile.ContextMenu = appMenu;
         if (P.WindowPreviews && running.Count > 0)
         {
@@ -1423,7 +1427,8 @@ internal sealed partial class DockWindow : Window
         if (valid.Length == 1)
         {
             string app = "app:" + valid[0];
-            if (!Items.Contains(app, StringComparer.OrdinalIgnoreCase)) Items.Add(app);
+            model.SetAppPinned(app, true, Items);
+            return;
         }
         else
         {
