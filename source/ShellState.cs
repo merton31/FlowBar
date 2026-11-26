@@ -218,6 +218,9 @@ internal static partial class WindowsShell
         SetWindowPos(taskbar, 0, 0, 0, 0, 0, unchanged | (visible ? 0x40u : 0x80u));
     }
 
+    internal static bool RaiseWithoutActivation(nint window)
+        => window != 0 && SetWindowPos(window, -1, 0, 0, 0, 0, 0x01 | 0x02 | 0x10); // HWND_TOPMOST, NOSIZE, NOMOVE, NOACTIVATE
+
     public static bool IsDesktopActive()
     {
         nint window = GetForegroundWindow();

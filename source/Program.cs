@@ -247,6 +247,7 @@ internal static partial class Program
                         await VerifyBugReport(dock, args[1]);
                         VerifyQuickPanel(dock, args[1]);
                         VerifyFullscreenReveal();
+                        await VerifyRevealOrder(dock);
                         await VerifyWidgetSize(dock, model);
                         await VerifyDeviceLists(dock, args[1]);
                         await VerifyPlayer(dock, model, args[1]);

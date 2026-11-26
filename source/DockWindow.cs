@@ -364,6 +364,8 @@ internal sealed partial class DockWindow : Window
                 lastFullscreen = fullscreen;
                 ActivityLog.Record(fullscreen ? "система: полноэкранное окно" : "система: полноэкранное окно закрыто", $"монитор {display.Width:0}×{display.Height:0}");
             }
+            // Полноэкранное окно может оказаться выше уже установленного Topmost; прозрачность порядок окон не меняет.
+            if (visible && (!barVisible || revealedByEdge && !held)) WindowsShell.RaiseWithoutActivation(handle);
             if (visible != barVisible)
             {
                 ActivityLog.Record(visible ? "док показан" : "док скрыт",
