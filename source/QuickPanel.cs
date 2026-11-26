@@ -29,6 +29,7 @@ internal sealed partial class DockWindow
         var neutral = Brush("#2B2B2E");
         var tiles = new UniformGrid { Columns = 2 };
         var radioTiles = new List<(string Name, Border Tile, TextBlock State)>();
+        var networkTiles = new List<(ConnectivityIcon Icon, TextBlock State)>();
         bool pending = false;
 
         foreach (var (name, glyph, address) in Widgets.QuickLinks)
@@ -37,9 +38,11 @@ internal sealed partial class DockWindow
             bool radio = name is "Wi-Fi" or "Bluetooth";
             var state = Text(radio ? "" : "Settings", 11.5, false, Paper);
             state.Opacity = .75;
-            var texts = Stack(Text(name, 13, true), state);
+            if (name == "Ethernet") { state.MaxWidth = 105; state.TextWrapping = TextWrapping.Wrap; }
+            var texts = Stack(Text(name == "Ethernet" ? "Network" : name, 13, true), state);
             texts.VerticalAlignment = VerticalAlignment.Center;
-            var icon = Symbol(glyph, 18);
+            FrameworkElement icon = name == "Ethernet" ? new ConnectivityIcon(Paper, 24) : Symbol(glyph, 18);
+            if (icon is ConnectivityIcon connection) networkTiles.Add((connection, state));
             icon.Width = 40;
             var tile = Card(null, 11, neutral);
             tile.Height = 58;
@@ -51,7 +54,7 @@ internal sealed partial class DockWindow
             {
                 var current = model.Radios.Read(name);
                 if (radio && current is RadioController.State.On or RadioController.State.Off) _ = Change(name, current == RadioController.State.Off);
-                else { window.Close(); WindowsShell.Launch(address); }
+                else { window.Close(); WindowsShell.Launch(name == "Ethernet" ? "ms-settings:network-status" : address); }
             }, Brushes.Transparent, 11);
             main.Padding = new(8, 0, 4, 0);
             main.Height = 58;
@@ -104,6 +107,10 @@ internal sealed partial class DockWindow
         panel.Children.Add(footer);
         shell.Child = Scroll(panel);
         Paint();
+        var connectionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        connectionTimer.Tick += (_, _) => Paint();
+        window.Loaded += (_, _) => connectionTimer.Start();
+        window.Closed += (_, _) => connectionTimer.Stop();
         if (!smoke) window.Loaded += (_, _) => { _ = Change(null, null); _ = LoadBrightness(); };
 
         void Sync((double Volume, bool Muted)? audio)
@@ -131,6 +138,11 @@ internal sealed partial class DockWindow
 
         void Paint()
         {
+            foreach (var (icon, state) in networkTiles)
+            {
+                icon.Update();
+                state.Text = L10n.T(InternetConnectivity.Description(InternetConnectivity.Current));
+            }
             foreach (var (name, tile, state) in radioTiles)
             {
                 var current = model.Radios.Read(name);

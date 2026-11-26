@@ -372,11 +372,13 @@ internal static partial class Widgets
                 toggles.HorizontalAlignment = HorizontalAlignment.Center;
                 var radios = new List<(string Name, Border Tile)>();
                 var neutral = lightTile ? Brush("#26000000") : Brush("#28292B");
+                ConnectivityIcon? connection = null;
+                Border? connectionTile = null;
                 foreach (var (name, glyph, _) in QuickLinks)
                 {
                     if (!gallery && name == "Wi-Fi" && !WifiNetworks.HasAdapterCached) continue; // адаптера Wi-Fi нет — кнопки нет
                     bool wide = name is "Wi-Fi" or "Bluetooth";
-                    var icon = Symbol(glyph, gallery ? 17 : 13, ink);
+                    FrameworkElement icon = name == "Ethernet" ? connection = new ConnectivityIcon(ink, gallery ? 23 : 19) : Symbol(glyph, gallery ? 17 : 13, ink);
                     FrameworkElement symbol = wide ? RowStack(icon, Text("  ›", gallery ? 19 : 14, true, muted)) : icon;
                     symbol.HorizontalAlignment = HorizontalAlignment.Center;
                     var tile = Card(symbol, gallery ? 27 : 18, neutral);
@@ -384,6 +386,7 @@ internal static partial class Widgets
                     tile.Width = wide ? gallery ? 85 : 47 : gallery ? 48 : 29;
                     tile.Margin = new(2, 0, 2, 0);
                     tile.ToolTip = L10n.T(name);
+                    if (name == "Ethernet") connectionTile = tile;
                     if (wide) radios.Add((name, tile));
                     if (quickAction is not null)
                     {
@@ -401,6 +404,8 @@ internal static partial class Widgets
                 }
                 update = () =>
                 {
+                    connection?.Update();
+                    if (connectionTile is not null) connectionTile.ToolTip = L10n.T(InternetConnectivity.Description(InternetConnectivity.Current));
                     foreach (var (name, tile) in radios)
                         tile.Background = model.Radios.Read(name) == RadioController.State.On ? accent : neutral;
                 };

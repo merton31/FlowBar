@@ -234,6 +234,7 @@ internal sealed partial class DockWindow : Window
         WindowsShell.ReadEconomy();
         model.Audio = WindowsShell.Audio();
         if (smoke) return;
+        InternetConnectivity.Refresh();
         if (ticks % 8 == 0)
         {
             model.Microphone = WindowsShell.Audio(capture: true);

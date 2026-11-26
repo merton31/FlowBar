@@ -28,6 +28,10 @@ internal static class NetworkCheck
 
     private static async Task Check(StringBuilder report)
     {
+        InternetConnectivity.Refresh();
+        for (int wait = 0; wait < 50 && InternetConnectivity.Current == InternetConnectivity.State.Unknown; wait++) await Task.Delay(100);
+        report.AppendLine("Доступ к интернету по данным Windows: " + InternetConnectivity.Current);
+        if (InternetConnectivity.Current == InternetConnectivity.State.Unknown) throw new InvalidOperationException("Windows internet connectivity could not be read.");
         var networks = await WifiNetworks.ListAsync(true);
         report.AppendLine($"Сети Wi-Fi: {networks.Count}");
         foreach (var network in networks)

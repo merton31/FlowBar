@@ -246,6 +246,7 @@ internal static partial class Program
                         if (!string.IsNullOrEmpty(scrollProblem)) throw new InvalidOperationException("App list: " + scrollProblem);
                         await VerifyBugReport(dock, args[1]);
                         VerifyQuickPanel(dock, args[1]);
+                        VerifyInternetIndicator(model, args[1]);
                         VerifyFullscreenReveal();
                         await VerifyRevealOrder(dock);
                         await VerifyWidgetSize(dock, model);
